@@ -57,12 +57,14 @@ var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboard
 
 // ── Model selection ──────────────────────────────────────────────────────────
 string model = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
+int maxToolRounds = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_MAX_TOOL_ROUNDS"), 60);
 
 var ai = new AIService(apiKey, executor, model);
 
 // ── REPL ─────────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Green;
 Console.WriteLine($"Ready! Using model: {model}");
+Console.WriteLine($"Agent tool rounds limit: {maxToolRounds}");
 Console.WriteLine("Type your command, or use /help for available commands.");
 Console.ResetColor();
 Console.WriteLine();
@@ -144,6 +146,7 @@ while (true)
                 Console.WriteLine($"  {msg}");
                 Console.ResetColor();
             },
+            maxToolRounds: maxToolRounds,
             ct: cts.Token
         );
 
@@ -185,10 +188,12 @@ static void PrintHelp()
     ─────────────────────────────────────────────────────────────────────────────
     OPENAI_API_KEY   Your OpenAI API key (required)
     OPENAI_MODEL     Model to use (default: gpt-4o)
+    AIDESK_MAX_TOOL_ROUNDS  Maximum agent tool rounds per task (default: 60)
 
     Example Commands
     ─────────────────────────────────────────────────────────────────────────────
     Open Safari and navigate to https://example.com
+    Open Gmail and draft an email to xyz@example.com
     Search for "cat videos" on YouTube
     Open Notepad and type Hello World
     Take a screenshot and describe what you see
@@ -197,3 +202,6 @@ static void PrintHelp()
     """);
     Console.ResetColor();
 }
+
+static int TryGetPositiveInt(string? value, int defaultValue)
+    => int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;

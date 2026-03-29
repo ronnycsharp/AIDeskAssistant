@@ -1,6 +1,6 @@
 # AIDeskAssistant
 
-An AI-powered desktop automation assistant for Windows and macOS, built with C# (.NET 8) and the OpenAI API. Give natural-language instructions and the AI controls your computer — taking screenshots, moving the mouse, clicking, typing, and launching applications.
+An AI-powered desktop automation assistant for Windows and macOS, built with C# (.NET 8) and the OpenAI API. Give natural-language instructions and the AI controls your computer — taking screenshots, moving the mouse, clicking, typing, launching applications, and opening browser URLs for longer web workflows like Gmail.
 
 ## Features
 
@@ -9,8 +9,10 @@ An AI-powered desktop automation assistant for Windows and macOS, built with C# 
 - 🖱️ **Mouse control** — move, click (left/right/middle), double-click, scroll
 - ⌨️ **Keyboard input** — type text, press key combinations (Ctrl+C, Cmd+Space, …)
 - 🚀 **App launcher** — open any installed application by name
+- 🌐 **Direct URL navigation** — open Gmail, shops, forms, and other sites in the default browser
 - 💬 **CLI interface** — a simple REPL where you speak to the AI in plain language
 - 🔄 **Agentic loop** — the AI keeps using tools until the task is done, then reports back
+- ⏱️ **Longer task support** — configurable max tool rounds for multi-step browser tasks
 
 ## Requirements
 
@@ -47,10 +49,17 @@ Or you will be prompted for it on first run.
 dotnet run --project src/AIDeskAssistant
 ```
 
+Optional:
+
+```bash
+export AIDESK_MAX_TOOL_ROUNDS=120
+```
+
 ### 4. Give it a task
 
 ```
 You> Open Safari and navigate to https://example.com
+You> Open Gmail and draft an email to xyz@example.com
 You> Search for "cat videos" on YouTube and click the first result
 You> Open Notepad and write a short poem about computers
 You> Take a screenshot and describe what you see
@@ -72,6 +81,7 @@ You> /help
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
 | `OPENAI_MODEL`   | `gpt-4o`     | OpenAI model to use |
+| `AIDESK_MAX_TOOL_ROUNDS` | `60` | Maximum agent tool rounds per task before the assistant stops and asks to continue |
 
 ## Available Desktop Tools
 
@@ -89,6 +99,7 @@ The following tools are exposed to the AI model:
 | `type_text`          | Type a string via keyboard |
 | `press_key`          | Press a key combo e.g. `ctrl+c`, `cmd+space` |
 | `open_application`   | Open an app by name |
+| `open_url`           | Open an `http`/`https` URL in the default browser |
 | `wait`               | Pause for N milliseconds |
 
 ## Project Structure
@@ -99,7 +110,6 @@ src/
     Program.cs                    # CLI entry point (REPL loop)
     PlatformServiceFactory.cs     # Selects the right impl at runtime
     Services/
-      IAIService.cs               # (interface)
       AIService.cs                # OpenAI chat + tool-calling loop
       IScreenshotService.cs
       IMouseService.cs
@@ -114,7 +124,7 @@ src/
       ScreenInfo.cs
       MouseButton.cs
 tests/
-  AIDeskAssistant.Tests/          # xUnit tests (29 tests)
+  AIDeskAssistant.Tests/          # xUnit tests
 ```
 
 ## Running Tests
