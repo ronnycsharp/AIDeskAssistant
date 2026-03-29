@@ -1,6 +1,6 @@
 # AIDeskAssistant
 
-An AI-powered desktop automation assistant for Windows and macOS, built with C# (.NET 8) and the OpenAI API. Give natural-language instructions and the AI controls your computer — taking screenshots, moving the mouse, clicking, typing, launching applications, and opening browser URLs for longer web workflows like Gmail.
+An AI-powered desktop automation assistant for Windows and macOS, built with C# (.NET 8) and the OpenAI API. Give natural-language instructions and the AI controls your computer — taking screenshots, moving the mouse, clicking, typing, launching applications, opening browser URLs for longer web workflows like Gmail, running CLI commands, and managing the active window.
 
 ## Features
 
@@ -10,6 +10,8 @@ An AI-powered desktop automation assistant for Windows and macOS, built with C# 
 - ⌨️ **Keyboard input** — type text, press key combinations (Ctrl+C, Cmd+Space, …)
 - 🚀 **App launcher** — open any installed application by name
 - 🌐 **Direct URL navigation** — open Gmail, shops, forms, and other sites in the default browser
+- 🖥️ **Terminal command execution** — run CLI tools and feed stdout/stderr back to the model
+- 🪟 **Window management** — inspect, move, and resize the active window
 - 💬 **CLI interface** — a simple REPL where you speak to the AI in plain language
 - 🔄 **Agentic loop** — the AI keeps using tools until the task is done, then reports back
 - ⏱️ **Longer task support** — configurable max tool rounds for multi-step browser tasks
@@ -60,6 +62,8 @@ export AIDESK_MAX_TOOL_ROUNDS=120
 ```
 You> Open Safari and navigate to https://example.com
 You> Open Gmail and draft an email to xyz@example.com
+You> Run git status and tell me what changed
+You> Move the active window to x 50 y 50 and resize it to 1280 by 800
 You> Search for "cat videos" on YouTube and click the first result
 You> Open Notepad and write a short poem about computers
 You> Take a screenshot and describe what you see
@@ -100,6 +104,10 @@ The following tools are exposed to the AI model:
 | `press_key`          | Press a key combo e.g. `ctrl+c`, `cmd+space` |
 | `open_application`   | Open an app by name |
 | `open_url`           | Open an `http`/`https` URL in the default browser |
+| `run_command`        | Run an installed CLI executable and return stdout/stderr |
+| `get_active_window_bounds` | Get the active window position and size |
+| `move_active_window` | Move the active window to a screen position |
+| `resize_active_window` | Resize the active window |
 | `wait`               | Pause for N milliseconds |
 
 ## Project Structure
@@ -114,6 +122,8 @@ src/
       IScreenshotService.cs
       IMouseService.cs
       IKeyboardService.cs
+      ITerminalService.cs
+      IWindowService.cs
     Platform/
       Windows/                    # Win32 P/Invoke implementations
       MacOS/                      # CoreGraphics / osascript implementations

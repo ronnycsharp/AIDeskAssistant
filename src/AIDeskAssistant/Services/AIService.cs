@@ -11,6 +11,8 @@ namespace AIDeskAssistant.Services;
 internal sealed class AIService
 {
     private const string DefaultModel       = "gpt-4o";
+    private const string MaxToolRoundsReachedMessage =
+        "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
     private const string SystemPrompt       =
         """
         You are an AI desktop assistant that can control the user's computer.
@@ -20,11 +22,14 @@ internal sealed class AIService
         - Type text and press keys
         - Open applications
         - Open URLs directly in the browser
+        - Run terminal/CLI commands and read their text output
+        - Move and resize the active window
         - Wait between actions
 
         When the user gives you a task, figure out the necessary steps and execute them one at a time.
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
+        For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
         Always take a screenshot first to understand the current screen state before acting.
         After each significant action, take another screenshot to confirm the result.
         Be precise with coordinates — use the screenshot to determine exact pixel positions.
@@ -70,9 +75,8 @@ internal sealed class AIService
                 toolRounds++;
                 if (toolRounds > maxToolRounds)
                 {
-                    string maxRoundsMessage = "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
-                    _history.Add(new AssistantChatMessage(maxRoundsMessage));
-                    return maxRoundsMessage;
+                    _history.Add(new AssistantChatMessage(MaxToolRoundsReachedMessage));
+                    return MaxToolRoundsReachedMessage;
                 }
 
                 // Add the assistant's tool-call message to history.

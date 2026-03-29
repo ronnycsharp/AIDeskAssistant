@@ -23,6 +23,10 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("press_key",          names);
         Assert.Contains("open_application",   names);
         Assert.Contains("open_url",           names);
+        Assert.Contains("run_command",        names);
+        Assert.Contains("get_active_window_bounds", names);
+        Assert.Contains("move_active_window", names);
+        Assert.Contains("resize_active_window", names);
         Assert.Contains("wait",               names);
     }
 
@@ -81,5 +85,15 @@ public sealed class DesktopToolDefinitionsTests
     {
         var args = DesktopToolDefinitions.ParseArgs("{}");
         Assert.Equal("default", DesktopToolDefinitions.GetString(args, "missing", "default"));
+    }
+
+    [Fact]
+    public void GetStringArray_ReturnsExpectedValues()
+    {
+        var args = DesktopToolDefinitions.ParseArgs("""{"arguments":["status","--short"]}""");
+
+        IReadOnlyList<string> values = DesktopToolDefinitions.GetStringArray(args, "arguments");
+
+        Assert.Equal(["status", "--short"], values);
     }
 }
