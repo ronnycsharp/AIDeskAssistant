@@ -33,7 +33,14 @@ internal sealed class WindowsMouseService : IMouseService
     private const int ClickDelayMs       = 30;
     private const int DoubleClickDelayMs = 50;
 
-    public void MoveTo(int x, int y) => SetCursorPos(x, y);
+    public void MoveTo(int x, int y)
+    {
+        foreach (var point in MouseMotion.CreateEasedPath(GetPosition(), (x, y)))
+        {
+            SetCursorPos(point.X, point.Y);
+            Thread.Sleep(MouseMotion.StepDelayMs);
+        }
+    }
 
     public void Click(MouseButton button = MouseButton.Left)
     {

@@ -53,8 +53,11 @@ internal sealed class MacOSMouseService : IMouseService
 
     public void MoveTo(int x, int y)
     {
-        var point = new CGPoint { X = x, Y = y };
-        CGDisplayMoveCursorToPoint(CGMainDisplayID(), point);
+        foreach (var point in MouseMotion.CreateEasedPath(GetPosition(), (x, y)))
+        {
+            CGDisplayMoveCursorToPoint(CGMainDisplayID(), new CGPoint { X = point.X, Y = point.Y });
+            Thread.Sleep(MouseMotion.StepDelayMs);
+        }
     }
 
     public void Click(MouseButton button = MouseButton.Left)

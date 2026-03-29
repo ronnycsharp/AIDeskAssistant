@@ -7,6 +7,7 @@ An AI-powered desktop automation assistant for Windows and macOS, built with C# 
 - 🤖 **LLM-powered** — uses OpenAI GPT-4o (or any chat model) with function/tool calling
 - 📸 **Screen vision** — takes screenshots so the AI can see what's on screen
 - 🖱️ **Mouse control** — move, click (left/right/middle), double-click, scroll
+- ✨ **Natural cursor motion** — mouse moves along a smooth eased path instead of teleporting instantly
 - ⌨️ **Keyboard input** — type text, press key combinations (Ctrl+C, Cmd+Space, …)
 - 🚀 **App launcher** — open any installed application by name
 - 🌐 **Direct URL navigation** — open Gmail, shops, forms, and other sites in the default browser
