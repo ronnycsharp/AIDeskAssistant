@@ -156,6 +156,73 @@ internal static class DesktopToolDefinitions
         ),
 
         ChatTool.CreateFunctionTool(
+            "run_command",
+            "Runs an installed CLI executable and returns its stdout/stderr text output. Use this for terminal tasks when reading command output is more reliable than screenshots. The command is run directly without shell syntax like pipes or redirection.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "command": {
+                  "type": "string",
+                  "description": "Executable name only, e.g. 'git', 'dotnet', 'python3', 'npm'"
+                },
+                "arguments": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Command arguments as separate strings, e.g. ['status', '--short']"
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "description": "How long to wait before timing out (min 100, max 60000)"
+                }
+              },
+              "required": ["command"]
+            }
+            """)
+        ),
+
+        ChatTool.CreateFunctionTool(
+            "get_active_window_bounds",
+            "Returns the x/y position and width/height of the currently active/focused window.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {}
+            }
+            """)
+        ),
+
+        ChatTool.CreateFunctionTool(
+            "move_active_window",
+            "Moves the currently active/focused window to the specified screen coordinates.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "x": { "type": "integer", "description": "Target X position in screen coordinates" },
+                "y": { "type": "integer", "description": "Target Y position in screen coordinates" }
+              },
+              "required": ["x", "y"]
+            }
+            """)
+        ),
+
+        ChatTool.CreateFunctionTool(
+            "resize_active_window",
+            "Resizes the currently active/focused window to the specified width and height.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "width": { "type": "integer", "description": "Target window width in pixels" },
+                "height": { "type": "integer", "description": "Target window height in pixels" }
+              },
+              "required": ["width", "height"]
+            }
+            """)
+        ),
+
+        ChatTool.CreateFunctionTool(
             "wait",
             "Waits for the specified number of milliseconds before continuing.",
             BinaryData.FromString("""
@@ -189,4 +256,20 @@ internal static class DesktopToolDefinitions
     /// <summary>Gets an integer value from the args dictionary, returning a default if missing.</summary>
     public static int GetInt(Dictionary<string, JsonElement> args, string key, int defaultValue = 0)
         => args.TryGetValue(key, out var v) ? v.GetInt32() : defaultValue;
+
+    /// <summary>Gets a string array from the args dictionary, returning an empty list if missing.</summary>
+    public static IReadOnlyList<string> GetStringArray(Dictionary<string, JsonElement> args, string key)
+    {
+        if (!args.TryGetValue(key, out var value) || value.ValueKind != JsonValueKind.Array)
+            return Array.Empty<string>();
+
+        var items = new List<string>();
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.String)
+                items.Add(item.GetString() ?? string.Empty);
+        }
+
+        return items;
+    }
 }

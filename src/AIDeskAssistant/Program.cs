@@ -38,12 +38,16 @@ if (string.IsNullOrWhiteSpace(apiKey))
 IScreenshotService screenshotService;
 IMouseService      mouseService;
 IKeyboardService   keyboardService;
+ITerminalService   terminalService;
+IWindowService     windowService;
 
 try
 {
     screenshotService = PlatformServiceFactory.CreateScreenshotService();
     mouseService      = PlatformServiceFactory.CreateMouseService();
     keyboardService   = PlatformServiceFactory.CreateKeyboardService();
+    terminalService   = PlatformServiceFactory.CreateTerminalService();
+    windowService     = PlatformServiceFactory.CreateWindowService();
 }
 catch (PlatformNotSupportedException ex)
 {
@@ -53,7 +57,7 @@ catch (PlatformNotSupportedException ex)
     return 1;
 }
 
-var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService);
+var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService);
 
 // ── Model selection ──────────────────────────────────────────────────────────
 string model = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
@@ -194,6 +198,8 @@ static void PrintHelp()
     ─────────────────────────────────────────────────────────────────────────────
     Open Safari and navigate to https://example.com
     Open Gmail and draft an email to xyz@example.com
+    Run git status in the terminal and summarize the output
+    Move the active window to x 40 y 40 and resize it to 1200 by 800
     Search for "cat videos" on YouTube
     Open Notepad and type Hello World
     Take a screenshot and describe what you see
@@ -203,5 +209,6 @@ static void PrintHelp()
     Console.ResetColor();
 }
 
+/// <summary>Parses a positive integer environment variable or returns a fallback value.</summary>
 static int TryGetPositiveInt(string? value, int defaultValue)
     => int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;

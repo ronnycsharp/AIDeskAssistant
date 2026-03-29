@@ -30,4 +30,14 @@ internal static class PlatformServiceFactory
         throw new PlatformNotSupportedException(
             "AIDeskAssistant currently supports Windows and macOS only.");
     }
+
+    public static ITerminalService CreateTerminalService() => new ProcessTerminalService();
+
+    public static IWindowService CreateWindowService()
+    {
+        if (OperatingSystem.IsWindows()) return new WindowsWindowService();
+        if (OperatingSystem.IsMacOS())   return new MacOSWindowService();
+        throw new PlatformNotSupportedException(
+            "AIDeskAssistant currently supports Windows and macOS only.");
+    }
 }

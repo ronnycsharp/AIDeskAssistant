@@ -46,6 +46,37 @@ internal sealed class FakeKeyboardService : IKeyboardService
     public void PressKey(string key)  => LastPressedKey = key;
 }
 
+internal sealed class FakeTerminalService : ITerminalService
+{
+    public string LastCommand = string.Empty;
+    public IReadOnlyList<string> LastArguments = Array.Empty<string>();
+    public int LastTimeoutMs;
+    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut) NextResult
+        = (0, "ok", string.Empty, false);
+
+    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut)
+        ExecuteCommand(string command, IReadOnlyList<string> arguments, int timeoutMs)
+    {
+        LastCommand   = command;
+        LastArguments = arguments;
+        LastTimeoutMs = timeoutMs;
+        return NextResult;
+    }
+}
+
+internal sealed class FakeWindowService : IWindowService
+{
+    public WindowBounds Bounds = new(10, 20, 800, 600);
+    public (int X, int Y) LastMoveTarget;
+    public (int Width, int Height) LastResizeTarget;
+
+    public WindowBounds GetActiveWindowBounds() => Bounds;
+
+    public void MoveActiveWindow(int x, int y) => LastMoveTarget = (x, y);
+
+    public void ResizeActiveWindow(int width, int height) => LastResizeTarget = (width, height);
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 public sealed class DesktopToolExecutorTests
@@ -53,11 +84,13 @@ public sealed class DesktopToolExecutorTests
     private readonly FakeScreenshotService _screenshot = new();
     private readonly FakeMouseService      _mouse      = new();
     private readonly FakeKeyboardService   _keyboard   = new();
+    private readonly FakeTerminalService   _terminal   = new();
+    private readonly FakeWindowService     _window     = new();
     private readonly DesktopToolExecutor   _sut;
 
     public DesktopToolExecutorTests()
     {
-        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard);
+        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard, _terminal, _window);
     }
 
     [Fact]
@@ -212,6 +245,69 @@ public sealed class DesktopToolExecutorTests
         string json = System.Text.Json.JsonSerializer.Serialize(new { url });
         string result = _sut.Execute("open_url", json);
         Assert.Contains("Invalid URL", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Execute_RunCommand_PassesCommandArgumentsAndTimeout()
+    {
+        _terminal.NextResult = (0, "On branch main", string.Empty, false);
+
+        string result = _sut.Execute("run_command", """{"command":"git","arguments":["status","--short"],"timeout_ms":2500}""");
+
+        Assert.Equal("git", _terminal.LastCommand);
+        Assert.Equal(["status", "--short"], _terminal.LastArguments);
+        Assert.Equal(2500, _terminal.LastTimeoutMs);
+        Assert.Contains("On branch main", result);
+    }
+
+    [Fact]
+    public void Execute_RunCommand_FormatsTimedOutResult()
+    {
+        _terminal.NextResult = (-1, "partial output", string.Empty, true);
+
+        string result = _sut.Execute("run_command", """{"command":"dotnet"}""");
+
+        Assert.Contains("timed out", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("partial output", result);
+    }
+
+    [Fact]
+    public void Execute_GetActiveWindowBounds_ReturnsBounds()
+    {
+        string result = _sut.Execute("get_active_window_bounds", "{}");
+
+        Assert.Contains("X=10", result);
+        Assert.Contains("Y=20", result);
+        Assert.Contains("Width=800", result);
+        Assert.Contains("Height=600", result);
+    }
+
+    [Fact]
+    public void Execute_MoveActiveWindow_CallsWindowService()
+    {
+        string result = _sut.Execute("move_active_window", """{"x":320,"y":180}""");
+
+        Assert.Equal((320, 180), _window.LastMoveTarget);
+        Assert.Contains("320", result);
+        Assert.Contains("180", result);
+    }
+
+    [Fact]
+    public void Execute_ResizeActiveWindow_CallsWindowService()
+    {
+        string result = _sut.Execute("resize_active_window", """{"width":1280,"height":720}""");
+
+        Assert.Equal((1280, 720), _window.LastResizeTarget);
+        Assert.Contains("1280", result);
+        Assert.Contains("720", result);
+    }
+
+    [Fact]
+    public void Execute_ResizeActiveWindow_ClampsToMinimum()
+    {
+        _sut.Execute("resize_active_window", """{"width":1,"height":50}""");
+
+        Assert.Equal((100, 100), _window.LastResizeTarget);
     }
 
     [Fact]

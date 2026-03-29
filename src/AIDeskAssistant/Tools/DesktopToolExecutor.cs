@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using AIDeskAssistant.Models;
 using AIDeskAssistant.Services;
@@ -10,15 +11,21 @@ internal sealed class DesktopToolExecutor
     private readonly IScreenshotService _screenshot;
     private readonly IMouseService      _mouse;
     private readonly IKeyboardService   _keyboard;
+    private readonly ITerminalService   _terminal;
+    private readonly IWindowService     _window;
 
     public DesktopToolExecutor(
         IScreenshotService screenshot,
         IMouseService mouse,
-        IKeyboardService keyboard)
+        IKeyboardService keyboard,
+        ITerminalService terminal,
+        IWindowService window)
     {
         _screenshot = screenshot;
         _mouse      = mouse;
         _keyboard   = keyboard;
+        _terminal   = terminal;
+        _window     = window;
     }
 
     /// <summary>
@@ -42,6 +49,10 @@ internal sealed class DesktopToolExecutor
             "press_key"         => PressKey(args),
             "open_application"  => OpenApplication(args),
             "open_url"          => OpenUrl(args),
+            "run_command"       => RunCommand(args),
+            "get_active_window_bounds" => GetActiveWindowBounds(),
+            "move_active_window" => MoveActiveWindow(args),
+            "resize_active_window" => ResizeActiveWindow(args),
             "wait"              => Wait(args),
             _                   => $"Unknown tool: {toolName}",
         };
@@ -169,8 +180,7 @@ internal sealed class DesktopToolExecutor
         if (string.IsNullOrWhiteSpace(url))
             return "URL is required";
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
-            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!TryGetHttpUri(url, out Uri? parsedUri))
         {
             return $"Invalid URL: '{url}'";
         }
@@ -180,7 +190,7 @@ internal sealed class DesktopToolExecutor
             if (OperatingSystem.IsMacOS())
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "open", [uri.AbsoluteUri])
+                    "open", [parsedUri.AbsoluteUri])
                 {
                     UseShellExecute = false,
                 });
@@ -189,24 +199,91 @@ internal sealed class DesktopToolExecutor
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName = uri.AbsoluteUri,
+                    FileName = parsedUri.AbsoluteUri,
                     UseShellExecute = true,
                 });
             }
             else
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "xdg-open", [uri.AbsoluteUri])
+                    "xdg-open", [parsedUri.AbsoluteUri])
                 {
                     UseShellExecute = false,
                 });
             }
 
-            return $"Opened URL: {uri.AbsoluteUri}";
+            return $"Opened URL: {parsedUri.AbsoluteUri}";
         }
         catch (Exception ex)
         {
-            return $"Failed to open URL '{uri.AbsoluteUri}': {ex.Message}";
+            return $"Failed to open URL '{parsedUri.AbsoluteUri}': {ex.Message}";
+        }
+    }
+
+    private string RunCommand(Dictionary<string, JsonElement> args)
+    {
+        string command = DesktopToolDefinitions.GetString(args, "command");
+        IReadOnlyList<string> arguments = DesktopToolDefinitions.GetStringArray(args, "arguments");
+        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "timeout_ms", 10_000), 100, 60_000);
+
+        try
+        {
+            var result = _terminal.ExecuteCommand(command, arguments, timeoutMs);
+
+            string prefix = result.TimedOut
+                ? $"Command '{command}' timed out after {timeoutMs} ms."
+                : $"Command '{command}' exited with code {result.ExitCode}.";
+
+            return $"{prefix}\nSTDOUT:\n{FormatTerminalOutput(result.StandardOutput)}\nSTDERR:\n{FormatTerminalOutput(result.StandardError)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to run command '{command}': {ex.Message}";
+        }
+    }
+
+    private string GetActiveWindowBounds()
+    {
+        try
+        {
+            WindowBounds bounds = _window.GetActiveWindowBounds();
+            return $"Active window bounds: X={bounds.X}, Y={bounds.Y}, Width={bounds.Width}, Height={bounds.Height}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to get active window bounds: {ex.Message}";
+        }
+    }
+
+    private string MoveActiveWindow(Dictionary<string, JsonElement> args)
+    {
+        int x = DesktopToolDefinitions.GetInt(args, "x");
+        int y = DesktopToolDefinitions.GetInt(args, "y");
+
+        try
+        {
+            _window.MoveActiveWindow(x, y);
+            return $"Moved active window to ({x}, {y})";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to move active window: {ex.Message}";
+        }
+    }
+
+    private string ResizeActiveWindow(Dictionary<string, JsonElement> args)
+    {
+        int width  = Math.Max(100, DesktopToolDefinitions.GetInt(args, "width"));
+        int height = Math.Max(100, DesktopToolDefinitions.GetInt(args, "height"));
+
+        try
+        {
+            _window.ResizeActiveWindow(width, height);
+            return $"Resized active window to {width}x{height}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to resize active window: {ex.Message}";
         }
     }
 
@@ -216,4 +293,15 @@ internal sealed class DesktopToolExecutor
         Thread.Sleep(ms);
         return $"Waited {ms} ms";
     }
+
+    private static bool TryGetHttpUri(string url, [NotNullWhen(true)] out Uri? uri)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out uri))
+            return false;
+
+        return uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps;
+    }
+
+    private static string FormatTerminalOutput(string output)
+        => string.IsNullOrWhiteSpace(output) ? "(none)" : output.TrimEnd();
 }
