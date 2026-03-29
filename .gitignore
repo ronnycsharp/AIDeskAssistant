@@ -1,0 +1,17 @@
+# Build artifacts
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# NuGet
+*.nupkg
+packages/
+
+# dotnet publish
+publish/
+
+# IDE
+.idea/
+*.DS_Store
