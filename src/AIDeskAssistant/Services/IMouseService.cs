@@ -4,7 +4,7 @@ namespace AIDeskAssistant.Services;
 
 public interface IMouseService
 {
-    /// <summary>Moves the mouse cursor to the specified screen coordinates.</summary>
+    /// <summary>Moves the mouse cursor to the specified screen coordinates using a smooth eased path.</summary>
     void MoveTo(int x, int y);
 
     /// <summary>Clicks the specified mouse button at the current cursor position.</summary>

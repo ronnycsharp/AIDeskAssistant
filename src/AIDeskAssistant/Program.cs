@@ -204,6 +204,10 @@ static void PrintHelp()
     Open Notepad and type Hello World
     Take a screenshot and describe what you see
     Click on the Start button and open the Settings app
+
+    Notes
+    ─────────────────────────────────────────────────────────────────────────────
+    Mouse movement is smoothed with easing for more natural cursor motion
     ─────────────────────────────────────────────────────────────────────────────
     """);
     Console.ResetColor();
