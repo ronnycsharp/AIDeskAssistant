@@ -70,7 +70,7 @@ internal sealed class AIService
                 toolRounds++;
                 if (toolRounds > maxToolRounds)
                 {
-                    const string maxRoundsMessage = "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
+                    string maxRoundsMessage = "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
                     _history.Add(new AssistantChatMessage(maxRoundsMessage));
                     return maxRoundsMessage;
                 }
