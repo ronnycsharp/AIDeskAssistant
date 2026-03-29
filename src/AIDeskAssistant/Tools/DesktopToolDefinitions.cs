@@ -139,6 +139,23 @@ internal static class DesktopToolDefinitions
         ),
 
         ChatTool.CreateFunctionTool(
+            "open_url",
+            "Opens the specified http/https URL in the user's default browser. Use this for web tasks such as opening Gmail, navigating to shops, or continuing longer browser workflows.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "url": {
+                  "type": "string",
+                  "description": "An absolute http or https URL, e.g. 'https://mail.google.com/'"
+                }
+              },
+              "required": ["url"]
+            }
+            """)
+        ),
+
+        ChatTool.CreateFunctionTool(
             "wait",
             "Waits for the specified number of milliseconds before continuing.",
             BinaryData.FromString("""

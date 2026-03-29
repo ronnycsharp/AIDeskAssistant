@@ -41,6 +41,7 @@ internal sealed class DesktopToolExecutor
             "type_text"         => TypeText(args),
             "press_key"         => PressKey(args),
             "open_application"  => OpenApplication(args),
+            "open_url"          => OpenUrl(args),
             "wait"              => Wait(args),
             _                   => $"Unknown tool: {toolName}",
         };
@@ -159,6 +160,53 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return $"Failed to open '{name}': {ex.Message}";
+        }
+    }
+
+    private static string OpenUrl(Dictionary<string, JsonElement> args)
+    {
+        string url = DesktopToolDefinitions.GetString(args, "url");
+        if (string.IsNullOrWhiteSpace(url))
+            return "URL is required";
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return $"Invalid URL: '{url}'";
+        }
+
+        try
+        {
+            if (OperatingSystem.IsMacOS())
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "open", [uri.AbsoluteUri])
+                {
+                    UseShellExecute = false,
+                });
+            }
+            else if (OperatingSystem.IsWindows())
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = uri.AbsoluteUri,
+                    UseShellExecute = true,
+                });
+            }
+            else
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                    "xdg-open", [uri.AbsoluteUri])
+                {
+                    UseShellExecute = false,
+                });
+            }
+
+            return $"Opened URL: {uri.AbsoluteUri}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to open URL '{uri.AbsoluteUri}': {ex.Message}";
         }
     }
 

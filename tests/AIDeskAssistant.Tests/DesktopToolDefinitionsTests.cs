@@ -22,6 +22,7 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("type_text",          names);
         Assert.Contains("press_key",          names);
         Assert.Contains("open_application",   names);
+        Assert.Contains("open_url",           names);
         Assert.Contains("wait",               names);
     }
 

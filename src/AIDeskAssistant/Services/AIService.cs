@@ -19,9 +19,12 @@ internal sealed class AIService
         - Move the mouse and click
         - Type text and press keys
         - Open applications
+        - Open URLs directly in the browser
         - Wait between actions
 
         When the user gives you a task, figure out the necessary steps and execute them one at a time.
+        Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
+        For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
         Always take a screenshot first to understand the current screen state before acting.
         After each significant action, take another screenshot to confirm the result.
         Be precise with coordinates — use the screenshot to determine exact pixel positions.
@@ -48,6 +51,7 @@ internal sealed class AIService
         string userMessage,
         Action<string>? onToolCall   = null,
         Action<string>? onToolResult = null,
+        int maxToolRounds            = 60,
         CancellationToken ct         = default)
     {
         _history.Add(new UserChatMessage(userMessage));
@@ -56,12 +60,21 @@ internal sealed class AIService
         foreach (var tool in DesktopToolDefinitions.All)
             options.Tools.Add(tool);
 
+        int toolRounds = 0;
         while (true)
         {
             ChatCompletion completion = await _client.CompleteChatAsync(_history, options, ct);
 
             if (completion.FinishReason == ChatFinishReason.ToolCalls)
             {
+                toolRounds++;
+                if (toolRounds > maxToolRounds)
+                {
+                    const string maxRoundsMessage = "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
+                    _history.Add(new AssistantChatMessage(maxRoundsMessage));
+                    return maxRoundsMessage;
+                }
+
                 // Add the assistant's tool-call message to history.
                 _history.Add(new AssistantChatMessage(completion));
 

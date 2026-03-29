@@ -195,6 +195,25 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("open_application", json);
         Assert.Contains("Invalid", result, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Execute_OpenUrl_EmptyUrl_ReturnsError()
+    {
+        string result = _sut.Execute("open_url", """{"url":""}""");
+        Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("not-a-url")]
+    [InlineData("file:///tmp/test.txt")]
+    [InlineData("javascript:alert('xss')")]
+    public void Execute_OpenUrl_InvalidUrl_ReturnsInvalidError(string url)
+    {
+        string json = System.Text.Json.JsonSerializer.Serialize(new { url });
+        string result = _sut.Execute("open_url", json);
+        Assert.Contains("Invalid URL", result, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Execute_UnknownTool_ReturnsErrorMessage()
     {
