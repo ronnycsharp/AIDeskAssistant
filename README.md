@@ -36,12 +36,22 @@ dotnet build
 
 ### 2. Set your API key
 
+You can use either shell environment variables or a local `.env` file.
+
 ```bash
 # Linux / macOS
 export OPENAI_API_KEY="sk-..."
 
 # Windows PowerShell
 $env:OPENAI_API_KEY = "sk-..."
+```
+
+Or create a `.env` file in the repository root:
+
+```dotenv
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
+AIDESK_MAX_TOOL_ROUNDS=120
 ```
 
 Or you will be prompted for it on first run.
@@ -87,6 +97,12 @@ You> /help
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
 | `OPENAI_MODEL`   | `gpt-4o`     | OpenAI model to use |
 | `AIDESK_MAX_TOOL_ROUNDS` | `60` | Maximum agent tool rounds per task before the assistant stops and asks to continue |
+| `AIDESK_SCREENSHOT_MAX_DIMENSION` | `1280` | Maximum width or height used for screenshots sent to the model |
+| `AIDESK_SCREENSHOT_JPEG_QUALITY` | `60` | JPEG quality for optimized screenshots |
+
+The app automatically loads `.env` from the repository root or the project folder if present. Existing shell environment variables take precedence.
+
+Screenshots sent to the model are automatically resized and JPEG-compressed when that reduces payload size; otherwise the original PNG is kept.
 
 ## Available Desktop Tools
 

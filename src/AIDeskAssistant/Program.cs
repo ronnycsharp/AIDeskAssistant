@@ -16,6 +16,7 @@ Console.WriteLine("""
 Console.ResetColor();
 
 // ── API Key ──────────────────────────────────────────────────────────────────
+string? envFilePath = EnvironmentFileLoader.LoadFromStandardLocations();
 string apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
 
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -69,6 +70,8 @@ var ai = new AIService(apiKey, executor, model);
 Console.ForegroundColor = ConsoleColor.Green;
 Console.WriteLine($"Ready! Using model: {model}");
 Console.WriteLine($"Agent tool rounds limit: {maxToolRounds}");
+if (!string.IsNullOrWhiteSpace(envFilePath))
+    Console.WriteLine($"Loaded environment from: {envFilePath}");
 Console.WriteLine("Type your command, or use /help for available commands.");
 Console.ResetColor();
 Console.WriteLine();
@@ -193,6 +196,7 @@ static void PrintHelp()
     OPENAI_API_KEY   Your OpenAI API key (required)
     OPENAI_MODEL     Model to use (default: gpt-4o)
     AIDESK_MAX_TOOL_ROUNDS  Maximum agent tool rounds per task (default: 60)
+    .env             Optional file in the repo root or project folder
 
     Example Commands
     ─────────────────────────────────────────────────────────────────────────────

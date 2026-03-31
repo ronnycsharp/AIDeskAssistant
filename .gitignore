@@ -15,3 +15,8 @@ publish/
 # IDE
 .idea/
 *.DS_Store
+
+# Local environment files
+.env
+.env.*
+!.env.example

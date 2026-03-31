@@ -1,6 +1,7 @@
 using OpenAI;
 using OpenAI.Chat;
 using AIDeskAssistant.Tools;
+using System.Text.RegularExpressions;
 
 namespace AIDeskAssistant.Services;
 
@@ -95,12 +96,10 @@ internal sealed class AIService
 
                     onToolResult?.Invoke($"← Result: {TruncateForDisplay(result)}");
 
-                    // For take_screenshot, send a vision-compatible message instead of plain text.
-                    if (toolName == "take_screenshot" && result.Contains("Base64 PNG:"))
+                    // For take_screenshot, attach the actual image so the model can see the screen.
+                    if (toolName == "take_screenshot" && TryCreateScreenshotToolMessage(toolCall.Id, result, out ToolChatMessage? screenshotToolMessage) && screenshotToolMessage is not null)
                     {
-                        int idx = result.IndexOf("Base64 PNG:", StringComparison.Ordinal);
-                        string base64 = result[(idx + "Base64 PNG:".Length)..].Trim();
-                        toolResults.Add(new ToolChatMessage(toolCall.Id, $"Screenshot captured. Base64 length: {base64.Length} chars."));
+                        toolResults.Add(screenshotToolMessage);
                     }
                     else
                     {
@@ -130,4 +129,35 @@ internal sealed class AIService
 
     private static string TruncateForDisplay(string s, int maxLength = 120)
         => s.Length <= maxLength ? s : s[..maxLength] + "…";
+
+    private static bool TryCreateScreenshotToolMessage(string toolCallId, string result, out ToolChatMessage? message)
+    {
+        message = null;
+
+        const string base64Marker = "Base64:";
+        int base64Index = result.IndexOf(base64Marker, StringComparison.Ordinal);
+        if (base64Index < 0)
+            return false;
+
+        string summary = result[..base64Index].Trim();
+        string base64 = result[(base64Index + base64Marker.Length)..].Trim();
+        Match mediaTypeMatch = Regex.Match(summary, @"Media type:\s*(\S+)", RegexOptions.CultureInvariant);
+        string mediaType = mediaTypeMatch.Success ? mediaTypeMatch.Groups[1].Value : "image/png";
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(base64);
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+
+        message = new ToolChatMessage(
+            toolCallId,
+            ChatMessageContentPart.CreateTextPart(summary),
+            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(bytes), mediaType, ChatImageDetailLevel.Low));
+        return true;
+    }
 }

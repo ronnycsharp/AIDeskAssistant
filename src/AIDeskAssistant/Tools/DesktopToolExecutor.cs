@@ -9,6 +9,7 @@ namespace AIDeskAssistant.Tools;
 internal sealed class DesktopToolExecutor
 {
     private readonly IScreenshotService _screenshot;
+    private readonly ScreenshotOptimizer _screenshotOptimizer;
     private readonly IMouseService      _mouse;
     private readonly IKeyboardService   _keyboard;
     private readonly ITerminalService   _terminal;
@@ -22,6 +23,7 @@ internal sealed class DesktopToolExecutor
         IWindowService window)
     {
         _screenshot = screenshot;
+        _screenshotOptimizer = new ScreenshotOptimizer(ScreenshotOptimizer.ReadFromEnvironment());
         _mouse      = mouse;
         _keyboard   = keyboard;
         _terminal   = terminal;
@@ -60,9 +62,9 @@ internal sealed class DesktopToolExecutor
 
     private string TakeScreenshot()
     {
-        byte[] png    = _screenshot.TakeScreenshot();
-        string base64 = Convert.ToBase64String(png);
-        return $"Screenshot taken ({png.Length} bytes). Base64 PNG: {base64}";
+        byte[] screenshot = _screenshot.TakeScreenshot();
+        ScreenshotPayload payload = _screenshotOptimizer.Optimize(screenshot);
+        return payload.ToToolResultString();
     }
 
     private string GetScreenInfo()

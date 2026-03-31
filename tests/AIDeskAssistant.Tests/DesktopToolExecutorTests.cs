@@ -8,7 +8,7 @@ namespace AIDeskAssistant.Tests;
 
 internal sealed class FakeScreenshotService : IScreenshotService
 {
-    public byte[] TakeScreenshot() => [0x89, 0x50, 0x4E, 0x47]; // PNG magic bytes
+    public byte[] TakeScreenshot() => Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRsl0AAAAASUVORK5CYII=");
     public ScreenInfo GetScreenInfo() => new ScreenInfo(1920, 1080, 32);
 }
 
@@ -43,7 +43,7 @@ internal sealed class FakeKeyboardService : IKeyboardService
     public string LastPressedKey = string.Empty;
 
     public void TypeText(string text) => LastTypedText  = text;
-    public void PressKey(string key)  => LastPressedKey = key;
+    public void PressKey(string keyCombo)  => LastPressedKey = keyCombo;
 }
 
 internal sealed class FakeTerminalService : ITerminalService
@@ -97,7 +97,9 @@ public sealed class DesktopToolExecutorTests
     public void Execute_TakeScreenshot_ReturnsBase64String()
     {
         string result = _sut.Execute("take_screenshot", "{}");
-        Assert.Contains("Base64 PNG:", result);
+        Assert.Contains("Base64:", result);
+        Assert.Contains("Original:", result);
+        Assert.Contains("Final:", result);
     }
 
     [Fact]
