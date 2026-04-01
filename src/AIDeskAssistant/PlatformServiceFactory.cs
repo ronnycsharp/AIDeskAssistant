@@ -40,4 +40,15 @@ internal static class PlatformServiceFactory
         throw new PlatformNotSupportedException(
             "AIDeskAssistant currently supports Windows and macOS only.");
     }
+
+    public static IUiAutomationService CreateUiAutomationService()
+    {
+        if (OperatingSystem.IsMacOS())
+            return new MacOSUiAutomationService();
+
+        if (OperatingSystem.IsWindows())
+            return new UnsupportedUiAutomationService("Windows");
+
+        return new UnsupportedUiAutomationService("this platform");
+    }
 }

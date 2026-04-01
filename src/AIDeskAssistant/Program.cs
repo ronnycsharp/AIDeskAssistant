@@ -1,17 +1,19 @@
 using AIDeskAssistant;
+using AIDeskAssistant.Platform.MacOS;
 using AIDeskAssistant.Services;
 using AIDeskAssistant.Tools;
 
 // ── Banner ──────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Cyan;
 Console.WriteLine("""
-   ___  _____   ____            _        _            _     _              _
-  / _ \|_   _| |  _ \  ___  __| | ___  / \   ___ ___(_)___| |_ __ _ _ __ | |_
- | | | | | |   | | | |/ _ \/ _` |/ _ \/ _ \ / __/ __| / __| __/ _` | '_ \| __|
- | |_| | | |   | |_| |  __/ (_| |  __/ ___ \\__ \__ \ \__ \ || (_| | | | | |_
-  \__\_\ |_|   |____/ \___|\__,_|\___/_/   \_\___/___/_|___/\__\__,_|_| |_|\__|
+            _    ___ ____            _      ____            _        _              _
+         / \  |_ _|  _ \  ___  ___| | __ / ___|___  _ __ | |_ _ __| |__   ___  __| |
+        / _ \  | || | | |/ _ \/ __| |/ /| |   / _ \| '_ \| __| '__| '_ \ / _ \/ _` |
+     / ___ \ | || |_| |  __/\__ \   < | |__| (_) | |_) | |_| |  | |_) |  __/ (_| |
+    /_/   \_\___|____/ \___||___/_|\_\\____\___/| .__/ \__|_|  |_.__/ \___|\__,_|
+                                                                                            |_|
 
-  AI-powered desktop automation — powered by OpenAI
+                                 Desktop automation with vision, tools, and native UI control
 """);
 Console.ResetColor();
 
@@ -41,6 +43,7 @@ IMouseService      mouseService;
 IKeyboardService   keyboardService;
 ITerminalService   terminalService;
 IWindowService     windowService;
+IUiAutomationService uiAutomationService;
 
 try
 {
@@ -49,6 +52,7 @@ try
     keyboardService   = PlatformServiceFactory.CreateKeyboardService();
     terminalService   = PlatformServiceFactory.CreateTerminalService();
     windowService     = PlatformServiceFactory.CreateWindowService();
+    uiAutomationService = PlatformServiceFactory.CreateUiAutomationService();
 }
 catch (PlatformNotSupportedException ex)
 {
@@ -58,11 +62,61 @@ catch (PlatformNotSupportedException ex)
     return 1;
 }
 
-var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService);
+var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService, uiAutomationService);
 
 // ── Model selection ──────────────────────────────────────────────────────────
 string model = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
+string realtimeModel = Environment.GetEnvironmentVariable("OPENAI_REALTIME_MODEL") ?? "gpt-realtime";
 int maxToolRounds = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_MAX_TOOL_ROUNDS"), 60);
+
+bool menuBarRequested = args.Contains("--menu-bar", StringComparer.OrdinalIgnoreCase);
+bool menuBarHostRequested = args.Contains("--menu-bar-host", StringComparer.OrdinalIgnoreCase);
+
+if (menuBarRequested && !menuBarHostRequested)
+{
+    if (!OperatingSystem.IsMacOS())
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine("The --menu-bar mode is only available on macOS.");
+        Console.ResetColor();
+        return 1;
+    }
+
+    MacOSStatusBarLauncher.LaunchDetachedHost(args);
+
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine("Menu bar host started in the background.");
+    Console.WriteLine("Use the macOS menu bar icon to interact with AIDeskAssistant.");
+    if (!string.IsNullOrWhiteSpace(envFilePath))
+        Console.WriteLine($"Loaded environment from: {envFilePath}");
+    Console.ResetColor();
+    return 0;
+}
+
+if (menuBarHostRequested)
+{
+    if (!OperatingSystem.IsMacOS())
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine("The --menu-bar-host mode is only available on macOS.");
+        Console.ResetColor();
+        return 1;
+    }
+
+    await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel);
+    await using var server = new RealtimeMenuBarServer(realtimeAssistant);
+    await server.StartAsync();
+
+    Console.ForegroundColor = ConsoleColor.Green;
+    Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
+    Console.WriteLine($"Realtime model: {realtimeModel}");
+    if (!string.IsNullOrWhiteSpace(envFilePath))
+        Console.WriteLine($"Loaded environment from: {envFilePath}");
+    Console.ResetColor();
+
+    int exitCode = await MacOSStatusBarLauncher.RunAsync(server.BaseUri);
+    return exitCode;
+}
 
 var ai = new AIService(apiKey, executor, model);
 
@@ -195,8 +249,14 @@ static void PrintHelp()
     ─────────────────────────────────────────────────────────────────────────────
     OPENAI_API_KEY   Your OpenAI API key (required)
     OPENAI_MODEL     Model to use (default: gpt-4o)
+    OPENAI_REALTIME_MODEL  Model to use for --menu-bar mode (default: gpt-realtime)
     AIDESK_MAX_TOOL_ROUNDS  Maximum agent tool rounds per task (default: 60)
     .env             Optional file in the repo root or project folder
+
+    Startup Modes
+    ─────────────────────────────────────────────────────────────────────────────
+    --menu-bar       Start the macOS menu bar assistant in the background
+    --menu-bar-host  Internal foreground host used by --menu-bar
 
     Example Commands
     ─────────────────────────────────────────────────────────────────────────────

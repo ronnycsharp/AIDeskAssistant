@@ -14,13 +14,15 @@ internal sealed class DesktopToolExecutor
     private readonly IKeyboardService   _keyboard;
     private readonly ITerminalService   _terminal;
     private readonly IWindowService     _window;
+    private readonly IUiAutomationService _uiAutomation;
 
     public DesktopToolExecutor(
         IScreenshotService screenshot,
         IMouseService mouse,
         IKeyboardService keyboard,
         ITerminalService terminal,
-        IWindowService window)
+        IWindowService window,
+        IUiAutomationService uiAutomation)
     {
         _screenshot = screenshot;
         _screenshotOptimizer = new ScreenshotOptimizer(ScreenshotOptimizer.ReadFromEnvironment());
@@ -28,6 +30,7 @@ internal sealed class DesktopToolExecutor
         _keyboard   = keyboard;
         _terminal   = terminal;
         _window     = window;
+        _uiAutomation = uiAutomation;
     }
 
     /// <summary>
@@ -52,6 +55,8 @@ internal sealed class DesktopToolExecutor
             "open_application"  => OpenApplication(args),
             "open_url"          => OpenUrl(args),
             "run_command"       => RunCommand(args),
+            "click_apple_menu_item" => ClickAppleMenuItem(args),
+            "click_system_settings_sidebar_item" => ClickSystemSettingsSidebarItem(args),
             "get_active_window_bounds" => GetActiveWindowBounds(),
             "move_active_window" => MoveActiveWindow(args),
             "resize_active_window" => ResizeActiveWindow(args),
@@ -244,6 +249,40 @@ internal sealed class DesktopToolExecutor
         }
     }
 
+    private string ClickAppleMenuItem(Dictionary<string, JsonElement> args)
+    {
+        IReadOnlyList<string> titles = GetTitles(args);
+        if (titles.Count == 0)
+            return "At least one Apple menu item title is required";
+
+        try
+        {
+            _uiAutomation.ClickAppleMenuItem(titles);
+            return $"Clicked Apple menu item matching: {string.Join(", ", titles)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to click Apple menu item: {ex.Message}";
+        }
+    }
+
+    private string ClickSystemSettingsSidebarItem(Dictionary<string, JsonElement> args)
+    {
+        IReadOnlyList<string> titles = GetTitles(args);
+        if (titles.Count == 0)
+            return "At least one System Settings sidebar title is required";
+
+        try
+        {
+            _uiAutomation.ClickSystemSettingsSidebarItem(titles);
+            return $"Clicked System Settings sidebar item matching: {string.Join(", ", titles)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to click System Settings sidebar item: {ex.Message}";
+        }
+    }
+
     private string GetActiveWindowBounds()
     {
         try
@@ -306,4 +345,17 @@ internal sealed class DesktopToolExecutor
 
     private static string FormatTerminalOutput(string output)
         => string.IsNullOrWhiteSpace(output) ? "(none)" : output.TrimEnd();
+
+    private static IReadOnlyList<string> GetTitles(Dictionary<string, JsonElement> args)
+    {
+        string title = DesktopToolDefinitions.GetString(args, "title");
+        IReadOnlyList<string> alternateTitles = DesktopToolDefinitions.GetStringArray(args, "alternate_titles");
+
+        var titles = new List<string>();
+        if (!string.IsNullOrWhiteSpace(title))
+            titles.Add(title);
+
+        titles.AddRange(alternateTitles.Where(static value => !string.IsNullOrWhiteSpace(value)));
+        return titles;
+    }
 }

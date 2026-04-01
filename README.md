@@ -14,6 +14,7 @@ An AI-powered desktop automation assistant for Windows and macOS, built with C# 
 - 🖥️ **Terminal command execution** — run CLI tools and feed stdout/stderr back to the model
 - 🪟 **Window management** — inspect, move, and resize the active window
 - 💬 **CLI interface** — a simple REPL where you speak to the AI in plain language
+- 🎙️ **macOS menu bar mode** — optional status icon with text input, voice recording, and spoken responses via OpenAI Realtime
 - 🔄 **Agentic loop** — the AI keeps using tools until the task is done, then reports back
 - ⏱️ **Longer task support** — configurable max tool rounds for multi-step browser tasks
 
@@ -62,6 +63,14 @@ Or you will be prompted for it on first run.
 dotnet run --project src/AIDeskAssistant
 ```
 
+macOS menu bar mode:
+
+```bash
+dotnet run --project src/AIDeskAssistant -- --menu-bar
+```
+
+In VS Code you can also start it from the launch menu with `AIDeskAssistant Menu Bar`. That configuration starts the menu bar host in the background so VS Code is not held open by the long-running status icon process.
+
 Optional:
 
 ```bash
@@ -96,9 +105,12 @@ You> /help
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | *(required)* | Your OpenAI API key |
 | `OPENAI_MODEL`   | `gpt-4o`     | OpenAI model to use |
+| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime model used by macOS menu bar mode |
 | `AIDESK_MAX_TOOL_ROUNDS` | `60` | Maximum agent tool rounds per task before the assistant stops and asks to continue |
 | `AIDESK_SCREENSHOT_MAX_DIMENSION` | `1280` | Maximum width or height used for screenshots sent to the model |
 | `AIDESK_SCREENSHOT_JPEG_QUALITY` | `60` | JPEG quality for optimized screenshots |
+| `AIDESK_REALTIME_VOICE` | `alloy` | Voice name for macOS menu bar mode |
+| `AIDESK_REALTIME_SAMPLE_RATE` | `24000` | Expected PCM sample rate for menu bar voice recording |
 
 The app automatically loads `.env` from the repository root or the project folder if present. Existing shell environment variables take precedence.
 
@@ -163,6 +175,8 @@ dotnet test
 ## macOS Permissions
 
 On macOS you must grant **Accessibility** and **Screen Recording** permissions to Terminal (or whichever app you run the assistant from) in **System Settings → Privacy & Security**.
+
+For menu bar mode, the Swift helper also needs **Microphone** access.
 
 ## License
 

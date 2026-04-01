@@ -3,27 +3,29 @@ using OpenAI.Chat;
 
 namespace AIDeskAssistant.Tools;
 
+internal sealed record DesktopFunctionToolDefinition(string Name, string Description, BinaryData? Parameters = null);
+
 /// <summary>Provides the ChatTool definitions exposed to the OpenAI model.</summary>
 internal static class DesktopToolDefinitions
 {
-    public static IReadOnlyList<ChatTool> All { get; } = new List<ChatTool>
+  public static IReadOnlyList<DesktopFunctionToolDefinition> FunctionDefinitions { get; } = new List<DesktopFunctionToolDefinition>
     {
-        ChatTool.CreateFunctionTool(
+    new(
             "take_screenshot",
             "Takes a full-screen screenshot. Returns the image encoded as a base64 PNG string so the AI can analyse the screen contents."
         ),
 
-        ChatTool.CreateFunctionTool(
+    new(
             "get_screen_info",
             "Returns information about the primary monitor: width, height, and bit depth."
         ),
 
-        ChatTool.CreateFunctionTool(
+    new(
             "get_cursor_position",
             "Returns the current X/Y position of the mouse cursor in screen coordinates."
         ),
 
-        ChatTool.CreateFunctionTool(
+    new(
             "move_mouse",
             "Moves the mouse cursor to the specified absolute screen coordinates.",
             BinaryData.FromString("""
@@ -38,7 +40,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "click",
             "Moves the mouse cursor to (x, y) and clicks the specified mouse button.",
             BinaryData.FromString("""
@@ -58,7 +60,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "double_click",
             "Moves the mouse cursor to (x, y) and double-clicks the left mouse button.",
             BinaryData.FromString("""
@@ -73,7 +75,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "scroll",
             "Scrolls the mouse wheel at the current cursor position. Positive delta scrolls up, negative scrolls down.",
             BinaryData.FromString("""
@@ -90,7 +92,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "type_text",
             "Types the specified text string using the keyboard.",
             BinaryData.FromString("""
@@ -104,7 +106,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "press_key",
             "Presses a keyboard key or key combination such as 'enter', 'ctrl+c', 'alt+F4', 'cmd+space'.",
             BinaryData.FromString("""
@@ -121,7 +123,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "open_application",
             "Opens an application by its name using the operating system's default launcher.",
             BinaryData.FromString("""
@@ -138,7 +140,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "open_url",
             "Opens the specified http/https URL in the user's default browser. Use this for web tasks such as opening Gmail, navigating to shops, or continuing longer browser workflows.",
             BinaryData.FromString("""
@@ -155,7 +157,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "run_command",
             "Runs an installed CLI executable and returns its stdout/stderr text output. Use this for terminal tasks when reading command output is more reliable than screenshots. The command is run directly without shell syntax like pipes or redirection.",
             BinaryData.FromString("""
@@ -181,7 +183,51 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
+            "click_apple_menu_item",
+            "On macOS, opens the Apple menu and clicks the matching menu item by title using Accessibility APIs. Prefer this over screenshot-based clicking for native Apple menu items such as System Settings or About This Mac.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Preferred title to match, e.g. 'System Settings'"
+                },
+                "alternate_titles": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Optional alternate localized titles to try, e.g. ['System Preferences']"
+                }
+              },
+              "required": ["title"]
+            }
+            """)
+        ),
+
+          new(
+            "click_system_settings_sidebar_item",
+            "On macOS, clicks a sidebar item in System Settings by title using Accessibility APIs. Prefer this over screenshot-based clicking for native sidebar navigation such as Wi-Fi, Bluetooth, or General.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Preferred sidebar title to match, e.g. 'Wi-Fi'"
+                },
+                "alternate_titles": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Optional alternate localized titles to try, e.g. ['WLAN']"
+                }
+              },
+              "required": ["title"]
+            }
+            """)
+        ),
+
+          new(
             "get_active_window_bounds",
             "Returns the x/y position and width/height of the currently active/focused window.",
             BinaryData.FromString("""
@@ -192,7 +238,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "move_active_window",
             "Moves the currently active/focused window to the specified screen coordinates.",
             BinaryData.FromString("""
@@ -207,7 +253,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "resize_active_window",
             "Resizes the currently active/focused window to the specified width and height.",
             BinaryData.FromString("""
@@ -222,7 +268,7 @@ internal static class DesktopToolDefinitions
             """)
         ),
 
-        ChatTool.CreateFunctionTool(
+          new(
             "wait",
             "Waits for the specified number of milliseconds before continuing.",
             BinaryData.FromString("""
@@ -239,6 +285,10 @@ internal static class DesktopToolDefinitions
             """)
         ),
     };
+
+        public static IReadOnlyList<ChatTool> All { get; } = FunctionDefinitions
+          .Select(static definition => ChatTool.CreateFunctionTool(definition.Name, definition.Description, definition.Parameters))
+          .ToList();
 
     /// <summary>Parses a JSON arguments string into a dictionary for easy access.</summary>
     public static Dictionary<string, JsonElement> ParseArgs(string json)

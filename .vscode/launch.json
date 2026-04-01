@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "AIDeskAssistant CLI",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build AIDeskAssistant",
+      "program": "${workspaceFolder}/src/AIDeskAssistant/bin/Debug/net8.0/AIDeskAssistant.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      "justMyCode": true
+    },
+    {
+      "name": "AIDeskAssistant Menu Bar",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build AIDeskAssistant",
+      "program": "${workspaceFolder}/src/AIDeskAssistant/bin/Debug/net8.0/AIDeskAssistant.dll",
+      "args": [
+        "--menu-bar"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      "justMyCode": true,
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}

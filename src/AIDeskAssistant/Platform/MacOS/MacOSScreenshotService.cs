@@ -41,7 +41,7 @@ internal sealed class MacOSScreenshotService : IScreenshotService
         {
             var psi = new System.Diagnostics.ProcessStartInfo(
                 "screencapture",
-                ["-x", tmpFile])
+                ["-x", "-C", tmpFile])
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,

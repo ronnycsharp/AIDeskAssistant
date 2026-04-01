@@ -24,6 +24,8 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("open_application",   names);
         Assert.Contains("open_url",           names);
         Assert.Contains("run_command",        names);
+        Assert.Contains("click_apple_menu_item", names);
+        Assert.Contains("click_system_settings_sidebar_item", names);
         Assert.Contains("get_active_window_bounds", names);
         Assert.Contains("move_active_window", names);
         Assert.Contains("resize_active_window", names);

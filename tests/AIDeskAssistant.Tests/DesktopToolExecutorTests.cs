@@ -77,6 +77,16 @@ internal sealed class FakeWindowService : IWindowService
     public void ResizeActiveWindow(int width, int height) => LastResizeTarget = (width, height);
 }
 
+internal sealed class FakeUiAutomationService : IUiAutomationService
+{
+    public IReadOnlyList<string> LastAppleMenuTitles = Array.Empty<string>();
+    public IReadOnlyList<string> LastSidebarTitles = Array.Empty<string>();
+
+    public void ClickAppleMenuItem(IReadOnlyList<string> titles) => LastAppleMenuTitles = titles.ToArray();
+
+    public void ClickSystemSettingsSidebarItem(IReadOnlyList<string> titles) => LastSidebarTitles = titles.ToArray();
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 public sealed class DesktopToolExecutorTests
@@ -86,11 +96,12 @@ public sealed class DesktopToolExecutorTests
     private readonly FakeKeyboardService   _keyboard   = new();
     private readonly FakeTerminalService   _terminal   = new();
     private readonly FakeWindowService     _window     = new();
+    private readonly FakeUiAutomationService _uiAutomation = new();
     private readonly DesktopToolExecutor   _sut;
 
     public DesktopToolExecutorTests()
     {
-        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard, _terminal, _window);
+        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard, _terminal, _window, _uiAutomation);
     }
 
     [Fact]
@@ -317,5 +328,23 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("nonexistent_tool", "{}");
         Assert.Contains("Unknown tool", result);
+    }
+
+    [Fact]
+    public void Execute_ClickAppleMenuItem_CallsUiAutomationService()
+    {
+        string result = _sut.Execute("click_apple_menu_item", """{"title":"System Settings","alternate_titles":["System Preferences"]}""");
+
+        Assert.Equal(["System Settings", "System Preferences"], _uiAutomation.LastAppleMenuTitles);
+        Assert.Contains("System Settings", result);
+    }
+
+    [Fact]
+    public void Execute_ClickSystemSettingsSidebarItem_CallsUiAutomationService()
+    {
+        string result = _sut.Execute("click_system_settings_sidebar_item", """{"title":"Wi-Fi","alternate_titles":["WLAN"]}""");
+
+        Assert.Equal(["Wi-Fi", "WLAN"], _uiAutomation.LastSidebarTitles);
+        Assert.Contains("Wi-Fi", result);
     }
 }

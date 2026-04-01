@@ -12,6 +12,7 @@ namespace AIDeskAssistant.Services;
 internal sealed class AIService
 {
     private const string DefaultModel       = "gpt-4o";
+    private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
     private const string SystemPrompt       =
@@ -31,6 +32,7 @@ internal sealed class AIService
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
         For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
+        On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         Always take a screenshot first to understand the current screen state before acting.
         After each significant action, take another screenshot to confirm the result.
         Be precise with coordinates — use the screenshot to determine exact pixel positions.
@@ -110,6 +112,8 @@ internal sealed class AIService
                 // Add all tool results to the history as a single round.
                 foreach (var toolResult in toolResults)
                     _history.Add(toolResult);
+
+                PruneHistoricalScreenshotImages();
             }
             else
             {
@@ -129,6 +133,28 @@ internal sealed class AIService
 
     private static string TruncateForDisplay(string s, int maxLength = 120)
         => s.Length <= maxLength ? s : s[..maxLength] + "…";
+
+    private void PruneHistoricalScreenshotImages()
+    {
+        bool latestScreenshotRetained = false;
+
+        for (int index = _history.Count - 1; index >= 0; index--)
+        {
+            if (_history[index] is not ToolChatMessage toolMessage)
+                continue;
+
+            if (!TryCompactScreenshotToolMessage(toolMessage, retainImage: !latestScreenshotRetained, out ToolChatMessage? replacement))
+                continue;
+
+            if (!latestScreenshotRetained)
+            {
+                latestScreenshotRetained = true;
+                continue;
+            }
+
+            _history[index] = replacement;
+        }
+    }
 
     private static bool TryCreateScreenshotToolMessage(string toolCallId, string result, out ToolChatMessage? message)
     {
@@ -158,6 +184,35 @@ internal sealed class AIService
             toolCallId,
             ChatMessageContentPart.CreateTextPart(summary),
             ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(bytes), mediaType, ChatImageDetailLevel.Low));
+        return true;
+    }
+
+    internal static bool TryCompactScreenshotToolMessage(ToolChatMessage toolMessage, bool retainImage, out ToolChatMessage replacement)
+    {
+        ChatMessageContentPart[] contentParts = toolMessage.Content.ToArray();
+        bool containsImage = contentParts.Any(part => part.Kind == ChatMessageContentPartKind.Image);
+
+        if (!containsImage)
+        {
+            replacement = toolMessage;
+            return false;
+        }
+
+        if (retainImage)
+        {
+            replacement = toolMessage;
+            return true;
+        }
+
+        string summary = contentParts
+            .Where(part => part.Kind == ChatMessageContentPartKind.Text)
+            .Select(part => part.Text)
+            .FirstOrDefault(static text => !string.IsNullOrWhiteSpace(text))
+            ?? "Screenshot captured earlier.";
+
+        replacement = new ToolChatMessage(
+            toolMessage.ToolCallId,
+            ChatMessageContentPart.CreateTextPart($"{HistoricalScreenshotNote} {summary}"));
         return true;
     }
 }
