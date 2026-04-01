@@ -69,6 +69,18 @@ macOS menu bar mode:
 dotnet run --project src/AIDeskAssistant -- --menu-bar
 ```
 
+Check whether the background menu bar host is still running:
+
+```bash
+dotnet run --project src/AIDeskAssistant -- --menu-bar-status
+```
+
+Stop a running background menu bar host:
+
+```bash
+dotnet run --project src/AIDeskAssistant -- --menu-bar-stop
+```
+
 In VS Code you can also start it from the launch menu with `AIDeskAssistant Menu Bar`. That configuration starts the menu bar host in the background so VS Code is not held open by the long-running status icon process.
 
 Optional:
@@ -76,6 +88,28 @@ Optional:
 ```bash
 export AIDESK_MAX_TOOL_ROUNDS=120
 ```
+
+Debug model I/O for a CLI run:
+
+```bash
+dotnet run --project src/AIDeskAssistant -- --debug-model-io
+```
+
+This writes a timestamped session folder under `.aidesk-debug/` by default. It contains:
+
+- the exact prepared user message sent to the model, including screen info
+- a tool trace log with tool calls and summarized results
+- the assistant's final text responses
+- the actual screenshot image files attached to the model, plus a small metadata file for each screenshot
+
+Optional Peekaboo integration for macOS UI inspection:
+
+```bash
+export AIDESK_PEEKABOO_COMMAND=peekaboo
+export AIDESK_PEEKABOO_INSPECT_ARGUMENTS="see --json --app frontmost --annotate"
+```
+
+If your local Peekaboo CLI uses different subcommands or flags, adjust `AIDESK_PEEKABOO_INSPECT_ARGUMENTS`. The assistant can then use the `peekaboo_inspect` tool to inspect current macOS UI structure when screenshots alone are not enough.
 
 ### 4. Give it a task
 
@@ -107,6 +141,12 @@ You> /help
 | `OPENAI_MODEL`   | `gpt-4o`     | OpenAI model to use |
 | `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime model used by macOS menu bar mode |
 | `AIDESK_MAX_TOOL_ROUNDS` | `60` | Maximum agent tool rounds per task before the assistant stops and asks to continue |
+| `AIDESK_DEBUG_MODEL_IO` | *(unset)* | Enable CLI debug logging for prepared model input, tool trace, and attached screenshots |
+| `AIDESK_DEBUG_DIR` | `.aidesk-debug` | Base directory where timestamped debug sessions are written |
+| `AIDESK_MENU_BAR_STATUS_FILE` | temp dir | Optional path used to track the running background menu bar host |
+| `AIDESK_PEEKABOO_COMMAND` | `peekaboo` | Optional local Peekaboo CLI executable used by the `peekaboo_inspect` tool |
+| `AIDESK_PEEKABOO_INSPECT_ARGUMENTS` | `see --json --app frontmost --annotate` | Base arguments used when invoking the local Peekaboo CLI |
+| `AIDESK_PEEKABOO_TIMEOUT_MS` | `15000` | Timeout for the `peekaboo_inspect` tool |
 | `AIDESK_SCREENSHOT_MAX_DIMENSION` | `1280` | Maximum width or height used for screenshots sent to the model |
 | `AIDESK_SCREENSHOT_JPEG_QUALITY` | `60` | JPEG quality for optimized screenshots |
 | `AIDESK_REALTIME_VOICE` | `alloy` | Voice name for macOS menu bar mode |
@@ -134,6 +174,7 @@ The following tools are exposed to the AI model:
 | `open_application`   | Open an app by name |
 | `open_url`           | Open an `http`/`https` URL in the default browser |
 | `run_command`        | Run an installed CLI executable and return stdout/stderr |
+| `peekaboo_inspect`   | Run an optional local Peekaboo CLI to inspect macOS UI/accessibility structure |
 | `get_active_window_bounds` | Get the active window position and size |
 | `move_active_window` | Move the active window to a screen position |
 | `resize_active_window` | Resize the active window |

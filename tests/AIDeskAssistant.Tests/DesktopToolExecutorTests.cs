@@ -79,12 +79,22 @@ internal sealed class FakeWindowService : IWindowService
 
 internal sealed class FakeUiAutomationService : IUiAutomationService
 {
+    public IReadOnlyList<string> LastDockTitles = Array.Empty<string>();
     public IReadOnlyList<string> LastAppleMenuTitles = Array.Empty<string>();
     public IReadOnlyList<string> LastSidebarTitles = Array.Empty<string>();
+    public string? LastFocusedContentApplicationName;
+
+    public void ClickDockApplication(IReadOnlyList<string> titles) => LastDockTitles = titles.ToArray();
 
     public void ClickAppleMenuItem(IReadOnlyList<string> titles) => LastAppleMenuTitles = titles.ToArray();
 
     public void ClickSystemSettingsSidebarItem(IReadOnlyList<string> titles) => LastSidebarTitles = titles.ToArray();
+
+    public string FocusFrontmostWindowContent(string? applicationName)
+    {
+        LastFocusedContentApplicationName = applicationName;
+        return $"Focused frontmost window content for {applicationName ?? "<frontmost>"}";
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -231,6 +241,13 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Execute_FocusApplication_EmptyName_ReturnsError()
+    {
+        string result = _sut.Execute("focus_application", """{"name":""}""");
+        Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Theory]
     [InlineData("Safari/../../etc/passwd")]
     [InlineData("app;rm -rf /")]
@@ -282,6 +299,44 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Contains("timed out", result, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("partial output", result);
+    }
+
+    [Fact]
+    public void Execute_PeekabooInspect_UsesConfiguredCommandAndArgs()
+    {
+        string? originalCommand = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND");
+        string? originalArgs = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS");
+        string? originalTimeout = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND", "peekaboo-cli");
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS", "see --json --app frontmost");
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS", "25000");
+            _terminal.NextResult = (0, "{\"ok\":true}", string.Empty, false);
+
+            string result = _sut.Execute("peekaboo_inspect", """{"arguments":["--focused-only"]}""");
+
+            Assert.Equal("peekaboo-cli", _terminal.LastCommand);
+            Assert.Equal(["see", "--json", "--app", "frontmost", "--focused-only"], _terminal.LastArguments);
+            Assert.Equal(25000, _terminal.LastTimeoutMs);
+            Assert.Contains("Peekaboo command exited with code 0.", result);
+            Assert.Contains("{\"ok\":true}", result);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND", originalCommand);
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS", originalArgs);
+            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS", originalTimeout);
+        }
+    }
+
+    [Fact]
+    public void TokenizeArguments_PreservesQuotedSegments()
+    {
+        IReadOnlyList<string> tokens = DesktopToolExecutor.TokenizeArguments("see --json --app frontmost --query \"Microsoft Word\"");
+
+        Assert.Equal(["see", "--json", "--app", "frontmost", "--query", "Microsoft Word"], tokens);
     }
 
     [Fact]
@@ -340,11 +395,29 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_ClickDockApplication_CallsUiAutomationService()
+    {
+        string result = _sut.Execute("click_dock_application", """{"title":"Microsoft Word","alternate_titles":["Word"]}""");
+
+        Assert.Equal(["Microsoft Word", "Word"], _uiAutomation.LastDockTitles);
+        Assert.Contains("Microsoft Word", result);
+    }
+
+    [Fact]
     public void Execute_ClickSystemSettingsSidebarItem_CallsUiAutomationService()
     {
         string result = _sut.Execute("click_system_settings_sidebar_item", """{"title":"Wi-Fi","alternate_titles":["WLAN"]}""");
 
         Assert.Equal(["Wi-Fi", "WLAN"], _uiAutomation.LastSidebarTitles);
         Assert.Contains("Wi-Fi", result);
+    }
+
+    [Fact]
+    public void Execute_FocusFrontmostWindowContent_CallsUiAutomationService()
+    {
+        string result = _sut.Execute("focus_frontmost_window_content", """{"application_name":"Microsoft Word"}""");
+
+        Assert.Equal("Microsoft Word", _uiAutomation.LastFocusedContentApplicationName);
+        Assert.Contains("Microsoft Word", result);
     }
 }

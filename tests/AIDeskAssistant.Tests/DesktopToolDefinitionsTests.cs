@@ -22,10 +22,14 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("type_text",          names);
         Assert.Contains("press_key",          names);
         Assert.Contains("open_application",   names);
+        Assert.Contains("focus_application",  names);
         Assert.Contains("open_url",           names);
         Assert.Contains("run_command",        names);
+        Assert.Contains("peekaboo_inspect",   names);
+        Assert.Contains("click_dock_application", names);
         Assert.Contains("click_apple_menu_item", names);
         Assert.Contains("click_system_settings_sidebar_item", names);
+        Assert.Contains("focus_frontmost_window_content", names);
         Assert.Contains("get_active_window_bounds", names);
         Assert.Contains("move_active_window", names);
         Assert.Contains("resize_active_window", names);

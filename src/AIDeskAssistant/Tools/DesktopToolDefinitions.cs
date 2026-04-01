@@ -94,7 +94,7 @@ internal static class DesktopToolDefinitions
 
           new(
             "type_text",
-            "Types the specified text string using the keyboard.",
+            "Types the specified literal text string using the keyboard. Use this only for document or form content. Do not encode special keys like enter, return, tab, escape, or arrow keys as words inside the text; use press_key for those.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -108,7 +108,7 @@ internal static class DesktopToolDefinitions
 
           new(
             "press_key",
-            "Presses a keyboard key or key combination such as 'enter', 'ctrl+c', 'alt+F4', 'cmd+space'.",
+            "Presses a keyboard key or key combination such as 'enter', 'ctrl+c', 'alt+F4', 'cmd+space'. Use this for enter, return, tab, escape, arrows, delete, and shortcuts instead of typing those words with type_text.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -125,7 +125,7 @@ internal static class DesktopToolDefinitions
 
           new(
             "open_application",
-            "Opens an application by its name using the operating system's default launcher.",
+            "Opens an application by its name using the operating system's default launcher and should bring it to the foreground. On macOS, app aliases such as 'Word' may resolve to the native app name like 'Microsoft Word'. After calling this, confirm the app is actually frontmost before typing.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -133,6 +133,23 @@ internal static class DesktopToolDefinitions
                 "name": {
                   "type": "string",
                   "description": "Application name, e.g. 'Safari', 'Chrome', 'Notepad', 'Terminal'"
+                }
+              },
+              "required": ["name"]
+            }
+            """)
+        ),
+
+          new(
+            "focus_application",
+            "Brings an already running desktop application to the foreground without launching a new instance. Use this before typing or pressing keys into apps like Microsoft Word, Safari, Mail, Calendar, or Blender if another app may have stolen focus.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Application name, e.g. 'Microsoft Word', 'Safari', 'Blender'"
                 }
               },
               "required": ["name"]
@@ -184,6 +201,49 @@ internal static class DesktopToolDefinitions
         ),
 
           new(
+            "peekaboo_inspect",
+            "Runs the optional local Peekaboo CLI as a macOS UI inspector and returns its output. Use this for debugging tricky native UI structure, accessibility labels, focus, or element hierarchies when screenshots alone are not enough. Extra CLI arguments can be appended if your local Peekaboo setup expects them.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "arguments": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Optional extra Peekaboo CLI arguments appended after the configured base inspect arguments"
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "description": "Optional command timeout in milliseconds"
+                }
+              }
+            }
+            """)
+        ),
+
+          new(
+            "click_dock_application",
+            "On macOS, clicks an application icon in the Dock by title using Accessibility APIs. Prefer this when you want to start or foreground a GUI app the same way a human user would, for example Mail, Calendar, Microsoft Word, Safari, or Blender.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Preferred Dock app title to match, e.g. 'Microsoft Word' or 'Blender'"
+                },
+                "alternate_titles": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Optional alternate titles to try, e.g. ['Word']"
+                }
+              },
+              "required": ["title"]
+            }
+            """)
+        ),
+
+          new(
             "click_apple_menu_item",
             "On macOS, opens the Apple menu and clicks the matching menu item by title using Accessibility APIs. Prefer this over screenshot-based clicking for native Apple menu items such as System Settings or About This Mac.",
             BinaryData.FromString("""
@@ -223,6 +283,22 @@ internal static class DesktopToolDefinitions
                 }
               },
               "required": ["title"]
+            }
+            """)
+        ),
+
+          new(
+            "focus_frontmost_window_content",
+            "On macOS, focuses a likely content or editable region inside the current frontmost window using Accessibility APIs. Prefer this before typing into Word documents, editors, mail composers, or other desktop document areas so text does not land in a toolbar, ribbon, menu, or search field.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "application_name": {
+                  "type": "string",
+                  "description": "Optional expected frontmost application name, e.g. 'Microsoft Word'"
+                }
+              }
             }
             """)
         ),

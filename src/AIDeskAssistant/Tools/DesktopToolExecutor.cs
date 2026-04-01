@@ -53,10 +53,14 @@ internal sealed class DesktopToolExecutor
             "type_text"         => TypeText(args),
             "press_key"         => PressKey(args),
             "open_application"  => OpenApplication(args),
+            "focus_application" => FocusApplication(args),
             "open_url"          => OpenUrl(args),
             "run_command"       => RunCommand(args),
+            "peekaboo_inspect"  => PeekabooInspect(args),
+            "click_dock_application" => ClickDockApplication(args),
             "click_apple_menu_item" => ClickAppleMenuItem(args),
             "click_system_settings_sidebar_item" => ClickSystemSettingsSidebarItem(args),
+            "focus_frontmost_window_content" => FocusFrontmostWindowContent(args),
             "get_active_window_bounds" => GetActiveWindowBounds(),
             "move_active_window" => MoveActiveWindow(args),
             "resize_active_window" => ResizeActiveWindow(args),
@@ -148,36 +152,69 @@ internal sealed class DesktopToolExecutor
 
         try
         {
+            string resolvedName = ResolveApplicationName(name);
+
             if (OperatingSystem.IsWindows())
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName        = name,
+                    FileName        = resolvedName,
                     UseShellExecute = true,
                 });
             }
             else if (OperatingSystem.IsMacOS())
             {
-                // Pass app name as a separate argument to avoid shell injection.
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "open", ["-a", name])
+                    "open", ["-a", resolvedName])
                 {
                     UseShellExecute = false,
                 });
+
+                BringMacOSApplicationToForeground(resolvedName);
             }
             else
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName        = name,
+                    FileName        = resolvedName,
                     UseShellExecute = true,
                 });
             }
-            return $"Opened application: {name}";
+
+            return OperatingSystem.IsMacOS()
+                ? $"Opened and activated application: {resolvedName}"
+                : $"Opened application: {resolvedName}";
         }
         catch (Exception ex)
         {
             return $"Failed to open '{name}': {ex.Message}";
+        }
+    }
+
+    private string FocusApplication(Dictionary<string, JsonElement> args)
+    {
+        string name = DesktopToolDefinitions.GetString(args, "name");
+        if (string.IsNullOrWhiteSpace(name))
+            return "Application name is required";
+
+        if (name.IndexOfAny(['/', '\\', ';', '&', '|', '`', '$', '<', '>']) >= 0)
+            return $"Invalid application name: '{name}'";
+
+        try
+        {
+            string resolvedName = ResolveApplicationName(name);
+
+            if (OperatingSystem.IsMacOS())
+            {
+                BringMacOSApplicationToForeground(resolvedName);
+                return $"Focused application: {resolvedName}";
+            }
+
+            return $"Focusing applications by name is not implemented on this platform. Requested: {resolvedName}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to focus '{name}': {ex.Message}";
         }
     }
 
@@ -249,6 +286,29 @@ internal sealed class DesktopToolExecutor
         }
     }
 
+    private string PeekabooInspect(Dictionary<string, JsonElement> args)
+    {
+        PeekabooConfiguration config = ReadPeekabooConfiguration();
+        IReadOnlyList<string> extraArguments = DesktopToolDefinitions.GetStringArray(args, "arguments");
+        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "timeout_ms", config.TimeoutMs), 100, 120_000);
+
+        List<string> commandArguments = [.. config.InspectArguments, .. extraArguments];
+
+        try
+        {
+            var result = _terminal.ExecuteCommand(config.Command, commandArguments, timeoutMs);
+            string prefix = result.TimedOut
+                ? $"Peekaboo command timed out after {timeoutMs} ms."
+                : $"Peekaboo command exited with code {result.ExitCode}.";
+
+            return $"{prefix}\nCommand: {config.Command}\nArguments: {string.Join(" ", commandArguments)}\nSTDOUT:\n{FormatTerminalOutput(result.StandardOutput)}\nSTDERR:\n{FormatTerminalOutput(result.StandardError)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to run Peekaboo command '{config.Command}'. Configure AIDESK_PEEKABOO_COMMAND and optionally AIDESK_PEEKABOO_INSPECT_ARGUMENTS for your local installation. Error: {ex.Message}";
+        }
+    }
+
     private string ClickAppleMenuItem(Dictionary<string, JsonElement> args)
     {
         IReadOnlyList<string> titles = GetTitles(args);
@@ -266,6 +326,23 @@ internal sealed class DesktopToolExecutor
         }
     }
 
+    private string ClickDockApplication(Dictionary<string, JsonElement> args)
+    {
+        IReadOnlyList<string> titles = GetTitles(args);
+        if (titles.Count == 0)
+            return "At least one Dock application title is required";
+
+        try
+        {
+            _uiAutomation.ClickDockApplication(titles);
+            return $"Clicked Dock application matching: {string.Join(", ", titles)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to click Dock application: {ex.Message}";
+        }
+    }
+
     private string ClickSystemSettingsSidebarItem(Dictionary<string, JsonElement> args)
     {
         IReadOnlyList<string> titles = GetTitles(args);
@@ -280,6 +357,20 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return $"Failed to click System Settings sidebar item: {ex.Message}";
+        }
+    }
+
+    private string FocusFrontmostWindowContent(Dictionary<string, JsonElement> args)
+    {
+        string applicationName = DesktopToolDefinitions.GetString(args, "application_name");
+
+        try
+        {
+            return _uiAutomation.FocusFrontmostWindowContent(string.IsNullOrWhiteSpace(applicationName) ? null : applicationName);
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to focus frontmost window content: {ex.Message}";
         }
     }
 
@@ -358,4 +449,130 @@ internal sealed class DesktopToolExecutor
         titles.AddRange(alternateTitles.Where(static value => !string.IsNullOrWhiteSpace(value)));
         return titles;
     }
+
+    internal static string ResolveApplicationName(string requestedName)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return requestedName;
+
+        return requestedName.Trim() switch
+        {
+            var name when name.Equals("Word", StringComparison.OrdinalIgnoreCase) => "Microsoft Word",
+            var name when name.Equals("Excel", StringComparison.OrdinalIgnoreCase) => "Microsoft Excel",
+            var name when name.Equals("PowerPoint", StringComparison.OrdinalIgnoreCase) => "Microsoft PowerPoint",
+            var name when name.Equals("Outlook", StringComparison.OrdinalIgnoreCase) => "Microsoft Outlook",
+            _ => requestedName,
+        };
+    }
+
+    private static void BringMacOSApplicationToForeground(string applicationName)
+    {
+        Thread.Sleep(700);
+
+        string escapedApplicationName = applicationName
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+        string script = $$"""
+        tell application "{{escapedApplicationName}}" to activate
+        tell application "System Events"
+            repeat with processItem in application processes
+                if name of processItem is "{{escapedApplicationName}}" then
+                    set frontmost of processItem to true
+                    exit repeat
+                end if
+            end repeat
+        end tell
+        """;
+
+        var psi = new System.Diagnostics.ProcessStartInfo("osascript")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start osascript.");
+
+        process.StandardInput.WriteLine(script);
+        process.StandardInput.Close();
+
+        if (!process.WaitForExit(10_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Timed out while activating the application.");
+        }
+
+        if (process.ExitCode != 0)
+        {
+            string stderr = process.StandardError.ReadToEnd().Trim();
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "Failed to activate the application." : stderr);
+        }
+    }
+
+    internal static PeekabooConfiguration ReadPeekabooConfiguration()
+    {
+        string command = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND") ?? "peekaboo";
+        string inspectArgumentsValue = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS") ?? "see --json --app frontmost --annotate";
+        int timeoutMs = int.TryParse(Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS"), out int parsedTimeout) && parsedTimeout > 0
+            ? parsedTimeout
+            : 15_000;
+
+        IReadOnlyList<string> inspectArguments = TokenizeArguments(inspectArgumentsValue);
+        if (inspectArguments.Count == 0)
+            inspectArguments = ["see", "--json", "--app", "frontmost", "--annotate"];
+
+        return new PeekabooConfiguration(command, inspectArguments, timeoutMs);
+    }
+
+    internal static IReadOnlyList<string> TokenizeArguments(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return Array.Empty<string>();
+
+        var tokens = new List<string>();
+        var current = new System.Text.StringBuilder();
+        char? quote = null;
+
+        foreach (char ch in value)
+        {
+            if (quote is null && char.IsWhiteSpace(ch))
+            {
+                if (current.Length > 0)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                }
+
+                continue;
+            }
+
+            if (ch is '\'' or '"')
+            {
+                if (quote is null)
+                {
+                    quote = ch;
+                    continue;
+                }
+
+                if (quote == ch)
+                {
+                    quote = null;
+                    continue;
+                }
+            }
+
+            current.Append(ch);
+        }
+
+        if (current.Length > 0)
+            tokens.Add(current.ToString());
+
+        return tokens;
+    }
 }
+
+internal sealed record PeekabooConfiguration(string Command, IReadOnlyList<string> InspectArguments, int TimeoutMs);

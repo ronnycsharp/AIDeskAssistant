@@ -3,6 +3,24 @@ using AIDeskAssistant.Platform.MacOS;
 using AIDeskAssistant.Services;
 using AIDeskAssistant.Tools;
 
+bool menuBarStatusRequested = args.Contains("--menu-bar-status", StringComparer.OrdinalIgnoreCase);
+bool menuBarStopRequested = args.Contains("--menu-bar-stop", StringComparer.OrdinalIgnoreCase);
+
+if (menuBarStatusRequested)
+{
+    PrintMenuBarStatus(MenuBarRuntimeState.GetStatus());
+    return 0;
+}
+
+if (menuBarStopRequested)
+{
+    bool stopped = MenuBarRuntimeState.TryStopRunningHost(out string message);
+    Console.ForegroundColor = stopped ? ConsoleColor.Green : ConsoleColor.Yellow;
+    Console.WriteLine(message);
+    Console.ResetColor();
+    return stopped ? 0 : 1;
+}
+
 // ── Banner ──────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Cyan;
 Console.WriteLine("""
@@ -63,6 +81,7 @@ catch (PlatformNotSupportedException ex)
 }
 
 var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService, uiAutomationService);
+var debugLogger = AIDebugLogger.CreateFromArgsAndEnvironment(args);
 
 // ── Model selection ──────────────────────────────────────────────────────────
 string model = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
@@ -80,6 +99,18 @@ if (menuBarRequested && !menuBarHostRequested)
         Console.Error.WriteLine("The --menu-bar mode is only available on macOS.");
         Console.ResetColor();
         return 1;
+    }
+
+    MenuBarRuntimeStatus existingStatus = MenuBarRuntimeState.GetStatus();
+    if (existingStatus.IsRunning)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"Menu bar host is already running (PID {existingStatus.ProcessId}).");
+        if (!string.IsNullOrWhiteSpace(existingStatus.ServerUri))
+            Console.WriteLine($"Server URI: {existingStatus.ServerUri}");
+        Console.WriteLine($"Status file: {existingStatus.StatusFilePath}");
+        Console.ResetColor();
+        return 0;
     }
 
     MacOSStatusBarLauncher.LaunchDetachedHost(args);
@@ -106,19 +137,28 @@ if (menuBarHostRequested)
     await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel);
     await using var server = new RealtimeMenuBarServer(realtimeAssistant);
     await server.StartAsync();
+    MenuBarRuntimeState.RegisterCurrentProcess(server.BaseUri);
 
-    Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
-    Console.WriteLine($"Realtime model: {realtimeModel}");
-    if (!string.IsNullOrWhiteSpace(envFilePath))
-        Console.WriteLine($"Loaded environment from: {envFilePath}");
-    Console.ResetColor();
+    try
+    {
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
+        Console.WriteLine($"Realtime model: {realtimeModel}");
+        Console.WriteLine($"Status file: {MenuBarRuntimeState.StatusFilePath}");
+        if (!string.IsNullOrWhiteSpace(envFilePath))
+            Console.WriteLine($"Loaded environment from: {envFilePath}");
+        Console.ResetColor();
 
-    int exitCode = await MacOSStatusBarLauncher.RunAsync(server.BaseUri);
-    return exitCode;
+        int exitCode = await MacOSStatusBarLauncher.RunAsync(server.BaseUri);
+        return exitCode;
+    }
+    finally
+    {
+        MenuBarRuntimeState.ClearIfOwnedByCurrentProcess();
+    }
 }
 
-var ai = new AIService(apiKey, executor, model);
+var ai = new AIService(apiKey, executor, model, debugLogger);
 
 // ── REPL ─────────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Green;
@@ -126,6 +166,8 @@ Console.WriteLine($"Ready! Using model: {model}");
 Console.WriteLine($"Agent tool rounds limit: {maxToolRounds}");
 if (!string.IsNullOrWhiteSpace(envFilePath))
     Console.WriteLine($"Loaded environment from: {envFilePath}");
+if (debugLogger is not null)
+    Console.WriteLine($"AI debug mode enabled. Session logs: {debugLogger.SessionDirectoryPath}");
 Console.WriteLine("Type your command, or use /help for available commands.");
 Console.ResetColor();
 Console.WriteLine();
@@ -197,12 +239,14 @@ while (true)
             input,
             onToolCall: msg =>
             {
+                debugLogger?.LogToolCall(msg);
                 Console.ForegroundColor = ConsoleColor.DarkCyan;
                 Console.WriteLine($"  {msg}");
                 Console.ResetColor();
             },
             onToolResult: msg =>
             {
+                debugLogger?.LogToolResult(msg);
                 Console.ForegroundColor = ConsoleColor.DarkGray;
                 Console.WriteLine($"  {msg}");
                 Console.ResetColor();
@@ -251,12 +295,18 @@ static void PrintHelp()
     OPENAI_MODEL     Model to use (default: gpt-4o)
     OPENAI_REALTIME_MODEL  Model to use for --menu-bar mode (default: gpt-realtime)
     AIDESK_MAX_TOOL_ROUNDS  Maximum agent tool rounds per task (default: 60)
+    AIDESK_DEBUG_MODEL_IO  Enable model I/O debug logging (1/true/yes/on)
+    AIDESK_DEBUG_DIR  Optional directory for debug sessions (default: ./.aidesk-debug)
+    AIDESK_MENU_BAR_STATUS_FILE  Optional path for menu bar status tracking
     .env             Optional file in the repo root or project folder
 
     Startup Modes
     ─────────────────────────────────────────────────────────────────────────────
     --menu-bar       Start the macOS menu bar assistant in the background
     --menu-bar-host  Internal foreground host used by --menu-bar
+    --menu-bar-status  Show whether the macOS menu bar host is currently running
+    --menu-bar-stop  Stop the currently running macOS menu bar host
+    --debug-model-io Enable model I/O debug logging for this CLI run
 
     Example Commands
     ─────────────────────────────────────────────────────────────────────────────
@@ -280,3 +330,24 @@ static void PrintHelp()
 /// <summary>Parses a positive integer environment variable or returns a fallback value.</summary>
 static int TryGetPositiveInt(string? value, int defaultValue)
     => int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;
+
+static void PrintMenuBarStatus(MenuBarRuntimeStatus status)
+{
+    Console.ForegroundColor = status.IsRunning ? ConsoleColor.Green : ConsoleColor.Yellow;
+    Console.WriteLine(status.IsRunning ? "Menu bar host is running." : "Menu bar host is not running.");
+    Console.ResetColor();
+
+    if (status.ProcessId is not null)
+        Console.WriteLine($"PID: {status.ProcessId}");
+
+    if (!string.IsNullOrWhiteSpace(status.ServerUri))
+        Console.WriteLine($"Server URI: {status.ServerUri}");
+
+    if (status.StartedAtUtc is not null)
+        Console.WriteLine($"Started (UTC): {status.StartedAtUtc:O}");
+
+    Console.WriteLine($"Status file: {status.StatusFilePath}");
+
+    if (!string.IsNullOrWhiteSpace(status.Detail))
+        Console.WriteLine($"Detail: {status.Detail}");
+}

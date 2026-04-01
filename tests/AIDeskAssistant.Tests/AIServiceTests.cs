@@ -8,6 +8,31 @@ namespace AIDeskAssistant.Tests;
 public sealed class AIServiceTests
 {
     [Fact]
+    public void BuildUserMessageWithScreenInfo_PrependsScreenContext()
+    {
+        string result = AIService.BuildUserMessageWithScreenInfo(
+            "Open Word and write a poem.",
+            "Screen: 1920x1080, 32 bpp");
+
+        Assert.Contains("Current screen info: Screen: 1920x1080, 32 bpp", result);
+        Assert.Contains("User task: Open Word and write a poem.", result);
+    }
+
+    [Fact]
+    public void TryParseScreenshotAttachment_ExtractsImageBytesAndMetadata()
+    {
+        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
+
+        bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
+
+        Assert.True(parsed);
+        Assert.NotNull(attachment);
+        Assert.Equal("image/jpeg", attachment.MediaType);
+        Assert.Equal([1, 2, 3], attachment.Bytes);
+        Assert.Contains("Resolution: 1280x800.", attachment.Summary);
+    }
+
+    [Fact]
     public void TryCompactScreenshotToolMessage_ReplacesHistoricalImageWithTextOnlyMessage()
     {
         ToolChatMessage original = new(

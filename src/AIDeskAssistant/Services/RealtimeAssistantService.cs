@@ -24,7 +24,12 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
         For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
+        For desktop application workflows such as Word, Excel, Mail, Calendar, Finder, Safari, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would.
+        When a macOS-native UI element is hard to identify from screenshots alone, you may use peekaboo_inspect to inspect the current accessibility/UI structure if a local Peekaboo CLI is configured.
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
+        Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
+        When entering text into editors or forms, use type_text only for literal text content. Use press_key for enter, return, tab, escape, arrows, delete, and shortcuts. Never type words like 'enter' or 'tab' into the document unless the user explicitly asked for those literal words.
+        Before typing into a desktop app document or form, explicitly ensure the correct target app is frontmost. If there is any doubt, use focus_application for that app, wait briefly, take a screenshot, and only then use type_text or press_key.
         Always take a screenshot first to understand the current screen state before acting.
         After each significant action, take another screenshot to confirm the result.
         Be precise with coordinates — use the screenshot to determine exact pixel positions.
@@ -65,7 +70,8 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         try
         {
             PendingTurn pendingTurn = BeginTurn();
-            await _session!.AddItemAsync(CreateUserTextMessage(text), ct);
+            string screenInfo = GetScreenInfoContext();
+            await _session!.AddItemAsync(CreateUserTextMessage(AIService.BuildUserMessageWithScreenInfo(text, screenInfo)), ct);
             await StartResponseAsync(pendingTurn, ct);
             return await pendingTurn.Completion.Task.WaitAsync(ct);
         }
@@ -256,6 +262,18 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
     private static RealtimeMessageItem CreateUserTextMessage(string text)
         => new(new RealtimeMessageRole("user"), [new RealtimeInputTextMessageContentPart(text)]);
+
+    private string GetScreenInfoContext()
+    {
+        try
+        {
+            return _executor.Execute("get_screen_info", "{}");
+        }
+        catch (Exception ex)
+        {
+            return $"Screen information unavailable: {ex.Message}";
+        }
+    }
 
     private static int TryGetPositiveInt(string? value, int fallback)
         => int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;

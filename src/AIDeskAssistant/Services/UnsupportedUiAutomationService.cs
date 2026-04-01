@@ -9,9 +9,15 @@ internal sealed class UnsupportedUiAutomationService : IUiAutomationService
         _platformName = platformName;
     }
 
+    public void ClickDockApplication(IReadOnlyList<string> titles)
+        => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
+
     public void ClickAppleMenuItem(IReadOnlyList<string> titles)
         => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
 
     public void ClickSystemSettingsSidebarItem(IReadOnlyList<string> titles)
+        => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
+
+    public string FocusFrontmostWindowContent(string? applicationName)
         => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
 }
