@@ -211,20 +211,39 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             return;
 
         LiveAudioInputSession liveAudioInputSession = GetRequiredLiveAudioInputSession(sessionId);
-        await _session!.SendInputAudioAsync(BinaryData.FromBytes(pcmBytes), liveAudioInputSession.TurnCancellationSource.Token);
+        await liveAudioInputSession.AudioOperationLock.WaitAsync(liveAudioInputSession.TurnCancellationSource.Token);
+
+        try
+        {
+            await _session!.SendInputAudioAsync(BinaryData.FromBytes(pcmBytes), liveAudioInputSession.TurnCancellationSource.Token);
+            liveAudioInputSession.AppendedAudioBytes += pcmBytes.Length;
+        }
+        finally
+        {
+            liveAudioInputSession.AudioOperationLock.Release();
+        }
     }
 
     public async IAsyncEnumerable<RealtimeAssistantStreamEvent> CommitLiveAudioInputAsync(string sessionId, [EnumeratorCancellation] CancellationToken ct = default)
     {
         LiveAudioInputSession liveAudioInputSession = GetRequiredLiveAudioInputSession(sessionId);
-        if (liveAudioInputSession.ResponseStarted)
-            throw new InvalidOperationException("The live audio input session has already been committed.");
-
-        liveAudioInputSession.ResponseStarted = true;
+        await liveAudioInputSession.AudioOperationLock.WaitAsync(liveAudioInputSession.TurnCancellationSource.Token);
 
         try
         {
+            if (liveAudioInputSession.ResponseStarted)
+                throw new InvalidOperationException("The live audio input session has already been committed.");
+
+            liveAudioInputSession.ResponseStarted = true;
             await _session!.CommitPendingAudioAsync(liveAudioInputSession.TurnCancellationSource.Token);
+        }
+        finally
+        {
+            liveAudioInputSession.AudioOperationLock.Release();
+        }
+
+        try
+        {
             await StartResponseAsync(liveAudioInputSession.PendingTurn, liveAudioInputSession.TurnCancellationSource.Token);
 
             await foreach (RealtimeAssistantStreamEvent streamEvent in liveAudioInputSession.PendingTurn.ReadEventsAsync(liveAudioInputSession.TurnCancellationSource.Token))
@@ -248,29 +267,38 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
     private async Task CancelLiveAudioInputSessionAsync(LiveAudioInputSession liveAudioInputSession, CancellationToken ct)
     {
-        if (liveAudioInputSession.ResponseStarted)
+        await liveAudioInputSession.AudioOperationLock.WaitAsync(ct);
+
+        try
         {
+            if (liveAudioInputSession.ResponseStarted)
+            {
+                try
+                {
+                    await _session!.CancelResponseAsync(ct);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Safe to ignore when the response already finished.
+                }
+            }
+
             try
             {
-                await _session!.CancelResponseAsync(ct);
+                await ClearInputAudioBufferAsync(ct);
             }
             catch (InvalidOperationException)
             {
-                // Safe to ignore when the response already finished.
+                // Safe to ignore when the input audio buffer has already been cleared.
             }
+        }
+        finally
+        {
+            liveAudioInputSession.AudioOperationLock.Release();
         }
 
         await liveAudioInputSession.TurnCancellationSource.CancelAsync();
         liveAudioInputSession.PendingTurn.TrySetCanceled();
-
-        try
-        {
-            await ClearInputAudioBufferAsync(ct);
-        }
-        catch (InvalidOperationException)
-        {
-            // Safe to ignore when the input audio buffer has already been cleared.
-        }
 
         CleanupLiveAudioInputSession(liveAudioInputSession.SessionId);
     }
@@ -391,6 +419,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         _liveAudioInputSession = null;
         _activeTurnCts = null;
         _pendingTurn = null;
+        liveAudioInputSession.AudioOperationLock.Dispose();
         liveAudioInputSession.TurnCancellationSource.Dispose();
         _turnLock.Release();
     }
@@ -462,7 +491,12 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
                 InputAudioOptions = new RealtimeConversationSessionInputAudioOptions
                 {
                     AudioFormat = new RealtimePcmAudioFormat(),
-                    TurnDetection = null,
+                    TurnDetection = new RealtimeServerVadTurnDetection
+                    {
+                        SilenceDuration = TimeSpan.FromSeconds(10),
+                        CreateResponseEnabled = false,
+                        InterruptResponseEnabled = false,
+                    },
                 },
                 OutputAudioOptions = new RealtimeConversationSessionOutputAudioOptions
                 {
@@ -607,6 +641,8 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         public string SessionId { get; }
         public PendingTurn PendingTurn { get; }
         public CancellationTokenSource TurnCancellationSource { get; }
+        public SemaphoreSlim AudioOperationLock { get; } = new(1, 1);
+        public int AppendedAudioBytes { get; set; }
         public bool ResponseStarted { get; set; }
     }
 }

@@ -96,6 +96,8 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private var calibratedNoiseFloorRms = 0.0
     private var calibrationSampleCount = 0
     private var captureChunkCounter = 0
+    private var uploadedChunkCounter = 0
+    private var uploadedByteCount = 0
     private var playbackEngineConfigured = false
     private var accumulatedResponseText = ""
 
@@ -207,6 +209,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
 
     private func stopRecordingAndSend(autoTriggered: Bool) {
         stopCaptureEngine()
+        drainCaptureQueue(reason: "before live audio commit")
         recordButton.title = "Aufnehmen"
         recordButton.isEnabled = true
 
@@ -249,6 +252,8 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
             calibratedNoiseFloorRms = 0
             calibrationSampleCount = 0
             captureChunkCounter = 0
+            uploadedChunkCounter = 0
+            uploadedByteCount = 0
             startAutoCommitMonitor(sessionId: sessionId)
 
             await MainActor.run { [weak self] in
@@ -310,6 +315,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
 
         if activeLiveAudioSessionId != nil {
             stopCaptureEngine()
+            drainCaptureQueue(reason: "before live audio interruption")
             liveAudioSessionId = nil
             recordButton.title = "Aufnehmen"
             recordButton.isEnabled = true
@@ -604,10 +610,21 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
                 self?.diagnosticsLogger.log("Live audio chunk upload failed: \(error.localizedDescription)")
             } else if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
                 self?.diagnosticsLogger.log("Live audio chunk upload returned HTTP \(httpResponse.statusCode)")
+            } else {
+                self?.uploadedChunkCounter += 1
+                self?.uploadedByteCount += chunk.count
+                if let self, self.uploadedChunkCounter == 1 || self.uploadedChunkCounter.isMultiple(of: 8) {
+                    self.diagnosticsLogger.log("Uploaded live audio chunks: count=\(self.uploadedChunkCounter) bytes=\(self.uploadedByteCount)")
+                }
             }
             semaphore.signal()
         }.resume()
         semaphore.wait()
+    }
+
+    private func drainCaptureQueue(reason: String) {
+        captureQueue.sync { }
+        diagnosticsLogger.log("Capture queue drained \(reason): uploadedChunks=\(uploadedChunkCounter) uploadedBytes=\(uploadedByteCount)")
     }
 
     private func consumeStreamingResponse(_ request: URLRequest) async {

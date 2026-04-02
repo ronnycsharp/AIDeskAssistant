@@ -196,7 +196,7 @@ internal static class DesktopToolDefinitions
 
           new(
             "run_command",
-            "Runs an installed CLI executable and returns its stdout/stderr text output. Use this for terminal tasks when reading command output is more reliable than screenshots. The command is run directly without shell syntax like pipes or redirection.",
+            "Runs an installed CLI executable and returns its stdout/stderr text output. Use this for terminal tasks when reading command output is more reliable than screenshots. The command is run directly without a shell, so shell syntax like pipes, redirection, globbing, ~, $HOME, or $(whoami) will not be expanded.",
             BinaryData.FromString("""
             {
               "type": "object",
