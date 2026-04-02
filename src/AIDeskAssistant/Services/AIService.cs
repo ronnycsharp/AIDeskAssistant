@@ -42,6 +42,8 @@ internal sealed class AIService
         The current screen resolution will be provided with each user request. Use it as the coordinate frame for mouse positioning together with screenshots.
         After opening an application, make sure it is actually in the foreground before typing. If needed, wait briefly, take another screenshot, and only then continue.
         Always take a screenshot first to understand the current screen state before acting.
+        If the task is confined to one app or one document window, prefer take_screenshot with target='active_window' so the image is smaller, cheaper, and more focused than a full-screen capture.
+        Whenever you call take_screenshot, include a short purpose string that explains what the screenshot is intended to validate in the current step.
         After each significant action, take another screenshot to confirm the result.
         Be precise with coordinates — use the screenshot to determine exact pixel positions.
         If something doesn't work, try an alternative approach.

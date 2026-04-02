@@ -13,6 +13,8 @@ public sealed class AIServiceTests
         string prompt = AIService.BuildSystemPrompt();
 
         Assert.Contains("Always take a screenshot first", prompt);
+        Assert.Contains("target='active_window'", prompt);
+        Assert.Contains("purpose string", prompt);
         Assert.Contains("After each significant action, take another screenshot", prompt);
     }
 
@@ -30,7 +32,7 @@ public sealed class AIServiceTests
     [Fact]
     public void TryParseScreenshotAttachment_ExtractsImageBytesAndMetadata()
     {
-        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
+        string result = "Screenshot taken. Target: active_window. Purpose: verify word content. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
 
         bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
 
@@ -39,6 +41,7 @@ public sealed class AIServiceTests
         Assert.Equal("image/jpeg", attachment.MediaType);
         Assert.Equal([1, 2, 3], attachment.Bytes);
         Assert.Contains("Resolution: 1280x800.", attachment.Summary);
+        Assert.Contains("Purpose: verify word content.", attachment.Summary);
     }
 
     [Fact]

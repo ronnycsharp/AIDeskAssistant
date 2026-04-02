@@ -23,12 +23,14 @@ internal sealed class WindowsScreenshotService : IScreenshotService
     private const int VERTRES = 10;
     private const int BITSPIXEL = 12;
 
-    public byte[] TakeScreenshot()
+    public byte[] TakeScreenshot(ScreenshotCaptureOptions options = default)
     {
         var info = GetScreenInfo();
-        using var bmp = new Bitmap(info.Width, info.Height, PixelFormat.Format32bppArgb);
+        WindowBounds bounds = options.Bounds ?? new WindowBounds(0, 0, info.Width, info.Height);
+
+        using var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
-        g.CopyFromScreen(0, 0, 0, 0, new Size(info.Width, info.Height));
+        g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, new Size(bounds.Width, bounds.Height));
         using var ms = new MemoryStream();
         bmp.Save(ms, ImageFormat.Png);
         return ms.ToArray();

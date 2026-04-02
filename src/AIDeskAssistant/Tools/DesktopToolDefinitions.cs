@@ -12,7 +12,27 @@ internal static class DesktopToolDefinitions
     {
     new(
             "take_screenshot",
-            "Takes a full-screen screenshot. Returns the image encoded as a base64 PNG string so the AI can analyse the screen contents."
+            "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "enum": ["full_screen", "active_window"],
+                  "description": "Capture the full screen or only the active window. Prefer 'active_window' when the task is confined to one app window."
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "Short reason for the screenshot, e.g. 'verify poem text is visible in the Word document body'."
+                },
+                "padding": {
+                  "type": "integer",
+                  "description": "Optional extra pixels around the active window capture (0-200). Ignored for full_screen."
+                }
+              }
+            }
+            """)
         ),
 
     new(

@@ -6,7 +6,13 @@ namespace AIDeskAssistant.Tests;
 
 internal sealed class FakeScreenshotService : IScreenshotService
 {
-    public byte[] TakeScreenshot() => Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRsl0AAAAASUVORK5CYII=");
+    public ScreenshotCaptureOptions LastOptions;
+
+    public byte[] TakeScreenshot(ScreenshotCaptureOptions options = default)
+    {
+        LastOptions = options;
+        return Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRsl0AAAAASUVORK5CYII=");
+    }
 
     public ScreenInfo GetScreenInfo() => new(1920, 1080, 32);
 }
@@ -120,6 +126,18 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Base64:", result);
         Assert.Contains("Original:", result);
         Assert.Contains("Final:", result);
+        Assert.Equal(default, _screenshot.LastOptions);
+    }
+
+    [Fact]
+    public void Execute_TakeScreenshotActiveWindow_UsesWindowBoundsAndPurpose()
+    {
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20}");
+
+        Assert.Equal(new WindowBounds(0, 0, 840, 640), _screenshot.LastOptions.Bounds);
+        Assert.Contains("Target: active_window.", result);
+        Assert.Contains("Purpose: verify word content.", result);
+        Assert.Contains("Region: X=0, Y=0, Width=840, Height=640.", result);
     }
 
     [Fact]

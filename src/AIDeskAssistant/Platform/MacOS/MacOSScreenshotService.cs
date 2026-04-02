@@ -30,7 +30,7 @@ internal sealed class MacOSScreenshotService : IScreenshotService
     [DllImport("/System/Library/Frameworks/ImageIO.framework/ImageIO")]
     private static extern bool CGImageDestinationFinalize(IntPtr destination);
 
-    public byte[] TakeScreenshot()
+    public byte[] TakeScreenshot(ScreenshotCaptureOptions options = default)
     {
         // Use the screencapture command-line tool (available on all macOS versions).
         // Use a filename without spaces/special chars to avoid argument-injection issues.
@@ -39,9 +39,10 @@ internal sealed class MacOSScreenshotService : IScreenshotService
             $"aideskassistant_{Guid.NewGuid():N}.png");
         try
         {
+            string[] args = BuildScreencaptureArguments(options, tmpFile);
             var psi = new System.Diagnostics.ProcessStartInfo(
                 "screencapture",
-                ["-x", "-C", tmpFile])
+                args)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
@@ -56,6 +57,17 @@ internal sealed class MacOSScreenshotService : IScreenshotService
         {
             if (File.Exists(tmpFile)) File.Delete(tmpFile);
         }
+    }
+
+    private static string[] BuildScreencaptureArguments(ScreenshotCaptureOptions options, string tmpFile)
+    {
+        var args = new List<string> { "-x", "-C" };
+
+        if (options.Bounds is WindowBounds bounds)
+            args.Add($"-R{bounds.X},{bounds.Y},{bounds.Width},{bounds.Height}");
+
+        args.Add(tmpFile);
+        return args.ToArray();
     }
 
     public ScreenInfo GetScreenInfo()

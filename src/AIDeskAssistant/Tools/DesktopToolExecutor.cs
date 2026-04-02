@@ -11,6 +11,8 @@ internal sealed class DesktopToolExecutor
     private const string TimeoutMsArg = "timeout_ms";
     private const string WidthArg = "width";
     private const string HeightArg = "height";
+    private const string FullScreenScreenshotTarget = "full_screen";
+    private const string ActiveWindowScreenshotTarget = "active_window";
 
     private readonly IScreenshotService _screenshot;
     private readonly ScreenshotOptimizer _screenshotOptimizer;
@@ -43,7 +45,7 @@ internal sealed class DesktopToolExecutor
 
         return toolName switch
         {
-            "take_screenshot" => TakeScreenshot(),
+            "take_screenshot" => TakeScreenshot(args),
             "get_screen_info" => GetScreenInfo(),
             "get_cursor_position" => GetCursorPosition(),
             "move_mouse" => MoveMouse(args),
@@ -68,11 +70,96 @@ internal sealed class DesktopToolExecutor
         };
     }
 
-    private string TakeScreenshot()
+    private string TakeScreenshot(Dictionary<string, JsonElement> args)
     {
-        byte[] screenshot = _screenshot.TakeScreenshot();
+        string target = DesktopToolDefinitions.GetString(args, "target", FullScreenScreenshotTarget)
+            .Trim()
+            .ToLowerInvariant();
+        string purpose = DesktopToolDefinitions.GetString(args, "purpose").Trim();
+        int padding = Math.Clamp(DesktopToolDefinitions.GetInt(args, "padding", 16), 0, 200);
+
+        if (!TryResolveScreenshotCaptureOptions(target, padding, out ScreenshotCaptureOptions options, out WindowBounds? bounds, out string error))
+            return error;
+
+        byte[] screenshot = _screenshot.TakeScreenshot(options);
         ScreenshotPayload payload = _screenshotOptimizer.Optimize(screenshot);
-        return payload.ToToolResultString();
+        return BuildScreenshotToolResult(payload, target, purpose, bounds);
+    }
+
+    private bool TryResolveScreenshotCaptureOptions(
+        string target,
+        int padding,
+        out ScreenshotCaptureOptions options,
+        out WindowBounds? bounds,
+        out string error)
+    {
+        options = default;
+        bounds = null;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(target) || string.Equals(target, FullScreenScreenshotTarget, StringComparison.Ordinal))
+            return true;
+
+        if (!string.Equals(target, ActiveWindowScreenshotTarget, StringComparison.Ordinal))
+        {
+            error = $"Invalid screenshot target: '{target}'. Supported values: '{FullScreenScreenshotTarget}', '{ActiveWindowScreenshotTarget}'.";
+            return false;
+        }
+
+        try
+        {
+            WindowBounds activeWindow = _window.GetActiveWindowBounds();
+            WindowBounds clampedBounds = ClampWindowBounds(activeWindow, padding, _screenshot.GetScreenInfo());
+            if (clampedBounds.Width <= 0 || clampedBounds.Height <= 0)
+            {
+                error = "Failed to capture active window screenshot: active window bounds are empty.";
+                return false;
+            }
+
+            bounds = clampedBounds;
+            options = new ScreenshotCaptureOptions(clampedBounds);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Failed to capture active window screenshot: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static WindowBounds ClampWindowBounds(WindowBounds bounds, int padding, ScreenInfo screenInfo)
+    {
+        int x = Math.Max(0, bounds.X - padding);
+        int y = Math.Max(0, bounds.Y - padding);
+        int maxWidth = Math.Max(0, screenInfo.Width - x);
+        int maxHeight = Math.Max(0, screenInfo.Height - y);
+        int width = Math.Min(maxWidth, Math.Max(0, bounds.Width + (padding * 2)));
+        int height = Math.Min(maxHeight, Math.Max(0, bounds.Height + (padding * 2)));
+        return new WindowBounds(x, y, width, height);
+    }
+
+    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds? bounds)
+    {
+        var parts = new List<string>
+        {
+            "Screenshot taken.",
+            $"Target: {target}.",
+        };
+
+        if (!string.IsNullOrWhiteSpace(purpose))
+            parts.Add($"Purpose: {purpose}.");
+
+        if (bounds is WindowBounds region)
+            parts.Add($"Region: X={region.X}, Y={region.Y}, Width={region.Width}, Height={region.Height}.");
+
+        parts.Add($"Original: {payload.OriginalByteCount} bytes.");
+        parts.Add($"Final: {payload.FinalByteCount} bytes.");
+        parts.Add($"Saved: {payload.BytesSaved} bytes ({payload.SavingsRatio:P1}).");
+        parts.Add($"Resolution: {payload.Width}x{payload.Height}.");
+        parts.Add($"Media type: {payload.MediaType}.");
+        parts.Add($"Base64: {Convert.ToBase64String(payload.Bytes)}");
+
+        return string.Join(" ", parts);
     }
 
     private string GetScreenInfo()

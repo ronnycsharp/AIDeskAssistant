@@ -111,4 +111,16 @@ public sealed class DesktopToolDefinitionsTests
 
         Assert.True(value);
     }
+
+    [Fact]
+    public void TakeScreenshotDefinition_DescribesFocusedCaptureAndPurpose()
+    {
+        DesktopFunctionToolDefinition definition = DesktopToolDefinitions.FunctionDefinitions.Single(x => x.Name == "take_screenshot");
+        string parameters = definition.Parameters?.ToString() ?? string.Empty;
+
+        Assert.Contains("active_window", definition.Description);
+        Assert.Contains("purpose", definition.Description);
+        Assert.Contains("purpose", parameters);
+        Assert.Contains("padding", parameters);
+    }
 }

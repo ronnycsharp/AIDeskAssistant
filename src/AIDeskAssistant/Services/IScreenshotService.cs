@@ -5,7 +5,7 @@ namespace AIDeskAssistant.Services;
 public interface IScreenshotService
 {
     /// <summary>Takes a full-screen screenshot and returns the image as a PNG byte array.</summary>
-    byte[] TakeScreenshot();
+    byte[] TakeScreenshot(ScreenshotCaptureOptions options = default);
 
     /// <summary>Returns information about the primary screen (width, height, bit depth).</summary>
     ScreenInfo GetScreenInfo();
