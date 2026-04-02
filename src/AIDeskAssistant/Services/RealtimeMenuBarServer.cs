@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
+using System.Collections.Specialized;
 
 namespace AIDeskAssistant.Services;
 
@@ -83,10 +84,10 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
 
     private async Task HandleRequestAsync(HttpListenerContext context, CancellationToken ct)
     {
+        string path = context.Request.Url?.AbsolutePath ?? "/";
+
         try
         {
-            string path = context.Request.Url?.AbsolutePath ?? "/";
-
             if (context.Request.HttpMethod == "GET" && path == "/health")
             {
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true }, ct);
@@ -103,7 +104,22 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 }
 
                 RealtimeAssistantTurnResult result = await _assistant.SendTextAsync(request.Text, ct);
-                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result), ct);
+                bool includeAudio = request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result, includeAudio), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/message-stream")
+            {
+                MessageRequest? request = await JsonSerializer.DeserializeAsync<MessageRequest>(context.Request.InputStream, JsonOptions, ct);
+                if (request is null || string.IsNullOrWhiteSpace(request.Text))
+                {
+                    await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new { error = "Text is required." }, ct);
+                    return;
+                }
+
+                bool includeAudio = request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                await WriteStreamAsync(context.Response, _assistant.StreamTextAsync(request.Text, ct), includeAudio, ct);
                 return;
             }
 
@@ -112,11 +128,77 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 using var memoryStream = new MemoryStream();
                 await context.Request.InputStream.CopyToAsync(memoryStream, ct);
                 RealtimeAssistantTurnResult result = await _assistant.SendWaveAudioAsync(memoryStream.ToArray(), ct);
-                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result), ct);
+                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result, includeAudio), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/audio-stream")
+            {
+                using var memoryStream = new MemoryStream();
+                await context.Request.InputStream.CopyToAsync(memoryStream, ct);
+                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                await WriteStreamAsync(context.Response, _assistant.StreamWaveAudioAsync(memoryStream.ToArray(), ct), includeAudio, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/audio-live/start")
+            {
+                string sessionId = await _assistant.StartLiveAudioInputAsync(ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { sessionId }, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/audio-live/chunk")
+            {
+                string sessionId = GetRequiredSessionId(context.Request.QueryString, context.Request.Headers);
+                using var memoryStream = new MemoryStream();
+                await context.Request.InputStream.CopyToAsync(memoryStream, ct);
+                await _assistant.AppendLiveAudioChunkAsync(sessionId, memoryStream.ToArray(), ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true }, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/audio-live/commit-stream")
+            {
+                string sessionId = GetRequiredSessionId(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                await WriteStreamAsync(context.Response, _assistant.CommitLiveAudioInputAsync(sessionId, ct), includeAudio, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/audio-live/cancel")
+            {
+                string sessionId = GetRequiredSessionId(context.Request.QueryString, context.Request.Headers);
+                bool cancelled = await _assistant.CancelLiveAudioInputAsync(sessionId, ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true, cancelled }, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/cancel")
+            {
+                bool cancelled = await _assistant.CancelActiveTurnAsync(ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true, cancelled }, ct);
                 return;
             }
 
             await WriteJsonAsync(context.Response, HttpStatusCode.NotFound, new { error = "Not found." }, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            if (!context.Response.OutputStream.CanWrite)
+                return;
+
+            if (path.EndsWith("-stream", StringComparison.OrdinalIgnoreCase))
+            {
+                byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(new { type = "cancelled" });
+                await context.Response.OutputStream.WriteAsync(bytes, CancellationToken.None);
+                await context.Response.OutputStream.WriteAsync("\n"u8.ToArray(), CancellationToken.None);
+                context.Response.OutputStream.Close();
+                return;
+            }
+
+            await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true, cancelled = true }, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -124,12 +206,93 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         }
     }
 
-    private static object CreateResponse(RealtimeAssistantTurnResult result) => new
+    private static object CreateResponse(RealtimeAssistantTurnResult result, bool includeAudio) => new
     {
         text = result.Text,
-        audioBase64 = result.AudioWavBytes is null ? null : Convert.ToBase64String(result.AudioWavBytes),
-        audioMimeType = result.AudioWavBytes is null ? null : "audio/wav",
+        audioBase64 = includeAudio && result.AudioWavBytes is not null ? Convert.ToBase64String(result.AudioWavBytes) : null,
+        audioMimeType = includeAudio && result.AudioWavBytes is not null ? "audio/wav" : null,
     };
+
+    internal static object CreateStreamResponseEvent(RealtimeAssistantStreamEvent streamEvent) => streamEvent.Type switch
+    {
+        RealtimeAssistantStreamEventType.TextDelta => new
+        {
+            type = "text_delta",
+            text = streamEvent.TextDelta,
+        },
+        RealtimeAssistantStreamEventType.AudioDelta => new
+        {
+            type = "audio_delta",
+            pcmBase64 = streamEvent.AudioPcmBytes is not null ? Convert.ToBase64String(streamEvent.AudioPcmBytes) : null,
+            sampleRate = 24_000,
+            audioFormat = "pcm_s16le",
+        },
+        RealtimeAssistantStreamEventType.Completed => new
+        {
+            type = "completed",
+            text = streamEvent.FinalText,
+        },
+        RealtimeAssistantStreamEventType.Error => new
+        {
+            type = "error",
+            error = streamEvent.ErrorMessage,
+        },
+        _ => new
+        {
+            type = "error",
+            error = "Unknown stream event type."
+        },
+    };
+
+    internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
+    {
+        string? queryValue = queryString["includeAudio"];
+        if (TryParseBoolean(queryValue, out bool includeAudioFromQuery))
+            return includeAudioFromQuery;
+
+        string? headerValue = headers["X-AIDesk-Include-Audio"];
+        if (TryParseBoolean(headerValue, out bool includeAudioFromHeader))
+            return includeAudioFromHeader;
+
+        return defaultValue;
+    }
+
+    private static bool TryParseBoolean(string? value, out bool parsed)
+    {
+        parsed = default;
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        string normalized = value.Trim();
+        if (normalized.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("on", StringComparison.OrdinalIgnoreCase))
+        {
+            parsed = true;
+            return true;
+        }
+
+        if (normalized.Equals("0", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("false", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("no", StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals("off", StringComparison.OrdinalIgnoreCase))
+        {
+            parsed = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    internal static string GetRequiredSessionId(NameValueCollection queryString, NameValueCollection headers)
+    {
+        string? sessionId = queryString["sessionId"] ?? headers["X-AIDesk-Audio-Session-Id"];
+        if (string.IsNullOrWhiteSpace(sessionId))
+            throw new InvalidOperationException("sessionId is required.");
+
+        return sessionId.Trim();
+    }
 
     private static async Task WriteJsonAsync(HttpListenerResponse response, HttpStatusCode statusCode, object payload, CancellationToken ct)
     {
@@ -139,6 +302,26 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes, ct);
+        response.OutputStream.Close();
+    }
+
+    private static async Task WriteStreamAsync(HttpListenerResponse response, IAsyncEnumerable<RealtimeAssistantStreamEvent> stream, bool includeAudio, CancellationToken ct)
+    {
+        response.StatusCode = (int)HttpStatusCode.OK;
+        response.ContentType = "application/x-ndjson; charset=utf-8";
+        response.SendChunked = true;
+
+        await foreach (RealtimeAssistantStreamEvent streamEvent in stream.WithCancellation(ct))
+        {
+            if (!includeAudio && streamEvent.Type == RealtimeAssistantStreamEventType.AudioDelta)
+                continue;
+
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(CreateStreamResponseEvent(streamEvent));
+            await response.OutputStream.WriteAsync(bytes, ct);
+            await response.OutputStream.WriteAsync("\n"u8.ToArray(), ct);
+            await response.OutputStream.FlushAsync(ct);
+        }
+
         response.OutputStream.Close();
     }
 
@@ -152,5 +335,6 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     private sealed class MessageRequest
     {
         public string Text { get; set; } = string.Empty;
+        public bool? IncludeAudio { get; set; }
     }
 }

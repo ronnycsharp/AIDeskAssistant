@@ -14,7 +14,7 @@ An AI-powered desktop automation assistant for Windows and macOS, built with C# 
 - 🖥️ **Terminal command execution** — run CLI tools and feed stdout/stderr back to the model
 - 🪟 **Window management** — inspect, move, and resize the active window
 - 💬 **CLI interface** — a simple REPL where you speak to the AI in plain language
-- 🎙️ **macOS menu bar mode** — optional status icon with text input, voice recording, and spoken responses via OpenAI Realtime
+- 🎙️ **macOS menu bar mode** — optional status icon with text input, live microphone streaming, and low-latency spoken responses streamed from the OpenAI Realtime API
 - 🔄 **Agentic loop** — the AI keeps using tools until the task is done, then reports back
 - ⏱️ **Longer task support** — configurable max tool rounds for multi-step browser tasks
 
@@ -68,6 +68,39 @@ macOS menu bar mode:
 ```bash
 dotnet run --project src/AIDeskAssistant -- --menu-bar
 ```
+
+The menu bar helper uses the OpenAI Realtime API for voice output and now streams text and PCM audio deltas from the local host to the Swift status item. That removes the old wait-for-full-WAV step and noticeably reduces speech latency.
+
+The `Aufnehmen` button now streams microphone PCM chunks to the local host while you are speaking. Pressing `Stop` commits the already-uploaded audio buffer to the active Realtime session instead of uploading a finished WAV file after the fact.
+
+By default, the menu bar helper also auto-commits after a short silence once speech has been detected, so `Stop` is usually optional.
+
+If `AIDESK_MENU_BAR_LOG_FILE` is set, the Swift helper now logs capture RMS/peak levels, noise-floor calibration, speech detection, and silence-triggered auto-commits.
+
+If you probe the local menu bar HTTP endpoint with `curl`, disable audio in the response unless you explicitly want the base64 WAV payload printed to the terminal:
+
+```bash
+curl -s -X POST 'http://127.0.0.1:54502/message?includeAudio=false' \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Sag kurz, dass die Verbindung funktioniert."}'
+```
+
+Without `includeAudio=false`, the response can contain a large `audioBase64` field, which is inconvenient in terminals and can make the VS Code integrated terminal sluggish.
+
+For low-latency diagnostics you can also inspect the streaming endpoints directly. They emit newline-delimited JSON with `text_delta`, `audio_delta`, and `completed` events:
+
+```bash
+curl -N -X POST 'http://127.0.0.1:54502/message-stream?includeAudio=false' \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Sag kurz, dass Realtime-Streaming aktiv ist."}'
+```
+
+The local menu bar host also exposes live microphone control endpoints used by the Swift helper:
+
+- `POST /audio-live/start` opens a new live audio capture session and returns a `sessionId`
+- `POST /audio-live/chunk?sessionId=...` appends raw `pcm_s16le` mono 24 kHz bytes to that session
+- `POST /audio-live/commit-stream?sessionId=...` commits the buffered live audio and streams the assistant response as NDJSON
+- `POST /audio-live/cancel?sessionId=...` abandons a live microphone session before commit
 
 Check whether the background menu bar host is still running:
 
@@ -139,6 +172,15 @@ You> /help
 | `AIDESK_SCREENSHOT_JPEG_QUALITY` | `60` | JPEG quality for optimized screenshots |
 | `AIDESK_REALTIME_VOICE` | `alloy` | Voice name for macOS menu bar mode |
 | `AIDESK_REALTIME_SAMPLE_RATE` | `24000` | Expected PCM sample rate for menu bar voice recording |
+| `AIDESK_MENU_BAR_SELF_TEST_TEXT` | *(unset)* | Optional text sent automatically by the Swift menu bar helper shortly after launch for end-to-end voice self-tests |
+| `AIDESK_MENU_BAR_LOG_FILE` | *(unset)* | Optional file path for Swift menu bar diagnostics, including stream, playback, and cancel events |
+| `AIDESK_MENU_BAR_SILENCE_COMMIT_SECONDS` | `0.9` | Silence duration after detected speech before the Swift helper auto-commits live microphone input |
+| `AIDESK_MENU_BAR_SILENCE_THRESHOLD` | `0.015` | Normalized peak amplitude threshold used by the Swift helper to decide whether a live mic chunk contains speech |
+| `AIDESK_MENU_BAR_RMS_THRESHOLD` | `0.003` | Minimum normalized RMS threshold used alongside peak detection for speech detection |
+| `AIDESK_MENU_BAR_MIN_SPEECH_SECONDS` | `0.25` | Minimum elapsed speaking time before silence can trigger an automatic live mic commit |
+| `AIDESK_MENU_BAR_RMS_CALIBRATION_SECONDS` | `0.35` | Initial window used to estimate microphone/background RMS before speech detection adapts the threshold |
+| `AIDESK_MENU_BAR_NOISE_FLOOR_MULTIPLIER` | `2.5` | Multiplier applied to the calibrated background RMS to derive the adaptive speech threshold |
+| `AIDESK_MENU_BAR_NOISE_FLOOR_PADDING` | `0.002` | Small additive safety margin applied on top of the adaptive RMS threshold |
 
 The app automatically loads `.env` from the repository root or the project folder if present. Existing shell environment variables take precedence.
 
