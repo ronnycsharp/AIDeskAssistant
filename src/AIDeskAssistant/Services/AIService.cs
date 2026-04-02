@@ -15,7 +15,7 @@ internal sealed class AIService
     private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
-    private const string SystemPrompt       =
+    private const string SystemPrompt =
         """
         You are an AI desktop assistant that can control the user's computer.
         You have access to tools that let you:
@@ -33,9 +33,10 @@ internal sealed class AIService
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
         For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
         For desktop application workflows such as Mail, Calendar, Word, Excel, Outlook, Finder, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would, then verify the app is frontmost before typing or clicking inside it.
-        When a macOS-native UI element is hard to identify from screenshots alone, you may use peekaboo_inspect to inspect the current accessibility/UI structure if a local Peekaboo CLI is configured.
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
+        If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
+        For Microsoft Word on macOS, do not declare success after typing unless a follow-up screenshot shows visible document text or the status bar word count is no longer 0. If the document still looks blank, keep troubleshooting.
         When entering text into editors or forms, use type_text only for literal text content. Use press_key for special keys like enter, return, tab, escape, arrows, or shortcuts. Never type words like 'enter' or 'tab' into the document unless the user explicitly asked for those literal words.
         Before typing into a desktop app document or form, explicitly ensure the correct target app is frontmost. If there is any doubt, use focus_application for that app, wait briefly, take a screenshot, and only then use type_text or press_key.
         The current screen resolution will be provided with each user request. Use it as the coordinate frame for mouse positioning together with screenshots.
@@ -57,7 +58,7 @@ internal sealed class AIService
         _client   = new ChatClient(model, apiKey);
         _executor = executor;
         _debugLogger = debugLogger;
-        _history  = new List<ChatMessage> { new SystemChatMessage(SystemPrompt) };
+        _history  = new List<ChatMessage> { new SystemChatMessage(BuildSystemPrompt()) };
     }
 
     /// <summary>
@@ -76,69 +77,92 @@ internal sealed class AIService
         _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
         _history.Add(new UserChatMessage(preparedUserMessage));
 
-        var options = new ChatCompletionOptions();
-        foreach (var tool in DesktopToolDefinitions.All)
-            options.Tools.Add(tool);
+        ChatCompletionOptions options = CreateChatCompletionOptions();
 
         int toolRounds = 0;
         while (true)
         {
             ChatCompletion completion = await _client.CompleteChatAsync(_history, options, ct);
 
-            if (completion.FinishReason == ChatFinishReason.ToolCalls)
+            if (completion.FinishReason != ChatFinishReason.ToolCalls)
+                return FinalizeAssistantResponse(completion);
+
+            toolRounds++;
+            if (toolRounds > maxToolRounds)
             {
-                toolRounds++;
-                if (toolRounds > maxToolRounds)
-                {
-                    _history.Add(new AssistantChatMessage(MaxToolRoundsReachedMessage));
-                    return MaxToolRoundsReachedMessage;
-                }
-
-                // Add the assistant's tool-call message to history.
-                _history.Add(new AssistantChatMessage(completion));
-
-                // Execute each tool and collect results.
-                var toolResults = new List<ToolChatMessage>();
-                foreach (ChatToolCall toolCall in completion.ToolCalls)
-                {
-                    string toolName = toolCall.FunctionName;
-                    string argsJson = toolCall.FunctionArguments.ToString();
-
-                    onToolCall?.Invoke($"→ Tool: {toolName}({argsJson})");
-
-                    string result = _executor.Execute(toolName, argsJson);
-
-                    onToolResult?.Invoke($"← Result: {TruncateForDisplay(result)}");
-
-                    // For take_screenshot, attach the actual image so the model can see the screen.
-                    if (toolName == "take_screenshot"
-                        && TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment)
-                        && attachment is not null)
-                    {
-                        _debugLogger?.LogScreenshotAttachment(toolCall.Id, attachment);
-                        toolResults.Add(CreateScreenshotToolMessage(toolCall.Id, attachment));
-                    }
-                    else
-                    {
-                        toolResults.Add(new ToolChatMessage(toolCall.Id, result));
-                    }
-                }
-
-                // Add all tool results to the history as a single round.
-                foreach (var toolResult in toolResults)
-                    _history.Add(toolResult);
-
-                PruneHistoricalScreenshotImages();
+                _history.Add(new AssistantChatMessage(MaxToolRoundsReachedMessage));
+                return MaxToolRoundsReachedMessage;
             }
-            else
-            {
-                // Final text response.
-                string response = completion.Content[0].Text;
-                _history.Add(new AssistantChatMessage(response));
-                _debugLogger?.LogAssistantResponse(response);
-                return response;
-            }
+
+            await HandleToolCallsAsync(completion, onToolCall, onToolResult);
         }
+    }
+
+    private static ChatCompletionOptions CreateChatCompletionOptions()
+    {
+        var options = new ChatCompletionOptions();
+        foreach (ChatTool tool in DesktopToolDefinitions.GetChatTools())
+            options.Tools.Add(tool);
+
+        return options;
+    }
+
+    internal static string BuildSystemPrompt()
+        => SystemPrompt;
+
+    private async Task HandleToolCallsAsync(
+        ChatCompletion completion,
+        Action<string>? onToolCall,
+        Action<string>? onToolResult)
+    {
+        _history.Add(new AssistantChatMessage(completion));
+
+        foreach (ToolChatMessage toolResult in ExecuteToolCalls(completion.ToolCalls, onToolCall, onToolResult))
+            _history.Add(toolResult);
+
+        PruneHistoricalScreenshotImages();
+        await Task.CompletedTask;
+    }
+
+    private IEnumerable<ToolChatMessage> ExecuteToolCalls(
+        IReadOnlyList<ChatToolCall> toolCalls,
+        Action<string>? onToolCall,
+        Action<string>? onToolResult)
+    {
+        foreach (ChatToolCall toolCall in toolCalls)
+        {
+            string toolName = toolCall.FunctionName;
+            string argsJson = toolCall.FunctionArguments.ToString();
+
+            onToolCall?.Invoke($"→ Tool: {toolName}({argsJson})");
+
+            string result = _executor.Execute(toolName, argsJson);
+
+            onToolResult?.Invoke($"← Result: {TruncateForDisplay(result)}");
+
+            yield return CreateToolResultMessage(toolCall, toolName, result);
+        }
+    }
+
+    private ToolChatMessage CreateToolResultMessage(ChatToolCall toolCall, string toolName, string result)
+    {
+        if (toolName == "take_screenshot"
+            && TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment)
+            && attachment is not null)
+        {
+            _debugLogger?.LogScreenshotAttachment(toolCall.Id, attachment);
+            return CreateScreenshotToolMessage(toolCall.Id, attachment);
+        }
+
+        return new ToolChatMessage(toolCall.Id, result);
+    }
+
+    private string FinalizeAssistantResponse(ChatCompletion completion)
+    {
+        string response = completion.Content[0].Text;
+        _history.Add(new AssistantChatMessage(response));
+        _debugLogger?.LogAssistantResponse(response);
+        return response;
     }
 
     /// <summary>Clears the conversation history (keeps the system prompt).</summary>

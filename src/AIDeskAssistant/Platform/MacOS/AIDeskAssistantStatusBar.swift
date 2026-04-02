@@ -10,6 +10,7 @@ struct AssistantResponse: Decodable {
 
 final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private let serverURL: URL
+    private let dismissPopover: () -> Void
     private let textField = NSTextField(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "Bereit")
     private let sendButton = NSButton(title: "Senden", target: nil, action: nil)
@@ -20,8 +21,9 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private var audioPlayer: AVAudioPlayer?
     private var recordedFileURL: URL?
 
-    init(serverURL: URL) {
+    init(serverURL: URL, dismissPopover: @escaping () -> Void) {
         self.serverURL = serverURL
+        self.dismissPopover = dismissPopover
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -81,6 +83,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
 
         textField.stringValue = ""
         setStatus("Sende Nachricht …")
+        dismissForAutomation()
 
         var request = URLRequest(url: serverURL.appendingPathComponent("message"))
         request.httpMethod = "POST"
@@ -145,6 +148,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         do {
             let data = try Data(contentsOf: fileURL)
             setStatus("Sende Audio …")
+            dismissForAutomation()
 
             var request = URLRequest(url: serverURL.appendingPathComponent("audio"))
             request.httpMethod = "POST"
@@ -219,6 +223,11 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private func setStatus(_ text: String) {
         statusLabel.stringValue = text
     }
+
+    private func dismissForAutomation() {
+        dismissPopover()
+        NSApp.hide(nil)
+    }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -231,7 +240,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        let viewController = StatusBarViewController(serverURL: serverURL)
+        let viewController = StatusBarViewController(serverURL: serverURL) { [weak self] in
+            self?.popover.performClose(nil)
+        }
         popover.contentViewController = viewController
         popover.behavior = .transient
 

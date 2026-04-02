@@ -17,8 +17,8 @@ internal sealed class ProcessTerminalService : ITerminalService
 
         foreach (string argument in arguments)
         {
-            if (argument.Contains('\0') || argument.Contains('\r') || argument.Contains('\n'))
-                throw new ArgumentException("Command arguments must not contain control characters.", nameof(arguments));
+            if (argument.Contains('\0'))
+                throw new ArgumentException("Command arguments must not contain NUL characters.", nameof(arguments));
         }
 
         int effectiveTimeout = Math.Clamp(timeoutMs, MinTimeoutMs, MaxTimeoutMs);
@@ -63,6 +63,17 @@ internal sealed class ProcessTerminalService : ITerminalService
     {
         if (string.IsNullOrWhiteSpace(command))
             throw new ArgumentException("Command is required.", nameof(command));
+
+        if (Path.IsPathFullyQualified(command))
+        {
+            foreach (char c in command)
+            {
+                if (c is '\0' or '\r' or '\n')
+                    throw new ArgumentException($"Invalid command name: '{command}'", nameof(command));
+            }
+
+            return;
+        }
 
         foreach (char c in command)
         {

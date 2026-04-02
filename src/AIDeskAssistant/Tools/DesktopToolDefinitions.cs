@@ -201,27 +201,6 @@ internal static class DesktopToolDefinitions
         ),
 
           new(
-            "peekaboo_inspect",
-            "Runs the optional local Peekaboo CLI as a macOS UI inspector and returns its output. Use this for debugging tricky native UI structure, accessibility labels, focus, or element hierarchies when screenshots alone are not enough. Extra CLI arguments can be appended if your local Peekaboo setup expects them.",
-            BinaryData.FromString("""
-            {
-              "type": "object",
-              "properties": {
-                "arguments": {
-                  "type": "array",
-                  "items": { "type": "string" },
-                  "description": "Optional extra Peekaboo CLI arguments appended after the configured base inspect arguments"
-                },
-                "timeout_ms": {
-                  "type": "integer",
-                  "description": "Optional command timeout in milliseconds"
-                }
-              }
-            }
-            """)
-        ),
-
-          new(
             "click_dock_application",
             "On macOS, clicks an application icon in the Dock by title using Accessibility APIs. Prefer this when you want to start or foreground a GUI app the same way a human user would, for example Mail, Calendar, Microsoft Word, Safari, or Blender.",
             BinaryData.FromString("""
@@ -362,7 +341,8 @@ internal static class DesktopToolDefinitions
         ),
     };
 
-        public static IReadOnlyList<ChatTool> All { get; } = FunctionDefinitions
+      public static IReadOnlyList<ChatTool> GetChatTools()
+        => FunctionDefinitions
           .Select(static definition => ChatTool.CreateFunctionTool(definition.Name, definition.Description, definition.Parameters))
           .ToList();
 
@@ -398,4 +378,10 @@ internal static class DesktopToolDefinitions
 
         return items;
     }
+
+  /// <summary>Gets a bool value from the args dictionary, returning a default if missing.</summary>
+  public static bool GetBool(Dictionary<string, JsonElement> args, string key, bool defaultValue = false)
+    => args.TryGetValue(key, out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False)
+      ? v.GetBoolean()
+      : defaultValue;
 }

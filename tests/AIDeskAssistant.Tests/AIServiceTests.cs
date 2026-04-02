@@ -8,6 +8,15 @@ namespace AIDeskAssistant.Tests;
 public sealed class AIServiceTests
 {
     [Fact]
+    public void BuildSystemPrompt_UsesInternalScreenshotWorkflow()
+    {
+        string prompt = AIService.BuildSystemPrompt();
+
+        Assert.Contains("Always take a screenshot first", prompt);
+        Assert.Contains("After each significant action, take another screenshot", prompt);
+    }
+
+    [Fact]
     public void BuildUserMessageWithScreenInfo_PrependsScreenContext()
     {
         string result = AIService.BuildUserMessageWithScreenInfo(

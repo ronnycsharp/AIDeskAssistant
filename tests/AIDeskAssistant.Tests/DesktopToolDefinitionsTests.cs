@@ -10,7 +10,7 @@ public sealed class DesktopToolDefinitionsTests
     [Fact]
     public void All_ContainsExpectedTools()
     {
-        var names = DesktopToolDefinitions.All.Select(t => t.FunctionName).ToList();
+        var names = DesktopToolDefinitions.GetChatTools().Select(t => t.FunctionName).ToList();
 
         Assert.Contains("take_screenshot",    names);
         Assert.Contains("get_screen_info",    names);
@@ -25,7 +25,6 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("focus_application",  names);
         Assert.Contains("open_url",           names);
         Assert.Contains("run_command",        names);
-        Assert.Contains("peekaboo_inspect",   names);
         Assert.Contains("click_dock_application", names);
         Assert.Contains("click_apple_menu_item", names);
         Assert.Contains("click_system_settings_sidebar_item", names);
@@ -39,8 +38,8 @@ public sealed class DesktopToolDefinitionsTests
     [Fact]
     public void All_HasAtLeastTenTools()
     {
-        Assert.True(DesktopToolDefinitions.All.Count >= 10,
-            $"Expected at least 10 tools but found {DesktopToolDefinitions.All.Count}");
+        Assert.True(DesktopToolDefinitions.GetChatTools().Count >= 10,
+            $"Expected at least 10 tools but found {DesktopToolDefinitions.GetChatTools().Count}");
     }
 
     [Theory]
@@ -101,5 +100,15 @@ public sealed class DesktopToolDefinitionsTests
         IReadOnlyList<string> values = DesktopToolDefinitions.GetStringArray(args, "arguments");
 
         Assert.Equal(["status", "--short"], values);
+    }
+
+    [Fact]
+    public void GetBool_ReturnsExpectedValue()
+    {
+        var args = DesktopToolDefinitions.ParseArgs("""{"double_click":true}""");
+
+        bool value = DesktopToolDefinitions.GetBool(args, "double_click");
+
+        Assert.True(value);
     }
 }

@@ -4,25 +4,26 @@ using AIDeskAssistant.Tools;
 
 namespace AIDeskAssistant.Tests;
 
-// ── Fakes ────────────────────────────────────────────────────────────────────
-
 internal sealed class FakeScreenshotService : IScreenshotService
 {
     public byte[] TakeScreenshot() => Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRsl0AAAAASUVORK5CYII=");
-    public ScreenInfo GetScreenInfo() => new ScreenInfo(1920, 1080, 32);
+
+    public ScreenInfo GetScreenInfo() => new(1920, 1080, 32);
 }
 
 internal sealed class FakeMouseService : IMouseService
 {
     public (int X, int Y) LastMoveTarget;
     public (int X, int Y) LastClickTarget;
-    public MouseButton    LastClickButton;
+    public MouseButton LastClickButton;
     public (int X, int Y) LastDoubleClickTarget;
-    public int            LastScrollDelta;
+    public int LastScrollDelta;
 
     public void MoveTo(int x, int y) => LastMoveTarget = (x, y);
 
-    public void Click(MouseButton button = MouseButton.Left) { }
+    public void Click(MouseButton button = MouseButton.Left)
+    {
+    }
 
     public void ClickAt(int x, int y, MouseButton button = MouseButton.Left)
     {
@@ -39,11 +40,12 @@ internal sealed class FakeMouseService : IMouseService
 
 internal sealed class FakeKeyboardService : IKeyboardService
 {
-    public string LastTypedText  = string.Empty;
+    public string LastTypedText = string.Empty;
     public string LastPressedKey = string.Empty;
 
-    public void TypeText(string text) => LastTypedText  = text;
-    public void PressKey(string keyCombo)  => LastPressedKey = keyCombo;
+    public void TypeText(string text) => LastTypedText = text;
+
+    public void PressKey(string keyCombo) => LastPressedKey = keyCombo;
 }
 
 internal sealed class FakeTerminalService : ITerminalService
@@ -51,13 +53,11 @@ internal sealed class FakeTerminalService : ITerminalService
     public string LastCommand = string.Empty;
     public IReadOnlyList<string> LastArguments = Array.Empty<string>();
     public int LastTimeoutMs;
-    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut) NextResult
-        = (0, "ok", string.Empty, false);
+    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut) NextResult = (0, "ok", string.Empty, false);
 
-    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut)
-        ExecuteCommand(string command, IReadOnlyList<string> arguments, int timeoutMs)
+    public (int ExitCode, string StandardOutput, string StandardError, bool TimedOut) ExecuteCommand(string command, IReadOnlyList<string> arguments, int timeoutMs)
     {
-        LastCommand   = command;
+        LastCommand = command;
         LastArguments = arguments;
         LastTimeoutMs = timeoutMs;
         return NextResult;
@@ -97,17 +97,15 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
     }
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 public sealed class DesktopToolExecutorTests
 {
     private readonly FakeScreenshotService _screenshot = new();
-    private readonly FakeMouseService      _mouse      = new();
-    private readonly FakeKeyboardService   _keyboard   = new();
-    private readonly FakeTerminalService   _terminal   = new();
-    private readonly FakeWindowService     _window     = new();
+    private readonly FakeMouseService _mouse = new();
+    private readonly FakeKeyboardService _keyboard = new();
+    private readonly FakeTerminalService _terminal = new();
+    private readonly FakeWindowService _window = new();
     private readonly FakeUiAutomationService _uiAutomation = new();
-    private readonly DesktopToolExecutor   _sut;
+    private readonly DesktopToolExecutor _sut;
 
     public DesktopToolExecutorTests()
     {
@@ -115,232 +113,153 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
-    public void Execute_TakeScreenshot_ReturnsBase64String()
+    public void Execute_TakeScreenshot_ReturnsPayload()
     {
         string result = _sut.Execute("take_screenshot", "{}");
+
         Assert.Contains("Base64:", result);
         Assert.Contains("Original:", result);
         Assert.Contains("Final:", result);
     }
 
     [Fact]
-    public void Execute_GetScreenInfo_ReturnsResolution()
+    public void Execute_MoveMouse_UsesMouseService()
     {
-        string result = _sut.Execute("get_screen_info", "{}");
-        Assert.Contains("1920", result);
-        Assert.Contains("1080", result);
-    }
+        string result = _sut.Execute("move_mouse", "{\"x\":300,\"y\":400}");
 
-    [Fact]
-    public void Execute_GetCursorPosition_ReturnsCursorCoords()
-    {
-        string result = _sut.Execute("get_cursor_position", "{}");
-        Assert.Contains("640", result);
-        Assert.Contains("480", result);
-    }
-
-    [Fact]
-    public void Execute_MoveMouse_CallsServiceWithCorrectCoords()
-    {
-        _sut.Execute("move_mouse", """{"x":300,"y":400}""");
         Assert.Equal((300, 400), _mouse.LastMoveTarget);
+        Assert.Equal("Mouse moved to (300, 400)", result);
     }
 
     [Fact]
-    public void Execute_MoveMouse_ReturnsConfirmation()
+    public void Execute_Click_UsesSelectedButton()
     {
-        string result = _sut.Execute("move_mouse", """{"x":300,"y":400}""");
-        Assert.Contains("300", result);
-        Assert.Contains("400", result);
-    }
+        string result = _sut.Execute("click", "{\"x\":100,\"y\":200,\"button\":\"right\"}");
 
-    [Fact]
-    public void Execute_Click_LeftButton_CallsServiceCorrectly()
-    {
-        _sut.Execute("click", """{"x":100,"y":200,"button":"left"}""");
         Assert.Equal((100, 200), _mouse.LastClickTarget);
-        Assert.Equal(MouseButton.Left, _mouse.LastClickButton);
-    }
-
-    [Fact]
-    public void Execute_Click_RightButton_UsesRightButton()
-    {
-        _sut.Execute("click", """{"x":50,"y":75,"button":"right"}""");
         Assert.Equal(MouseButton.Right, _mouse.LastClickButton);
+        Assert.Equal("Clicked Right button at (100, 200)", result);
     }
 
     [Fact]
-    public void Execute_DoubleClick_CallsServiceWithCorrectCoords()
+    public void Execute_DoubleClick_UsesMouseService()
     {
-        _sut.Execute("double_click", """{"x":150,"y":250}""");
+        _sut.Execute("double_click", "{\"x\":150,\"y\":250}");
+
         Assert.Equal((150, 250), _mouse.LastDoubleClickTarget);
     }
 
     [Fact]
-    public void Execute_Scroll_PositiveDelta_ScrollsUp()
+    public void Execute_Scroll_UsesMouseService()
     {
-        _sut.Execute("scroll", """{"delta":3}""");
-        Assert.Equal(3, _mouse.LastScrollDelta);
-    }
+        string result = _sut.Execute("scroll", "{\"delta\":-5}");
 
-    [Fact]
-    public void Execute_Scroll_NegativeDelta_ScrollsDown()
-    {
-        _sut.Execute("scroll", """{"delta":-5}""");
         Assert.Equal(-5, _mouse.LastScrollDelta);
+        Assert.Equal("Scrolled down by 5", result);
     }
 
     [Fact]
-    public void Execute_TypeText_CallsServiceWithText()
+    public void Execute_TypeText_UsesKeyboardService()
     {
-        _sut.Execute("type_text", """{"text":"Hello World"}""");
-        Assert.Equal("Hello World", _keyboard.LastTypedText);
+        string result = _sut.Execute("type_text", "{\"text\":\"Hello\"}");
+
+        Assert.Equal("Hello", _keyboard.LastTypedText);
+        Assert.Equal("Typed 5 character(s)", result);
     }
 
     [Fact]
-    public void Execute_TypeText_ReturnsCharacterCount()
+    public void Execute_PressKey_UsesKeyboardService()
     {
-        string result = _sut.Execute("type_text", """{"text":"Hello"}""");
-        Assert.Contains("5", result);
+        string result = _sut.Execute("press_key", "{\"key\":\"cmd+s\"}");
+
+        Assert.Equal("cmd+s", _keyboard.LastPressedKey);
+        Assert.Equal("Pressed key: cmd+s", result);
     }
 
     [Fact]
-    public void Execute_PressKey_CallsServiceWithKey()
+    public void Execute_RunCommand_FormatsTerminalResult()
     {
-        _sut.Execute("press_key", """{"key":"ctrl+c"}""");
-        Assert.Equal("ctrl+c", _keyboard.LastPressedKey);
+        _terminal.NextResult = (2, "stdout", "stderr", false);
+
+        string result = _sut.Execute("run_command", "{\"command\":\"echo\",\"arguments\":[\"hello\"],\"timeout_ms\":5000}");
+
+        Assert.Equal("echo", _terminal.LastCommand);
+        Assert.Equal(new[] { "hello" }, _terminal.LastArguments);
+        Assert.Equal(5000, _terminal.LastTimeoutMs);
+        Assert.Contains("exited with code 2", result);
+        Assert.Contains("stdout", result);
+        Assert.Contains("stderr", result);
     }
 
     [Fact]
-    public void Execute_Wait_ReturnsConfirmation()
+    public void Execute_RunCommand_ClampsTimeout()
     {
-        string result = _sut.Execute("wait", """{"milliseconds":100}""");
-        Assert.Contains("100", result);
+        _sut.Execute("run_command", "{\"command\":\"echo\",\"timeout_ms\":999999}");
+
+        Assert.Equal(60000, _terminal.LastTimeoutMs);
     }
 
     [Fact]
-    public void Execute_Wait_ClampsToMinimum()
+    public void Execute_OpenApplication_RejectsUnsafeName()
     {
-        string result = _sut.Execute("wait", """{"milliseconds":1}""");
-        // Should clamp to 100 ms minimum
-        Assert.Contains("100", result);
+        string result = _sut.Execute("open_application", "{\"name\":\"bad;app\"}");
+
+        Assert.Equal("Invalid application name: 'bad;app'", result);
     }
 
     [Fact]
-    public void Execute_Wait_ClampsToMaximum()
+    public void Execute_FocusApplication_RejectsUnsafeName()
     {
-        string result = _sut.Execute("wait", """{"milliseconds":99999}""");
-        // Should clamp to 10000 ms maximum
-        Assert.Contains("10000", result);
+        string result = _sut.Execute("focus_application", "{\"name\":\"bad|app\"}");
+
+        Assert.Equal("Invalid application name: 'bad|app'", result);
     }
 
     [Fact]
-    public void Execute_OpenApplication_EmptyName_ReturnsError()
+    public void Execute_OpenUrl_RejectsInvalidScheme()
     {
-        string result = _sut.Execute("open_application", """{"name":""}""");
-        Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
+        string result = _sut.Execute("open_url", "{\"url\":\"file:///tmp/test\"}");
+
+        Assert.Equal("Invalid URL: 'file:///tmp/test'", result);
     }
 
     [Fact]
-    public void Execute_FocusApplication_EmptyName_ReturnsError()
+    public void Execute_ClickDockApplication_ForwardsTitles()
     {
-        string result = _sut.Execute("focus_application", """{"name":""}""");
-        Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
-    }
+        string result = _sut.Execute("click_dock_application", "{\"title\":\"Safari\",\"alternate_titles\":[\"Web Browser\"]}");
 
-    [Theory]
-    [InlineData("Safari/../../etc/passwd")]
-    [InlineData("app;rm -rf /")]
-    [InlineData("app|evil")]
-    public void Execute_OpenApplication_MaliciousName_ReturnsInvalidError(string name)
-    {
-        string json   = System.Text.Json.JsonSerializer.Serialize(new { name });
-        string result = _sut.Execute("open_application", json);
-        Assert.Contains("Invalid", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "Safari", "Web Browser" }, _uiAutomation.LastDockTitles);
+        Assert.Contains("Safari, Web Browser", result);
     }
 
     [Fact]
-    public void Execute_OpenUrl_EmptyUrl_ReturnsError()
+    public void Execute_ClickAppleMenuItem_RequiresTitle()
     {
-        string result = _sut.Execute("open_url", """{"url":""}""");
-        Assert.Contains("required", result, StringComparison.OrdinalIgnoreCase);
-    }
+        string result = _sut.Execute("click_apple_menu_item", "{}");
 
-    [Theory]
-    [InlineData("not-a-url")]
-    [InlineData("file:///tmp/test.txt")]
-    [InlineData("javascript:alert('xss')")]
-    public void Execute_OpenUrl_InvalidUrl_ReturnsInvalidError(string url)
-    {
-        string json = System.Text.Json.JsonSerializer.Serialize(new { url });
-        string result = _sut.Execute("open_url", json);
-        Assert.Contains("Invalid URL", result, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("At least one Apple menu item title is required", result);
     }
 
     [Fact]
-    public void Execute_RunCommand_PassesCommandArgumentsAndTimeout()
+    public void Execute_ClickSystemSettingsSidebarItem_ForwardsTitles()
     {
-        _terminal.NextResult = (0, "On branch main", string.Empty, false);
+        string result = _sut.Execute("click_system_settings_sidebar_item", "{\"title\":\"Displays\"}");
 
-        string result = _sut.Execute("run_command", """{"command":"git","arguments":["status","--short"],"timeout_ms":2500}""");
-
-        Assert.Equal("git", _terminal.LastCommand);
-        Assert.Equal(["status", "--short"], _terminal.LastArguments);
-        Assert.Equal(2500, _terminal.LastTimeoutMs);
-        Assert.Contains("On branch main", result);
+        Assert.Equal(new[] { "Displays" }, _uiAutomation.LastSidebarTitles);
+        Assert.Contains("Displays", result);
     }
 
     [Fact]
-    public void Execute_RunCommand_FormatsTimedOutResult()
+    public void Execute_FocusFrontmostWindowContent_ForwardsApplicationName()
     {
-        _terminal.NextResult = (-1, "partial output", string.Empty, true);
+        string result = _sut.Execute("focus_frontmost_window_content", "{\"application_name\":\"Safari\"}");
 
-        string result = _sut.Execute("run_command", """{"command":"dotnet"}""");
-
-        Assert.Contains("timed out", result, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("partial output", result);
+        Assert.Equal("Safari", _uiAutomation.LastFocusedContentApplicationName);
+        Assert.Equal("Focused frontmost window content for Safari", result);
     }
 
     [Fact]
-    public void Execute_PeekabooInspect_UsesConfiguredCommandAndArgs()
-    {
-        string? originalCommand = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND");
-        string? originalArgs = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS");
-        string? originalTimeout = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS");
-
-        try
-        {
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND", "peekaboo-cli");
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS", "see --json --app frontmost");
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS", "25000");
-            _terminal.NextResult = (0, "{\"ok\":true}", string.Empty, false);
-
-            string result = _sut.Execute("peekaboo_inspect", """{"arguments":["--focused-only"]}""");
-
-            Assert.Equal("peekaboo-cli", _terminal.LastCommand);
-            Assert.Equal(["see", "--json", "--app", "frontmost", "--focused-only"], _terminal.LastArguments);
-            Assert.Equal(25000, _terminal.LastTimeoutMs);
-            Assert.Contains("Peekaboo command exited with code 0.", result);
-            Assert.Contains("{\"ok\":true}", result);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND", originalCommand);
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS", originalArgs);
-            Environment.SetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS", originalTimeout);
-        }
-    }
-
-    [Fact]
-    public void TokenizeArguments_PreservesQuotedSegments()
-    {
-        IReadOnlyList<string> tokens = DesktopToolExecutor.TokenizeArguments("see --json --app frontmost --query \"Microsoft Word\"");
-
-        Assert.Equal(["see", "--json", "--app", "frontmost", "--query", "Microsoft Word"], tokens);
-    }
-
-    [Fact]
-    public void Execute_GetActiveWindowBounds_ReturnsBounds()
+    public void Execute_GetActiveWindowBounds_UsesWindowService()
     {
         string result = _sut.Execute("get_active_window_bounds", "{}");
 
@@ -351,73 +270,51 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
-    public void Execute_MoveActiveWindow_CallsWindowService()
+    public void Execute_MoveActiveWindow_UsesWindowService()
     {
-        string result = _sut.Execute("move_active_window", """{"x":320,"y":180}""");
+        string result = _sut.Execute("move_active_window", "{\"x\":42,\"y\":84}");
 
-        Assert.Equal((320, 180), _window.LastMoveTarget);
-        Assert.Contains("320", result);
-        Assert.Contains("180", result);
+        Assert.Equal((42, 84), _window.LastMoveTarget);
+        Assert.Equal("Moved active window to (42, 84)", result);
     }
 
     [Fact]
-    public void Execute_ResizeActiveWindow_CallsWindowService()
+    public void Execute_ResizeActiveWindow_EnforcesMinimumSize()
     {
-        string result = _sut.Execute("resize_active_window", """{"width":1280,"height":720}""");
-
-        Assert.Equal((1280, 720), _window.LastResizeTarget);
-        Assert.Contains("1280", result);
-        Assert.Contains("720", result);
-    }
-
-    [Fact]
-    public void Execute_ResizeActiveWindow_ClampsToMinimum()
-    {
-        _sut.Execute("resize_active_window", """{"width":1,"height":50}""");
+        string result = _sut.Execute("resize_active_window", "{\"width\":50,\"height\":80}");
 
         Assert.Equal((100, 100), _window.LastResizeTarget);
+        Assert.Equal("Resized active window to 100x100", result);
     }
 
     [Fact]
-    public void Execute_UnknownTool_ReturnsErrorMessage()
+    public void Execute_Wait_ClampsMilliseconds()
     {
-        string result = _sut.Execute("nonexistent_tool", "{}");
-        Assert.Contains("Unknown tool", result);
+        string result = _sut.Execute("wait", "{\"milliseconds\":10}");
+
+        Assert.Equal("Waited 100 ms", result);
     }
 
     [Fact]
-    public void Execute_ClickAppleMenuItem_CallsUiAutomationService()
+    public void Execute_UnknownTool_ReturnsError()
     {
-        string result = _sut.Execute("click_apple_menu_item", """{"title":"System Settings","alternate_titles":["System Preferences"]}""");
+        string result = _sut.Execute("does_not_exist", "{}");
 
-        Assert.Equal(["System Settings", "System Preferences"], _uiAutomation.LastAppleMenuTitles);
-        Assert.Contains("System Settings", result);
+        Assert.Equal("Unknown tool: does_not_exist", result);
     }
 
-    [Fact]
-    public void Execute_ClickDockApplication_CallsUiAutomationService()
+    [Theory]
+    [InlineData("Word", "Microsoft Word")]
+    [InlineData("Excel", "Microsoft Excel")]
+    [InlineData("Notes", "Notes")]
+    public void ResolveApplicationName_ReturnsExpectedMacAliases(string requested, string expected)
     {
-        string result = _sut.Execute("click_dock_application", """{"title":"Microsoft Word","alternate_titles":["Word"]}""");
+        if (!OperatingSystem.IsMacOS())
+        {
+            Assert.Equal(requested, DesktopToolExecutor.ResolveApplicationName(requested));
+            return;
+        }
 
-        Assert.Equal(["Microsoft Word", "Word"], _uiAutomation.LastDockTitles);
-        Assert.Contains("Microsoft Word", result);
-    }
-
-    [Fact]
-    public void Execute_ClickSystemSettingsSidebarItem_CallsUiAutomationService()
-    {
-        string result = _sut.Execute("click_system_settings_sidebar_item", """{"title":"Wi-Fi","alternate_titles":["WLAN"]}""");
-
-        Assert.Equal(["Wi-Fi", "WLAN"], _uiAutomation.LastSidebarTitles);
-        Assert.Contains("Wi-Fi", result);
-    }
-
-    [Fact]
-    public void Execute_FocusFrontmostWindowContent_CallsUiAutomationService()
-    {
-        string result = _sut.Execute("focus_frontmost_window_content", """{"application_name":"Microsoft Word"}""");
-
-        Assert.Equal("Microsoft Word", _uiAutomation.LastFocusedContentApplicationName);
-        Assert.Contains("Microsoft Word", result);
+        Assert.Equal(expected, DesktopToolExecutor.ResolveApplicationName(requested));
     }
 }

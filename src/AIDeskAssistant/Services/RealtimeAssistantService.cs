@@ -7,36 +7,6 @@ namespace AIDeskAssistant.Services;
 
 internal sealed class RealtimeAssistantService : IAsyncDisposable
 {
-    private const string SystemPrompt =
-        """
-        You are an AI desktop assistant that can control the user's computer.
-        You have access to tools that let you:
-        - Take screenshots to see the current state of the screen
-        - Move the mouse and click
-        - Type text and press keys
-        - Open applications
-        - Open URLs directly in the browser
-        - Run terminal/CLI commands and read their text output
-        - Move and resize the active window
-        - Wait between actions
-
-        When the user gives you a task, figure out the necessary steps and execute them one at a time.
-        Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
-        For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
-        For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
-        For desktop application workflows such as Word, Excel, Mail, Calendar, Finder, Safari, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would.
-        When a macOS-native UI element is hard to identify from screenshots alone, you may use peekaboo_inspect to inspect the current accessibility/UI structure if a local Peekaboo CLI is configured.
-        On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
-        Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
-        When entering text into editors or forms, use type_text only for literal text content. Use press_key for enter, return, tab, escape, arrows, delete, and shortcuts. Never type words like 'enter' or 'tab' into the document unless the user explicitly asked for those literal words.
-        Before typing into a desktop app document or form, explicitly ensure the correct target app is frontmost. If there is any doubt, use focus_application for that app, wait briefly, take a screenshot, and only then use type_text or press_key.
-        Always take a screenshot first to understand the current screen state before acting.
-        After each significant action, take another screenshot to confirm the result.
-        Be precise with coordinates — use the screenshot to determine exact pixel positions.
-        If something doesn't work, try an alternative approach.
-        Explain what you are doing at each step.
-        """;
-
     private readonly string _model;
     private readonly string _voice;
     private readonly int _sampleRate;
@@ -107,7 +77,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _disposeCts.Cancel();
+        await _disposeCts.CancelAsync();
 
         if (_receiveLoopTask is not null)
         {
@@ -117,6 +87,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             }
             catch (OperationCanceledException)
             {
+                // Expected when disposal cancels the receive loop.
             }
         }
 
@@ -220,7 +191,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     {
         RealtimeConversationSessionOptions options = new()
         {
-            Instructions = SystemPrompt,
+            Instructions = AIService.BuildSystemPrompt(),
             AudioOptions = new RealtimeConversationSessionAudioOptions
             {
                 InputAudioOptions = new RealtimeConversationSessionInputAudioOptions
@@ -252,7 +223,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         return options;
     }
 
-    private RealtimeResponseOptions CreateResponseOptions()
+    private static RealtimeResponseOptions CreateResponseOptions()
     {
         RealtimeResponseOptions options = new();
 

@@ -102,15 +102,6 @@ This writes a timestamped session folder under `.aidesk-debug/` by default. It c
 - the assistant's final text responses
 - the actual screenshot image files attached to the model, plus a small metadata file for each screenshot
 
-Optional Peekaboo integration for macOS UI inspection:
-
-```bash
-export AIDESK_PEEKABOO_COMMAND=peekaboo
-export AIDESK_PEEKABOO_INSPECT_ARGUMENTS="see --json --app frontmost --annotate"
-```
-
-If your local Peekaboo CLI uses different subcommands or flags, adjust `AIDESK_PEEKABOO_INSPECT_ARGUMENTS`. The assistant can then use the `peekaboo_inspect` tool to inspect current macOS UI structure when screenshots alone are not enough.
-
 ### 4. Give it a task
 
 ```
@@ -144,9 +135,6 @@ You> /help
 | `AIDESK_DEBUG_MODEL_IO` | *(unset)* | Enable CLI debug logging for prepared model input, tool trace, and attached screenshots |
 | `AIDESK_DEBUG_DIR` | `.aidesk-debug` | Base directory where timestamped debug sessions are written |
 | `AIDESK_MENU_BAR_STATUS_FILE` | temp dir | Optional path used to track the running background menu bar host |
-| `AIDESK_PEEKABOO_COMMAND` | `peekaboo` | Optional local Peekaboo CLI executable used by the `peekaboo_inspect` tool |
-| `AIDESK_PEEKABOO_INSPECT_ARGUMENTS` | `see --json --app frontmost --annotate` | Base arguments used when invoking the local Peekaboo CLI |
-| `AIDESK_PEEKABOO_TIMEOUT_MS` | `15000` | Timeout for the `peekaboo_inspect` tool |
 | `AIDESK_SCREENSHOT_MAX_DIMENSION` | `1280` | Maximum width or height used for screenshots sent to the model |
 | `AIDESK_SCREENSHOT_JPEG_QUALITY` | `60` | JPEG quality for optimized screenshots |
 | `AIDESK_REALTIME_VOICE` | `alloy` | Voice name for macOS menu bar mode |
@@ -172,9 +160,13 @@ The following tools are exposed to the AI model:
 | `type_text`          | Type a string via keyboard |
 | `press_key`          | Press a key combo e.g. `ctrl+c`, `cmd+space` |
 | `open_application`   | Open an app by name |
+| `focus_application`  | Bring an already running app to the foreground |
 | `open_url`           | Open an `http`/`https` URL in the default browser |
 | `run_command`        | Run an installed CLI executable and return stdout/stderr |
-| `peekaboo_inspect`   | Run an optional local Peekaboo CLI to inspect macOS UI/accessibility structure |
+| `click_dock_application` | Click a Dock app icon through macOS Accessibility |
+| `click_apple_menu_item` | Click an Apple menu item through macOS Accessibility |
+| `click_system_settings_sidebar_item` | Click a System Settings sidebar item through macOS Accessibility |
+| `focus_frontmost_window_content` | Focus a likely document/content area inside the frontmost macOS window |
 | `get_active_window_bounds` | Get the active window position and size |
 | `move_active_window` | Move the active window to a screen position |
 | `resize_active_window` | Resize the active window |

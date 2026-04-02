@@ -8,12 +8,16 @@ namespace AIDeskAssistant.Tools;
 /// <summary>Executes desktop tool calls dispatched by the OpenAI model.</summary>
 internal sealed class DesktopToolExecutor
 {
+    private const string TimeoutMsArg = "timeout_ms";
+    private const string WidthArg = "width";
+    private const string HeightArg = "height";
+
     private readonly IScreenshotService _screenshot;
     private readonly ScreenshotOptimizer _screenshotOptimizer;
-    private readonly IMouseService      _mouse;
-    private readonly IKeyboardService   _keyboard;
-    private readonly ITerminalService   _terminal;
-    private readonly IWindowService     _window;
+    private readonly IMouseService _mouse;
+    private readonly IKeyboardService _keyboard;
+    private readonly ITerminalService _terminal;
+    private readonly IWindowService _window;
     private readonly IUiAutomationService _uiAutomation;
 
     public DesktopToolExecutor(
@@ -26,37 +30,32 @@ internal sealed class DesktopToolExecutor
     {
         _screenshot = screenshot;
         _screenshotOptimizer = new ScreenshotOptimizer(ScreenshotOptimizer.ReadFromEnvironment());
-        _mouse      = mouse;
-        _keyboard   = keyboard;
-        _terminal   = terminal;
-        _window     = window;
+        _mouse = mouse;
+        _keyboard = keyboard;
+        _terminal = terminal;
+        _window = window;
         _uiAutomation = uiAutomation;
     }
 
-    /// <summary>
-    /// Executes the named tool with the supplied JSON arguments string and
-    /// returns a plain-text result that will be fed back to the model.
-    /// </summary>
     public string Execute(string toolName, string argsJson)
     {
         var args = DesktopToolDefinitions.ParseArgs(argsJson);
 
         return toolName switch
         {
-            "take_screenshot"   => TakeScreenshot(),
-            "get_screen_info"   => GetScreenInfo(),
+            "take_screenshot" => TakeScreenshot(),
+            "get_screen_info" => GetScreenInfo(),
             "get_cursor_position" => GetCursorPosition(),
-            "move_mouse"        => MoveMouse(args),
-            "click"             => Click(args),
-            "double_click"      => DoubleClick(args),
-            "scroll"            => Scroll(args),
-            "type_text"         => TypeText(args),
-            "press_key"         => PressKey(args),
-            "open_application"  => OpenApplication(args),
+            "move_mouse" => MoveMouse(args),
+            "click" => Click(args),
+            "double_click" => DoubleClick(args),
+            "scroll" => Scroll(args),
+            "type_text" => TypeText(args),
+            "press_key" => PressKey(args),
+            "open_application" => OpenApplication(args),
             "focus_application" => FocusApplication(args),
-            "open_url"          => OpenUrl(args),
-            "run_command"       => RunCommand(args),
-            "peekaboo_inspect"  => PeekabooInspect(args),
+            "open_url" => OpenUrl(args),
+            "run_command" => RunCommand(args),
             "click_dock_application" => ClickDockApplication(args),
             "click_apple_menu_item" => ClickAppleMenuItem(args),
             "click_system_settings_sidebar_item" => ClickSystemSettingsSidebarItem(args),
@@ -64,8 +63,8 @@ internal sealed class DesktopToolExecutor
             "get_active_window_bounds" => GetActiveWindowBounds(),
             "move_active_window" => MoveActiveWindow(args),
             "resize_active_window" => ResizeActiveWindow(args),
-            "wait"              => Wait(args),
-            _                   => $"Unknown tool: {toolName}",
+            "wait" => Wait(args),
+            _ => $"Unknown tool: {toolName}",
         };
     }
 
@@ -88,7 +87,7 @@ internal sealed class DesktopToolExecutor
         return $"Cursor position: ({x}, {y})";
     }
 
-    private string MoveMouse(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string MoveMouse(Dictionary<string, JsonElement> args)
     {
         int x = DesktopToolDefinitions.GetInt(args, "x");
         int y = DesktopToolDefinitions.GetInt(args, "y");
@@ -96,22 +95,23 @@ internal sealed class DesktopToolExecutor
         return $"Mouse moved to ({x}, {y})";
     }
 
-    private string Click(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string Click(Dictionary<string, JsonElement> args)
     {
-        int x      = DesktopToolDefinitions.GetInt(args, "x");
-        int y      = DesktopToolDefinitions.GetInt(args, "y");
-        string btn = DesktopToolDefinitions.GetString(args, "button", "left");
-        MouseButton button = btn.ToLowerInvariant() switch
+        int x = DesktopToolDefinitions.GetInt(args, "x");
+        int y = DesktopToolDefinitions.GetInt(args, "y");
+        string buttonName = DesktopToolDefinitions.GetString(args, "button", "left");
+        MouseButton button = buttonName.ToLowerInvariant() switch
         {
-            "right"  => MouseButton.Right,
+            "right" => MouseButton.Right,
             "middle" => MouseButton.Middle,
-            _        => MouseButton.Left,
+            _ => MouseButton.Left,
         };
+
         _mouse.ClickAt(x, y, button);
         return $"Clicked {button} button at ({x}, {y})";
     }
 
-    private string DoubleClick(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string DoubleClick(Dictionary<string, JsonElement> args)
     {
         int x = DesktopToolDefinitions.GetInt(args, "x");
         int y = DesktopToolDefinitions.GetInt(args, "y");
@@ -119,35 +119,34 @@ internal sealed class DesktopToolExecutor
         return $"Double-clicked at ({x}, {y})";
     }
 
-    private string Scroll(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string Scroll(Dictionary<string, JsonElement> args)
     {
         int delta = DesktopToolDefinitions.GetInt(args, "delta", 3);
         _mouse.Scroll(delta);
         return $"Scrolled {(delta > 0 ? "up" : "down")} by {Math.Abs(delta)}";
     }
 
-    private string TypeText(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string TypeText(Dictionary<string, JsonElement> args)
     {
         string text = DesktopToolDefinitions.GetString(args, "text");
         _keyboard.TypeText(text);
         return $"Typed {text.Length} character(s)";
     }
 
-    private string PressKey(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string PressKey(Dictionary<string, JsonElement> args)
     {
         string key = DesktopToolDefinitions.GetString(args, "key");
         _keyboard.PressKey(key);
         return $"Pressed key: {key}";
     }
 
-    private string OpenApplication(Dictionary<string, System.Text.Json.JsonElement> args)
+    private string OpenApplication(Dictionary<string, JsonElement> args)
     {
         string name = DesktopToolDefinitions.GetString(args, "name");
         if (string.IsNullOrWhiteSpace(name))
             return "Application name is required";
 
-        // Basic validation: reject names containing shell metacharacters or path separators.
-        if (name.IndexOfAny(['/', '\\', ';', '&', '|', '`', '$', '<', '>']) >= 0)
+        if (name.IndexOfAny(new[] { '/', '\\', ';', '&', '|', '`', '$', '<', '>' }) >= 0)
             return $"Invalid application name: '{name}'";
 
         try
@@ -158,14 +157,13 @@ internal sealed class DesktopToolExecutor
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName        = resolvedName,
+                    FileName = resolvedName,
                     UseShellExecute = true,
                 });
             }
             else if (OperatingSystem.IsMacOS())
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "open", ["-a", resolvedName])
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("open", new[] { "-a", resolvedName })
                 {
                     UseShellExecute = false,
                 });
@@ -176,7 +174,7 @@ internal sealed class DesktopToolExecutor
             {
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
-                    FileName        = resolvedName,
+                    FileName = resolvedName,
                     UseShellExecute = true,
                 });
             }
@@ -191,13 +189,13 @@ internal sealed class DesktopToolExecutor
         }
     }
 
-    private string FocusApplication(Dictionary<string, JsonElement> args)
+    private static string FocusApplication(Dictionary<string, JsonElement> args)
     {
         string name = DesktopToolDefinitions.GetString(args, "name");
         if (string.IsNullOrWhiteSpace(name))
             return "Application name is required";
 
-        if (name.IndexOfAny(['/', '\\', ';', '&', '|', '`', '$', '<', '>']) >= 0)
+        if (name.IndexOfAny(new[] { '/', '\\', ';', '&', '|', '`', '$', '<', '>' }) >= 0)
             return $"Invalid application name: '{name}'";
 
         try
@@ -218,23 +216,20 @@ internal sealed class DesktopToolExecutor
         }
     }
 
-    private static string OpenUrl(Dictionary<string, JsonElement> args)
+    private string OpenUrl(Dictionary<string, JsonElement> args)
     {
         string url = DesktopToolDefinitions.GetString(args, "url");
         if (string.IsNullOrWhiteSpace(url))
             return "URL is required";
 
         if (!TryGetHttpUri(url, out Uri? parsedUri))
-        {
             return $"Invalid URL: '{url}'";
-        }
 
         try
         {
             if (OperatingSystem.IsMacOS())
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "open", [parsedUri.AbsoluteUri])
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("open", new[] { parsedUri.AbsoluteUri })
                 {
                     UseShellExecute = false,
                 });
@@ -249,8 +244,7 @@ internal sealed class DesktopToolExecutor
             }
             else
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                    "xdg-open", [parsedUri.AbsoluteUri])
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("xdg-open", new[] { parsedUri.AbsoluteUri })
                 {
                     UseShellExecute = false,
                 });
@@ -268,12 +262,11 @@ internal sealed class DesktopToolExecutor
     {
         string command = DesktopToolDefinitions.GetString(args, "command");
         IReadOnlyList<string> arguments = DesktopToolDefinitions.GetStringArray(args, "arguments");
-        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "timeout_ms", 10_000), 100, 60_000);
+        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, TimeoutMsArg, 10_000), 100, 60_000);
 
         try
         {
             var result = _terminal.ExecuteCommand(command, arguments, timeoutMs);
-
             string prefix = result.TimedOut
                 ? $"Command '{command}' timed out after {timeoutMs} ms."
                 : $"Command '{command}' exited with code {result.ExitCode}.";
@@ -283,46 +276,6 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return $"Failed to run command '{command}': {ex.Message}";
-        }
-    }
-
-    private string PeekabooInspect(Dictionary<string, JsonElement> args)
-    {
-        PeekabooConfiguration config = ReadPeekabooConfiguration();
-        IReadOnlyList<string> extraArguments = DesktopToolDefinitions.GetStringArray(args, "arguments");
-        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "timeout_ms", config.TimeoutMs), 100, 120_000);
-
-        List<string> commandArguments = [.. config.InspectArguments, .. extraArguments];
-
-        try
-        {
-            var result = _terminal.ExecuteCommand(config.Command, commandArguments, timeoutMs);
-            string prefix = result.TimedOut
-                ? $"Peekaboo command timed out after {timeoutMs} ms."
-                : $"Peekaboo command exited with code {result.ExitCode}.";
-
-            return $"{prefix}\nCommand: {config.Command}\nArguments: {string.Join(" ", commandArguments)}\nSTDOUT:\n{FormatTerminalOutput(result.StandardOutput)}\nSTDERR:\n{FormatTerminalOutput(result.StandardError)}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to run Peekaboo command '{config.Command}'. Configure AIDESK_PEEKABOO_COMMAND and optionally AIDESK_PEEKABOO_INSPECT_ARGUMENTS for your local installation. Error: {ex.Message}";
-        }
-    }
-
-    private string ClickAppleMenuItem(Dictionary<string, JsonElement> args)
-    {
-        IReadOnlyList<string> titles = GetTitles(args);
-        if (titles.Count == 0)
-            return "At least one Apple menu item title is required";
-
-        try
-        {
-            _uiAutomation.ClickAppleMenuItem(titles);
-            return $"Clicked Apple menu item matching: {string.Join(", ", titles)}";
-        }
-        catch (Exception ex)
-        {
-            return $"Failed to click Apple menu item: {ex.Message}";
         }
     }
 
@@ -340,6 +293,23 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return $"Failed to click Dock application: {ex.Message}";
+        }
+    }
+
+    private string ClickAppleMenuItem(Dictionary<string, JsonElement> args)
+    {
+        IReadOnlyList<string> titles = GetTitles(args);
+        if (titles.Count == 0)
+            return "At least one Apple menu item title is required";
+
+        try
+        {
+            _uiAutomation.ClickAppleMenuItem(titles);
+            return $"Clicked Apple menu item matching: {string.Join(", ", titles)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to click Apple menu item: {ex.Message}";
         }
     }
 
@@ -405,8 +375,8 @@ internal sealed class DesktopToolExecutor
 
     private string ResizeActiveWindow(Dictionary<string, JsonElement> args)
     {
-        int width  = Math.Max(100, DesktopToolDefinitions.GetInt(args, "width"));
-        int height = Math.Max(100, DesktopToolDefinitions.GetInt(args, "height"));
+        int width = Math.Max(100, DesktopToolDefinitions.GetInt(args, WidthArg));
+        int height = Math.Max(100, DesktopToolDefinitions.GetInt(args, HeightArg));
 
         try
         {
@@ -419,11 +389,11 @@ internal sealed class DesktopToolExecutor
         }
     }
 
-    private static string Wait(Dictionary<string, System.Text.Json.JsonElement> args)
+    private static string Wait(Dictionary<string, JsonElement> args)
     {
-        int ms = Math.Clamp(DesktopToolDefinitions.GetInt(args, "milliseconds", 500), 100, 10_000);
-        Thread.Sleep(ms);
-        return $"Waited {ms} ms";
+        int milliseconds = Math.Clamp(DesktopToolDefinitions.GetInt(args, "milliseconds", 500), 100, 10_000);
+        Thread.Sleep(milliseconds);
+        return $"Waited {milliseconds} ms";
     }
 
     private static bool TryGetHttpUri(string url, [NotNullWhen(true)] out Uri? uri)
@@ -446,7 +416,7 @@ internal sealed class DesktopToolExecutor
         if (!string.IsNullOrWhiteSpace(title))
             titles.Add(title);
 
-        titles.AddRange(alternateTitles.Where(static value => !string.IsNullOrWhiteSpace(value)));
+        titles.AddRange(alternateTitles.Where(static candidate => !string.IsNullOrWhiteSpace(candidate)));
         return titles;
     }
 
@@ -512,67 +482,4 @@ internal sealed class DesktopToolExecutor
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "Failed to activate the application." : stderr);
         }
     }
-
-    internal static PeekabooConfiguration ReadPeekabooConfiguration()
-    {
-        string command = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_COMMAND") ?? "peekaboo";
-        string inspectArgumentsValue = Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_INSPECT_ARGUMENTS") ?? "see --json --app frontmost --annotate";
-        int timeoutMs = int.TryParse(Environment.GetEnvironmentVariable("AIDESK_PEEKABOO_TIMEOUT_MS"), out int parsedTimeout) && parsedTimeout > 0
-            ? parsedTimeout
-            : 15_000;
-
-        IReadOnlyList<string> inspectArguments = TokenizeArguments(inspectArgumentsValue);
-        if (inspectArguments.Count == 0)
-            inspectArguments = ["see", "--json", "--app", "frontmost", "--annotate"];
-
-        return new PeekabooConfiguration(command, inspectArguments, timeoutMs);
-    }
-
-    internal static IReadOnlyList<string> TokenizeArguments(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return Array.Empty<string>();
-
-        var tokens = new List<string>();
-        var current = new System.Text.StringBuilder();
-        char? quote = null;
-
-        foreach (char ch in value)
-        {
-            if (quote is null && char.IsWhiteSpace(ch))
-            {
-                if (current.Length > 0)
-                {
-                    tokens.Add(current.ToString());
-                    current.Clear();
-                }
-
-                continue;
-            }
-
-            if (ch is '\'' or '"')
-            {
-                if (quote is null)
-                {
-                    quote = ch;
-                    continue;
-                }
-
-                if (quote == ch)
-                {
-                    quote = null;
-                    continue;
-                }
-            }
-
-            current.Append(ch);
-        }
-
-        if (current.Length > 0)
-            tokens.Add(current.ToString());
-
-        return tokens;
-    }
 }
-
-internal sealed record PeekabooConfiguration(string Command, IReadOnlyList<string> InspectArguments, int TimeoutMs);
