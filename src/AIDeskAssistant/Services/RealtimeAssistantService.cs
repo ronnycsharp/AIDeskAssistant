@@ -17,6 +17,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     private readonly DesktopToolExecutor _executor;
     private readonly RealtimeClient _client;
     private readonly AIDebugLogger? _debugLogger;
+    private readonly IScreenshotAnalysisService? _screenshotAnalysisService;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _turnLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
@@ -31,12 +32,13 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     private LiveAudioInputSession? _liveAudioInputSession;
     private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
 
-    public RealtimeAssistantService(string apiKey, DesktopToolExecutor executor, string model, AIDebugLogger? debugLogger = null)
+    public RealtimeAssistantService(string apiKey, DesktopToolExecutor executor, string model, AIDebugLogger? debugLogger = null, IScreenshotAnalysisService? screenshotAnalysisService = null)
     {
         _client = new RealtimeClient(apiKey);
         _executor = executor;
         _model = model;
         _debugLogger = debugLogger;
+        _screenshotAnalysisService = screenshotAnalysisService;
         string configuredVoice = Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE")
             ?? RealtimeVoicePreferenceStore.TryLoadVoice()
             ?? "alloy";
@@ -578,6 +580,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         try
         {
             string rawToolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
+            rawToolResult = await EnrichRealtimeToolResultAsync(functionCall.FunctionName, rawToolResult, ct);
             LogRealtimeToolResult(functionCall.CallId, functionCall.FunctionName, rawToolResult);
             toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, rawToolResult);
         }
@@ -591,6 +594,32 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
         await _session!.AddItemAsync(new RealtimeFunctionCallOutputItem(functionCall.CallId, toolResult), ct);
         await StartResponseAsync(pendingTurn, ct);
+    }
+
+    private async Task<string> EnrichRealtimeToolResultAsync(string toolName, string rawToolResult, CancellationToken ct)
+    {
+        if (_screenshotAnalysisService is null
+            || !string.Equals(toolName, "take_screenshot", StringComparison.Ordinal)
+            || !AIService.TryParseScreenshotAttachment(rawToolResult, out ScreenshotModelAttachment? attachment)
+            || attachment is null)
+        {
+            return rawToolResult;
+        }
+
+        try
+        {
+            string? analysis = await _screenshotAnalysisService.AnalyzeAsync(attachment, ct);
+            if (string.IsNullOrWhiteSpace(analysis))
+                return rawToolResult;
+
+            _debugLogger?.LogHistoryEntry("vision", analysis);
+            return AIService.AppendScreenshotAnalysis(rawToolResult, analysis);
+        }
+        catch (Exception ex)
+        {
+            _debugLogger?.LogHistoryEntry("vision", $"Screenshot analysis failed: {ex.Message}");
+            return rawToolResult;
+        }
     }
 
     private void LogRealtimeToolResult(string toolCallId, string toolName, string rawToolResult)

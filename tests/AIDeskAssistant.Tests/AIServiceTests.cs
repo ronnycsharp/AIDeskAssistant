@@ -107,6 +107,17 @@ public sealed class AIServiceTests
     }
 
     [Fact]
+    public void AppendScreenshotAnalysis_InsertsAnalysisBeforeBase64Payload()
+    {
+        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
+
+        string enriched = AIService.AppendScreenshotAnalysis(result, "Fenster ist sichtbar und der Button wirkt aktiv.");
+
+        Assert.Contains("GPT-5.4 screenshot analysis: Fenster ist sichtbar und der Button wirkt aktiv.", enriched);
+        Assert.Contains("Base64: AQID", enriched);
+    }
+
+    [Fact]
     public void CompactToolResultForRealtimeTransport_TruncatesLongNonScreenshotText()
     {
         string result = new('x', 13_000);
