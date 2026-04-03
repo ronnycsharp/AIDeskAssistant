@@ -94,20 +94,33 @@ final class OverlayPanel: NSPanel {
     }
 }
 
-final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
+final class StatusBarViewController: NSViewController, NSTextViewDelegate {
+    private static let panelWidth: CGFloat = 460
+    private static let minimumPanelHeight: CGFloat = 206
+    private static let maximumPanelHeight: CGFloat = 278
+    private static let backgroundInset: CGFloat = 10
+    private static let sideInset: CGFloat = 28
+    private static let textHorizontalInset: CGFloat = 20
+    private static let topInset: CGFloat = 34
+    private static let bottomInset: CGFloat = 12
+    private static let defaultTextHeight: CGFloat = 36
+    private static let maximumTextHeight: CGFloat = 108
+
     private let serverURL: URL
     private let dismissPopover: () -> Void
     private let setActivity: (Bool) -> Void
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
     private let backgroundView = NSVisualEffectView(frame: .zero)
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let textField = NSTextField(frame: .zero)
+    private let textScrollView = NSScrollView(frame: .zero)
+    private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let quitButton = NSButton(title: "AIDesk beenden", target: nil, action: nil)
+    private var currentPanelHeight: CGFloat = minimumPanelHeight
 
     private var audioPlayer: AVAudioPlayer?
     private var responseTask: Task<Void, Never>?
@@ -162,11 +175,11 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 236))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: Self.minimumPanelHeight))
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
 
-        backgroundView.frame = view.bounds.insetBy(dx: 10, dy: 10)
+        backgroundView.frame = view.bounds.insetBy(dx: Self.backgroundInset, dy: Self.backgroundInset)
         backgroundView.autoresizingMask = [.width, .height]
         backgroundView.material = .hudWindow
         backgroundView.blendingMode = .withinWindow
@@ -178,42 +191,54 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         backgroundView.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
         view.addSubview(backgroundView)
 
-        voicePopup.frame = NSRect(x: 28, y: 162, width: 170, height: 30)
         voicePopup.target = self
         voicePopup.action = #selector(changeVoice(_:))
         voicePopup.bezelStyle = .rounded
         voicePopup.contentTintColor = NSColor.white.withAlphaComponent(0.92)
 
-        textField.placeholderString = nil
-        textField.delegate = self
-        textField.frame = NSRect(x: 28, y: 98, width: 404, height: 52)
-        textField.font = NSFont.systemFont(ofSize: 21, weight: .regular)
-        textField.isBordered = false
-        textField.drawsBackground = false
-        textField.focusRingType = .none
-        textField.textColor = .white
-        textField.backgroundColor = .clear
-        textField.bezelStyle = .squareBezel
+        textScrollView.borderType = .noBorder
+        textScrollView.drawsBackground = false
+        textScrollView.hasVerticalScroller = false
+        textScrollView.hasHorizontalScroller = false
+        textScrollView.autohidesScrollers = true
 
-        statusLabel.frame = NSRect(x: 28, y: 64, width: 320, height: 24)
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.allowsUndo = true
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.minSize = NSSize(width: 0, height: Self.defaultTextHeight)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainerInset = NSSize(width: 0, height: 7)
+        textView.font = NSFont.systemFont(ofSize: 21, weight: .regular)
+        textView.textColor = .white
+        textView.backgroundColor = .clear
+        textView.insertionPointColor = .white
+        textView.delegate = self
+        textScrollView.documentView = textView
+
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 1
         statusLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
         statusLabel.textColor = NSColor.white.withAlphaComponent(0.92)
         statusLabel.isHidden = true
 
-        usageLabel.frame = NSRect(x: 28, y: 18, width: 240, height: 18)
         usageLabel.lineBreakMode = .byWordWrapping
         usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         usageLabel.textColor = NSColor.white.withAlphaComponent(0.58)
 
-        activityIndicator.frame = NSRect(x: 360, y: 62, width: 18, height: 18)
         activityIndicator.style = .spinning
         activityIndicator.controlSize = .small
         activityIndicator.isDisplayedWhenStopped = false
 
-        recordButton.frame = NSRect(x: 318, y: 158, width: 34, height: 30)
         recordButton.target = self
         recordButton.action = #selector(toggleRecording)
         recordButton.bezelStyle = .rounded
@@ -222,7 +247,6 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         recordButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
         recordButton.toolTip = "Aufnahme starten oder stoppen"
 
-        cancelButton.frame = NSRect(x: 358, y: 158, width: 34, height: 30)
         cancelButton.target = self
         cancelButton.action = #selector(cancelCurrentWork)
         cancelButton.isEnabled = false
@@ -232,13 +256,12 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
         cancelButton.toolTip = "Laufende Antwort abbrechen"
 
-        quitButton.frame = NSRect(x: 282, y: 12, width: 150, height: 34)
         quitButton.target = self
         quitButton.action = #selector(quitApp)
         quitButton.bezelStyle = .rounded
 
         backgroundView.addSubview(voicePopup)
-        backgroundView.addSubview(textField)
+        backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
         backgroundView.addSubview(usageLabel)
         backgroundView.addSubview(activityIndicator)
@@ -247,6 +270,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         backgroundView.addSubview(quitButton)
 
         configureRecordButton(isRecording: false)
+        updateOverlayLayout(animated: false)
     }
 
     override func viewDidAppear() {
@@ -258,8 +282,9 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     }
 
     func focusTextField() {
-        view.window?.makeFirstResponder(textField)
-        textField.selectText(nil)
+        view.window?.makeFirstResponder(textView)
+        textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
+        textView.scrollRangeToVisible(textView.selectedRange())
     }
 
     func runSelfTestIfConfigured() {
@@ -273,8 +298,18 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         submitText(text)
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+    func textDidChange(_ notification: Notification) {
+        updateOverlayLayout(animated: true)
+        scrollTextSelectionToVisible()
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(insertNewline(_:)) {
+            let modifierFlags = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+            if modifierFlags.contains(.shift) || modifierFlags.contains(.option) {
+                return false
+            }
+
             sendText(nil)
             return true
         }
@@ -288,13 +323,14 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func sendText(_ sender: Any?) {
-        let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             setStatus("")
             return
         }
 
-        textField.stringValue = ""
+        textView.string = ""
+        updateOverlayLayout(animated: true)
         submitText(text)
         focusTextField()
     }
@@ -1007,6 +1043,82 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         diagnosticsLogger.log("Status: \(text)")
         statusLabel.stringValue = text
         statusLabel.isHidden = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        updateOverlayLayout(animated: true)
+    }
+
+    private func updateOverlayLayout(animated: Bool) {
+        let contentTextHeight = calculatedContentTextHeight()
+        let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
+        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 170))
+        currentPanelHeight = desiredPanelHeight
+
+        view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
+        backgroundView.frame = view.bounds.insetBy(dx: Self.backgroundInset, dy: Self.backgroundInset)
+
+        let contentHeight = backgroundView.bounds.height
+        let contentWidth = backgroundView.bounds.width
+        let topRowY = contentHeight - Self.topInset - 30
+        let textY = topRowY - 12 - textHeight
+        let statusY = textY - 30
+        let bottomRowY = Self.bottomInset
+
+        voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: 170, height: 30)
+        recordButton.frame = NSRect(x: contentWidth - Self.sideInset - 74, y: topRowY, width: 34, height: 30)
+        cancelButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
+
+        textScrollView.frame = NSRect(x: Self.textHorizontalInset, y: textY, width: contentWidth - (Self.textHorizontalInset * 2), height: textHeight)
+        textView.textContainer?.containerSize = NSSize(width: textScrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        textView.frame = NSRect(origin: .zero, size: NSSize(width: textScrollView.contentSize.width, height: max(textHeight, contentTextHeight)))
+
+        statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: 320, height: 22)
+        activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
+        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: 240, height: 18)
+        quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 150, y: bottomRowY, width: 150, height: 34)
+
+        textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
+        if textScrollView.hasVerticalScroller {
+            scrollTextSelectionToVisible()
+        }
+
+        guard let window = view.window else {
+            return
+        }
+
+        let resizeWindow = {
+            let oldFrame = window.frame
+            let newFrame = NSRect(x: oldFrame.origin.x, y: oldFrame.origin.y, width: Self.panelWidth, height: desiredPanelHeight)
+            window.setFrame(newFrame, display: true)
+        }
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                resizeWindow()
+            }
+        } else {
+            resizeWindow()
+        }
+    }
+
+        private func calculatedContentTextHeight() -> CGFloat {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            return Self.defaultTextHeight
+        }
+
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let insetHeight = textView.textContainerInset.height * 2
+        return ceil(usedRect.height + insetHeight)
+    }
+
+    private func scrollTextSelectionToVisible() {
+        let selectedRange = textView.selectedRange()
+        let rangeToReveal = selectedRange.length > 0
+            ? selectedRange
+            : NSRange(location: max(0, selectedRange.location - 1), length: min(1, textView.string.utf16.count))
+        textView.scrollRangeToVisible(rangeToReveal)
     }
 
     private func loadVoiceSettings() async {
@@ -1211,7 +1323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeInputWindow(contentViewController: NSViewController) -> NSPanel {
         let panel = OverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 236),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 206),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false)
