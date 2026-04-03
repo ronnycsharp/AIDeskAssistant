@@ -15,7 +15,28 @@ internal sealed class MacOSWindowService : IWindowService
             """
             tell application "System Events"
                 tell (first application process whose frontmost is true)
-                    tell front window
+                    set candidateWindows to every window whose value of attribute "AXMinimized" is false
+                    if (count of candidateWindows) is 0 then
+                        set candidateWindows to windows
+                    end if
+
+                    if (count of candidateWindows) is 0 then
+                        error "Could not access any window for the frontmost application."
+                    end if
+
+                    set bestWindow to item 1 of candidateWindows
+                    set bestArea to 0
+
+                    repeat with currentWindow in candidateWindows
+                        set s to size of currentWindow
+                        set currentArea to (item 1 of s) * (item 2 of s)
+                        if currentArea > bestArea then
+                            set bestArea to currentArea
+                            set bestWindow to currentWindow
+                        end if
+                    end repeat
+
+                    tell bestWindow
                         set p to position
                         set s to size
                         return (item 1 of p as text) & "," & (item 2 of p as text) & "," & (item 1 of s as text) & "," & (item 2 of s as text)

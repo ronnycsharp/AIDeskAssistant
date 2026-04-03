@@ -1,8 +1,16 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using System.Text;
 using AIDeskAssistant.Services;
 
 namespace AIDeskAssistant.Platform.MacOS;
+
+internal readonly record struct MacOSTypingAction(string Kind, string Value)
+{
+    public static MacOSTypingAction Text(string text) => new("text", text);
+
+    public static MacOSTypingAction Key(string key) => new("key", key);
+}
 
 [SupportedOSPlatform("macos")]
 internal sealed class MacOSKeyboardService : IKeyboardService
@@ -52,10 +60,60 @@ internal sealed class MacOSKeyboardService : IKeyboardService
 
     public void TypeText(string text)
     {
-        // Use the osascript approach for typing arbitrary Unicode text.
-        var escaped = text.Replace("\\", "\\\\").Replace("\"", "\\\"");
-        var script  = $"tell application \"System Events\" to keystroke \"{escaped}\"";
-        RunOsascript(script);
+        foreach (MacOSTypingAction action in BuildTypingActions(text))
+        {
+            if (action.Kind == "text")
+            {
+                RunOsascript(BuildKeystrokeScript(action.Value));
+                continue;
+            }
+
+            if (VKCodes.TryGetValue(action.Value, out ushort virtualKey))
+                PostKey(virtualKey, 0);
+        }
+    }
+
+    internal static IReadOnlyList<MacOSTypingAction> BuildTypingActions(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return Array.Empty<MacOSTypingAction>();
+
+        List<MacOSTypingAction> actions = [];
+        var currentText = new StringBuilder();
+        string normalizedText = text.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+
+        void FlushCurrentText()
+        {
+            if (currentText.Length == 0)
+                return;
+
+            actions.Add(MacOSTypingAction.Text(currentText.ToString()));
+            currentText.Clear();
+        }
+
+        foreach (char character in normalizedText)
+        {
+            switch (character)
+            {
+                case '\n':
+                    FlushCurrentText();
+                    actions.Add(MacOSTypingAction.Key("return"));
+                    break;
+
+                case '\t':
+                    FlushCurrentText();
+                    actions.Add(MacOSTypingAction.Key("tab"));
+                    break;
+
+                default:
+                    currentText.Append(character);
+                    break;
+            }
+        }
+
+        FlushCurrentText();
+        return actions;
     }
 
     public void PressKey(string keyCombo)
@@ -135,5 +193,11 @@ internal sealed class MacOSKeyboardService : IKeyboardService
         proc.StandardInput.WriteLine(script);
         proc.StandardInput.Close();
         proc.WaitForExit(10_000);
+    }
+
+    private static string BuildKeystrokeScript(string text)
+    {
+        string escaped = text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return $"tell application \"System Events\" to keystroke \"{escaped}\"";
     }
 }

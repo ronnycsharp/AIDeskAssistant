@@ -427,7 +427,33 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
+            if (TryFocusFrontmostWindowContentFallback(out string? fallbackResult))
+                return $"{fallbackResult} AX focus error: {ex.Message}";
+
             return $"Failed to focus frontmost window content: {ex.Message}";
+        }
+    }
+
+    private bool TryFocusFrontmostWindowContentFallback([NotNullWhen(true)] out string? result)
+    {
+        result = null;
+
+        try
+        {
+            WindowBounds bounds = _window.GetActiveWindowBounds();
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+                return false;
+
+            int targetX = Math.Clamp(bounds.X + Math.Max(48, bounds.Width / 12), bounds.X + 10, bounds.X + bounds.Width - 10);
+            int targetY = Math.Clamp(bounds.Y + Math.Max(140, bounds.Height / 3), bounds.Y + 10, bounds.Y + bounds.Height - 10);
+
+            _mouse.ClickAt(targetX, targetY, MouseButton.Left);
+            result = $"Focused frontmost window content via coordinate fallback at ({targetX}, {targetY}).";
+            return true;
+        }
+        catch
+        {
+            return false;
         }
     }
 

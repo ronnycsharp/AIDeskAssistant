@@ -564,9 +564,32 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
         }
 
         let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
-        let window = elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
-            ?? elementAttribute(appElement, kAXMainWindowAttribute as CFString)
-            ?? elementArrayAttribute(appElement, kAXWindowsAttribute as CFString).first
+        let focusedWindow = elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
+        let mainWindow = elementAttribute(appElement, kAXMainWindowAttribute as CFString)
+        let allWindows = elementArrayAttribute(appElement, kAXWindowsAttribute as CFString)
+
+        func shouldPreferMainWindow(focusedWindow: AXUIElement?, mainWindow: AXUIElement?) -> Bool {
+            guard let focusedWindow,
+                  let mainWindow,
+                  let focusedFrame = frame(of: focusedWindow),
+                  let mainFrame = frame(of: mainWindow) else {
+                return false
+            }
+
+            let focusedArea = focusedFrame.width * focusedFrame.height
+            let mainArea = mainFrame.width * mainFrame.height
+            guard mainArea > 0 else {
+                return false
+            }
+
+            return focusedArea < mainArea * 0.65
+                || focusedFrame.width < 520
+                || focusedFrame.height < 360
+        }
+
+        let window = shouldPreferMainWindow(focusedWindow: focusedWindow, mainWindow: mainWindow)
+            ? mainWindow
+            : (focusedWindow ?? mainWindow ?? allWindows.first)
 
         guard let targetWindow = window else {
             fail("Could not access the frontmost window.")

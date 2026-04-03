@@ -20,3 +20,6 @@ publish/
 .env
 .env.*
 !.env.example
+
+# Local debug artifacts
+.aidesk-debug/

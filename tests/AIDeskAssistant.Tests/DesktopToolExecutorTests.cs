@@ -89,6 +89,7 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
     public IReadOnlyList<string> LastAppleMenuTitles = Array.Empty<string>();
     public IReadOnlyList<string> LastSidebarTitles = Array.Empty<string>();
     public string? LastFocusedContentApplicationName;
+    public string? FocusContentExceptionMessage;
 
     public void ClickDockApplication(IReadOnlyList<string> titles) => LastDockTitles = titles.ToArray();
 
@@ -99,6 +100,10 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
     public string FocusFrontmostWindowContent(string? applicationName)
     {
         LastFocusedContentApplicationName = applicationName;
+
+        if (!string.IsNullOrWhiteSpace(FocusContentExceptionMessage))
+            throw new InvalidOperationException(FocusContentExceptionMessage);
+
         return $"Focused frontmost window content for {applicationName ?? "<frontmost>"}";
     }
 }
@@ -192,6 +197,19 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Equal("cmd+s", _keyboard.LastPressedKey);
         Assert.Equal("Pressed key: cmd+s", result);
+    }
+
+    [Fact]
+    public void Execute_FocusFrontmostWindowContent_FallsBackToWindowClick_WhenUiAutomationFails()
+    {
+        _uiAutomation.FocusContentExceptionMessage = "AX focus failed";
+
+        string result = _sut.Execute("focus_frontmost_window_content", "{\"application_name\":\"TextEdit\"}");
+
+        Assert.Equal((76, 220), _mouse.LastClickTarget);
+        Assert.Equal(MouseButton.Left, _mouse.LastClickButton);
+        Assert.Contains("coordinate fallback", result);
+        Assert.Contains("AX focus failed", result);
     }
 
     [Fact]
