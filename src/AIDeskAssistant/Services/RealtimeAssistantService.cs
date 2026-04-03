@@ -22,6 +22,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
     private RealtimeSessionClient? _session;
     private Task? _receiveLoopTask;
+    private CancellationTokenSource? _sessionReceiveLoopCts;
     private PendingTurn? _pendingTurn;
     private CancellationTokenSource? _activeTurnCts;
     private LiveAudioInputSession? _liveAudioInputSession;
@@ -31,7 +32,10 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         _client = new RealtimeClient(apiKey);
         _executor = executor;
         _model = model;
-        _voice = NormalizeVoiceId(Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE") ?? "alloy");
+        string configuredVoice = Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE")
+            ?? RealtimeVoicePreferenceStore.TryLoadVoice()
+            ?? "alloy";
+        _voice = NormalizeVoiceId(configuredVoice);
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
     }
 
@@ -50,25 +54,29 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     {
         string normalizedVoiceId = NormalizeVoiceId(voiceId);
 
-        await _turnLock.WaitAsync(ct);
+        await _sessionLock.WaitAsync(ct);
         try
         {
-            await _sessionLock.WaitAsync(ct);
+            await _turnLock.WaitAsync(ct);
             try
             {
                 _voice = normalizedVoiceId;
                 Environment.SetEnvironmentVariable("AIDESK_REALTIME_VOICE", normalizedVoiceId);
+                RealtimeVoicePreferenceStore.SaveVoice(normalizedVoiceId);
+
+                if (_session is not null)
+                    await StopSessionAsync();
 
                 return normalizedVoiceId;
             }
             finally
             {
-                _sessionLock.Release();
+                _turnLock.Release();
             }
         }
         finally
         {
-            _turnLock.Release();
+            _sessionLock.Release();
         }
     }
 
@@ -346,19 +354,16 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     {
         await _disposeCts.CancelAsync();
 
-        if (_receiveLoopTask is not null)
+        await _sessionLock.WaitAsync();
+        try
         {
-            try
-            {
-                await _receiveLoopTask;
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected when disposal cancels the receive loop.
-            }
+            await StopSessionAsync();
+        }
+        finally
+        {
+            _sessionLock.Release();
         }
 
-        _session?.Dispose();
         _disposeCts.Dispose();
         _sessionLock.Dispose();
         _turnLock.Dispose();
@@ -375,9 +380,13 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             if (_session is not null)
                 return;
 
-            _session = await _client.StartConversationSessionAsync(_model, new RealtimeSessionClientOptions(), ct);
-            await _session.ConfigureConversationSessionAsync(CreateConversationOptions(), ct);
-            _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(_disposeCts.Token), _disposeCts.Token);
+            RealtimeSessionClient session = await _client.StartConversationSessionAsync(_model, new RealtimeSessionClientOptions(), ct);
+            await session.ConfigureConversationSessionAsync(CreateConversationOptions(), ct);
+
+            CancellationTokenSource sessionReceiveLoopCts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+            _session = session;
+            _sessionReceiveLoopCts = sessionReceiveLoopCts;
+            _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(session, sessionReceiveLoopCts.Token), sessionReceiveLoopCts.Token);
         }
         finally
         {
@@ -463,9 +472,51 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         _turnLock.Release();
     }
 
-    private async Task ReceiveLoopAsync(CancellationToken ct)
+    private async Task StopSessionAsync()
     {
-        await foreach (RealtimeServerUpdate update in _session!.ReceiveUpdatesAsync(ct))
+        RealtimeSessionClient? session = _session;
+        Task? receiveLoopTask = _receiveLoopTask;
+        CancellationTokenSource? sessionReceiveLoopCts = _sessionReceiveLoopCts;
+
+        _session = null;
+        _receiveLoopTask = null;
+        _sessionReceiveLoopCts = null;
+
+        if (sessionReceiveLoopCts is not null)
+        {
+            try
+            {
+                await sessionReceiveLoopCts.CancelAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        session?.Dispose();
+
+        if (receiveLoopTask is not null)
+        {
+            try
+            {
+                await receiveLoopTask;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when a session is reset or disposed.
+            }
+            catch (ObjectDisposedException)
+            {
+                // Expected when the session is disposed while the receive loop is waiting.
+            }
+        }
+
+        sessionReceiveLoopCts?.Dispose();
+    }
+
+    private async Task ReceiveLoopAsync(RealtimeSessionClient session, CancellationToken ct)
+    {
+        await foreach (RealtimeServerUpdate update in session.ReceiveUpdatesAsync(ct))
         {
             PendingTurn? pendingTurn = _pendingTurn;
 
@@ -565,8 +616,6 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     private RealtimeResponseOptions CreateResponseOptions()
     {
         RealtimeResponseOptions options = new();
-        options.AudioOptions.OutputAudioOptions.AudioFormat = new RealtimePcmAudioFormat();
-        options.AudioOptions.OutputAudioOptions.Voice = new RealtimeVoice(_voice);
 
         options.OutputModalities.Add(new RealtimeOutputModality("audio"));
         return options;

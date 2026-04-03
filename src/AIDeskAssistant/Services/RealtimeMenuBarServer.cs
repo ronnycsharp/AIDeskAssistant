@@ -11,6 +11,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     {
         PropertyNameCaseInsensitive = true,
     };
+    private static readonly object DiagnosticsLogSync = new();
 
     private readonly RealtimeAssistantService _assistant;
     private readonly HttpListener _listener = new();
@@ -23,6 +24,9 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     }
 
     public Uri BaseUri { get; private set; } = null!;
+
+    internal static string DiagnosticsLogFilePath => Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_SERVER_LOG_FILE")
+        ?? Path.Combine(Path.GetTempPath(), "AIDeskAssistant", "menu-bar-host.log");
 
     public Task StartAsync(CancellationToken ct = default)
     {
@@ -222,8 +226,50 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            await WriteJsonAsync(context.Response, HttpStatusCode.InternalServerError, new { error = ex.Message }, ct);
+            string diagnosticsLogPath = LogUnhandledException(context.Request.HttpMethod, path, ex);
+            await WriteJsonAsync(context.Response, HttpStatusCode.InternalServerError, new
+            {
+                error = $"{ex.Message} See diagnostics log: {diagnosticsLogPath}",
+            }, ct);
         }
+    }
+
+    internal static string LogUnhandledException(string? method, string path, Exception ex)
+    {
+        string diagnosticsLogPath = DiagnosticsLogFilePath;
+        string logEntry = BuildUnhandledExceptionLogEntry(method, path, ex);
+        string? directory = Path.GetDirectoryName(diagnosticsLogPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        lock (DiagnosticsLogSync)
+        {
+            File.AppendAllText(diagnosticsLogPath, logEntry + Environment.NewLine, System.Text.Encoding.UTF8);
+        }
+
+        return diagnosticsLogPath;
+    }
+
+    internal static string BuildUnhandledExceptionLogEntry(string? method, string path, Exception ex)
+    {
+        List<string> lines =
+        [
+            $"[{DateTimeOffset.UtcNow:O}] Unhandled menu bar host exception",
+            $"Request: {(string.IsNullOrWhiteSpace(method) ? "<unknown>" : method)} {path}",
+        ];
+
+        int depth = 0;
+        for (Exception? current = ex; current is not null; current = current.InnerException)
+        {
+            string prefix = depth == 0 ? "Exception" : $"InnerException[{depth}]";
+            lines.Add($"{prefix}: {current.GetType().FullName}: {current.Message}");
+            if (!string.IsNullOrWhiteSpace(current.StackTrace))
+                lines.Add(current.StackTrace);
+            depth++;
+        }
+
+        lines.Add(string.Empty);
+        return string.Join(Environment.NewLine, lines);
     }
 
     private static object CreateResponse(RealtimeAssistantTurnResult result, bool includeAudio) => new

@@ -114,4 +114,43 @@ public sealed class RealtimeMenuBarServerTests
         string[] availableVoices = json.GetProperty("availableVoices").EnumerateArray().Select(element => element.GetString()).OfType<string>().ToArray();
         Assert.Equal(["alloy", "marin", "verse"], availableVoices);
     }
+
+    [Fact]
+    public void BuildUnhandledExceptionLogEntry_ContainsRequestAndStackDetails()
+    {
+        InvalidOperationException exception = new("outer failure", new ArgumentException("inner failure"));
+
+        string logEntry = RealtimeMenuBarServer.BuildUnhandledExceptionLogEntry("POST", "/voice", exception);
+
+        Assert.Contains("Unhandled menu bar host exception", logEntry);
+        Assert.Contains("Request: POST /voice", logEntry);
+        Assert.Contains("System.InvalidOperationException: outer failure", logEntry);
+        Assert.Contains("System.ArgumentException: inner failure", logEntry);
+    }
+
+    [Fact]
+    public void LogUnhandledException_WritesLogFileAndReturnsPath()
+    {
+        string tempFile = Path.Combine(Path.GetTempPath(), "AIDeskAssistant.Tests", $"menu-bar-host-{Guid.NewGuid():N}.log");
+        string? original = Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_SERVER_LOG_FILE");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_SERVER_LOG_FILE", tempFile);
+
+            string logPath = RealtimeMenuBarServer.LogUnhandledException("POST", "/message-stream", new InvalidOperationException("boom"));
+
+            Assert.Equal(tempFile, logPath);
+            Assert.True(File.Exists(tempFile));
+            string content = File.ReadAllText(tempFile);
+            Assert.Contains("Request: POST /message-stream", content);
+            Assert.Contains("System.InvalidOperationException: boom", content);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_SERVER_LOG_FILE", original);
+            if (File.Exists(tempFile))
+                File.Delete(tempFile);
+        }
+    }
 }
