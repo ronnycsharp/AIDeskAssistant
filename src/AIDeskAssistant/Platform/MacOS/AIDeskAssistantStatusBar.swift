@@ -23,6 +23,15 @@ struct AudioLiveStartResponse: Decodable {
     let sessionId: String
 }
 
+struct VoiceSettingsResponse: Decodable {
+    let currentVoice: String
+    let availableVoices: [String]
+}
+
+struct VoiceSelectionRequest: Encodable {
+    let voice: String
+}
+
 struct TokenUsage: Decodable {
     let inputTokens: Int?
     let inputTextTokens: Int?
@@ -76,18 +85,29 @@ final class StatusBarDiagnosticsLogger {
     }
 }
 
+final class OverlayPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func cancelOperation(_ sender: Any?) {
+        orderOut(sender)
+    }
+}
+
 final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private let serverURL: URL
     private let dismissPopover: () -> Void
     private let setActivity: (Bool) -> Void
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
+    private let backgroundView = NSVisualEffectView(frame: .zero)
+    private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let textField = NSTextField(frame: .zero)
-    private let statusLabel = NSTextField(labelWithString: "Bereit")
+    private let statusLabel = NSTextField(labelWithString: "")
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
-    private let sendButton = NSButton(title: "Senden", target: nil, action: nil)
-    private let recordButton = NSButton(title: "Aufnehmen", target: nil, action: nil)
+    private let activityIndicator = NSProgressIndicator(frame: .zero)
+    private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let quitButton = NSButton(title: "Beenden", target: nil, action: nil)
+    private let quitButton = NSButton(title: "AIDesk beenden", target: nil, action: nil)
 
     private var audioPlayer: AVAudioPlayer?
     private var responseTask: Task<Void, Never>?
@@ -117,6 +137,8 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private var uploadedByteCount = 0
     private var playbackEngineConfigured = false
     private var accumulatedResponseText = ""
+    private var availableVoices: [String] = []
+    private var isUpdatingVoiceSelection = false
     private var isBusy = false
 
     init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
@@ -140,53 +162,104 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 250))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 236))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
 
-        textField.placeholderString = "Text eingeben"
+        backgroundView.frame = view.bounds.insetBy(dx: 10, dy: 10)
+        backgroundView.autoresizingMask = [.width, .height]
+        backgroundView.material = .hudWindow
+        backgroundView.blendingMode = .withinWindow
+        backgroundView.state = .active
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.cornerRadius = 24
+        backgroundView.layer?.masksToBounds = true
+        backgroundView.layer?.borderWidth = 1
+        backgroundView.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        view.addSubview(backgroundView)
+
+        voicePopup.frame = NSRect(x: 28, y: 162, width: 170, height: 30)
+        voicePopup.target = self
+        voicePopup.action = #selector(changeVoice(_:))
+        voicePopup.bezelStyle = .rounded
+        voicePopup.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+
+        textField.placeholderString = nil
         textField.delegate = self
-        textField.frame = NSRect(x: 16, y: 194, width: 388, height: 28)
+        textField.frame = NSRect(x: 28, y: 98, width: 404, height: 52)
+        textField.font = NSFont.systemFont(ofSize: 21, weight: .regular)
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.textColor = .white
+        textField.backgroundColor = .clear
+        textField.bezelStyle = .squareBezel
 
-        statusLabel.frame = NSRect(x: 16, y: 142, width: 388, height: 40)
+        statusLabel.frame = NSRect(x: 28, y: 64, width: 320, height: 24)
         statusLabel.lineBreakMode = .byWordWrapping
+        statusLabel.maximumNumberOfLines = 1
+        statusLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.92)
+        statusLabel.isHidden = true
 
-        usageLabel.frame = NSRect(x: 16, y: 96, width: 388, height: 38)
+        usageLabel.frame = NSRect(x: 28, y: 18, width: 240, height: 18)
         usageLabel.lineBreakMode = .byWordWrapping
-        usageLabel.maximumNumberOfLines = 2
+        usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        usageLabel.textColor = NSColor.white.withAlphaComponent(0.58)
 
-        sendButton.frame = NSRect(x: 16, y: 42, width: 88, height: 32)
-        sendButton.target = self
-        sendButton.action = #selector(sendText)
+        activityIndicator.frame = NSRect(x: 360, y: 62, width: 18, height: 18)
+        activityIndicator.style = .spinning
+        activityIndicator.controlSize = .small
+        activityIndicator.isDisplayedWhenStopped = false
 
-        recordButton.frame = NSRect(x: 112, y: 42, width: 104, height: 32)
+        recordButton.frame = NSRect(x: 318, y: 158, width: 34, height: 30)
         recordButton.target = self
         recordButton.action = #selector(toggleRecording)
+        recordButton.bezelStyle = .rounded
+        recordButton.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Aufnehmen")
+        recordButton.imagePosition = .imageOnly
+        recordButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        recordButton.toolTip = "Aufnahme starten oder stoppen"
 
-        cancelButton.frame = NSRect(x: 224, y: 42, width: 88, height: 32)
+        cancelButton.frame = NSRect(x: 358, y: 158, width: 34, height: 30)
         cancelButton.target = self
         cancelButton.action = #selector(cancelCurrentWork)
         cancelButton.isEnabled = false
+        cancelButton.bezelStyle = .rounded
+        cancelButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "Abbrechen")
+        cancelButton.imagePosition = .imageOnly
+        cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        cancelButton.toolTip = "Laufende Antwort abbrechen"
 
-        quitButton.frame = NSRect(x: 320, y: 42, width: 84, height: 32)
+        quitButton.frame = NSRect(x: 282, y: 12, width: 150, height: 34)
         quitButton.target = self
         quitButton.action = #selector(quitApp)
+        quitButton.bezelStyle = .rounded
 
-        view.addSubview(textField)
-        view.addSubview(statusLabel)
-        view.addSubview(usageLabel)
-        view.addSubview(sendButton)
-        view.addSubview(recordButton)
-        view.addSubview(cancelButton)
-        view.addSubview(quitButton)
+        backgroundView.addSubview(voicePopup)
+        backgroundView.addSubview(textField)
+        backgroundView.addSubview(statusLabel)
+        backgroundView.addSubview(usageLabel)
+        backgroundView.addSubview(activityIndicator)
+        backgroundView.addSubview(recordButton)
+        backgroundView.addSubview(cancelButton)
+        backgroundView.addSubview(quitButton)
+
+        configureRecordButton(isRecording: false)
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         focusTextField()
+        Task { [weak self] in
+            await self?.loadVoiceSettings()
+        }
     }
 
     func focusTextField() {
         view.window?.makeFirstResponder(textField)
+        textField.selectText(nil)
     }
 
     func runSelfTestIfConfigured() {
@@ -206,18 +279,43 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
             return true
         }
 
+        if commandSelector == #selector(cancelOperation(_:)) {
+            dismissPopover()
+            return true
+        }
+
         return false
     }
 
     @objc private func sendText(_ sender: Any?) {
         let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            setStatus("Bitte Text eingeben")
+            setStatus("")
             return
         }
 
         textField.stringValue = ""
         submitText(text)
+        focusTextField()
+    }
+
+    @objc private func changeVoice(_ sender: Any?) {
+        if isUpdatingVoiceSelection {
+            return
+        }
+
+        let index = voicePopup.indexOfSelectedItem
+        guard index >= 0, index < availableVoices.count else {
+            return
+        }
+
+        let selectedVoice = availableVoices[index]
+        setStatus("Wechsle Stimme zu \(Self.displayName(forVoiceId: selectedVoice)) …")
+        voicePopup.isEnabled = false
+
+        Task { [weak self] in
+            await self?.submitVoiceSelection(selectedVoice)
+        }
     }
 
     @objc private func toggleRecording(_ sender: Any?) {
@@ -266,7 +364,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private func stopRecordingAndSend(autoTriggered: Bool) {
         stopCaptureEngine()
         drainCaptureQueue(reason: "before live audio commit")
-        recordButton.title = "Aufnehmen"
+        configureRecordButton(isRecording: false)
         recordButton.isEnabled = true
 
         guard let sessionId = liveAudioSessionId else {
@@ -314,7 +412,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
             startAutoCommitMonitor(sessionId: sessionId)
 
             await MainActor.run { [weak self] in
-                self?.recordButton.title = "Stop"
+                self?.configureRecordButton(isRecording: true)
                 self?.recordButton.isEnabled = true
                 self?.setStatus("Nehme live auf … Stop ist optional.")
             }
@@ -324,7 +422,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
         } catch {
             diagnosticsLogger.log("Failed to start live recording: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
-                self?.recordButton.title = "Aufnehmen"
+                self?.configureRecordButton(isRecording: false)
                 self?.recordButton.isEnabled = true
                 self?.setStatus("Live-Aufnahmefehler: \(error.localizedDescription)")
             }
@@ -348,7 +446,6 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
 
     private func submitText(_ text: String) {
         setStatus("Sende Nachricht …")
-        dismissForAutomation()
         diagnosticsLogger.log("Sending text stream: \(text)")
 
         var request = URLRequest(url: serverURL.appendingPathComponent("message-stream"))
@@ -376,7 +473,7 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
             stopCaptureEngine()
             drainCaptureQueue(reason: "before live audio interruption")
             liveAudioSessionId = nil
-            recordButton.title = "Aufnehmen"
+            configureRecordButton(isRecording: false)
             recordButton.isEnabled = true
             diagnosticsLogger.log("Interrupting active live audio capture")
         }
@@ -909,6 +1006,88 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
     private func setStatus(_ text: String) {
         diagnosticsLogger.log("Status: \(text)")
         statusLabel.stringValue = text
+        statusLabel.isHidden = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func loadVoiceSettings() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: serverURL.appendingPathComponent("voices"))
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Stimmen konnten nicht geladen werden"
+                await MainActor.run { [weak self] in
+                    self?.setStatus(errorMessage)
+                    self?.voicePopup.isEnabled = true
+                }
+                return
+            }
+
+            let settings = try JSONDecoder().decode(VoiceSettingsResponse.self, from: data)
+            await MainActor.run { [weak self] in
+                self?.applyVoiceSettings(settings, announceChange: false)
+            }
+        } catch {
+            diagnosticsLogger.log("Voice settings load failed: \(error.localizedDescription)")
+            await MainActor.run { [weak self] in
+                self?.setStatus("Stimmen konnten nicht geladen werden")
+                self?.voicePopup.isEnabled = true
+            }
+        }
+    }
+
+    private func submitVoiceSelection(_ voice: String) async {
+        do {
+            var request = URLRequest(url: serverURL.appendingPathComponent("voice"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(VoiceSelectionRequest(voice: voice))
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Stimme konnte nicht gesetzt werden"
+                await MainActor.run { [weak self] in
+                    self?.setStatus(errorMessage)
+                    self?.voicePopup.isEnabled = !(self?.isBusy ?? false)
+                }
+                return
+            }
+
+            let settings = try JSONDecoder().decode(VoiceSettingsResponse.self, from: data)
+            await MainActor.run { [weak self] in
+                self?.applyVoiceSettings(settings, announceChange: true)
+            }
+        } catch {
+            diagnosticsLogger.log("Voice selection failed: \(error.localizedDescription)")
+            await MainActor.run { [weak self] in
+                self?.setStatus("Stimme konnte nicht gesetzt werden")
+                self?.voicePopup.isEnabled = !(self?.isBusy ?? false)
+            }
+        }
+    }
+
+    private func applyVoiceSettings(_ settings: VoiceSettingsResponse, announceChange: Bool) {
+        availableVoices = settings.availableVoices
+        isUpdatingVoiceSelection = true
+        voicePopup.removeAllItems()
+        voicePopup.addItems(withTitles: settings.availableVoices.map(Self.displayName(forVoiceId:)))
+
+        if let index = settings.availableVoices.firstIndex(of: settings.currentVoice) {
+            voicePopup.selectItem(at: index)
+        }
+
+        isUpdatingVoiceSelection = false
+        voicePopup.isEnabled = !isBusy
+
+        if announceChange {
+            setStatus("Stimme aktiv: \(Self.displayName(forVoiceId: settings.currentVoice))")
+        }
+    }
+
+    private static func displayName(forVoiceId voiceId: String) -> String {
+        guard let firstCharacter = voiceId.first else {
+            return voiceId
+        }
+
+        return String(firstCharacter).uppercased() + voiceId.dropFirst()
     }
 
     private func presentUsage(_ usage: TokenUsage?) {
@@ -921,20 +1100,33 @@ final class StatusBarViewController: NSViewController, NSTextFieldDelegate {
 
     private func formatUsage(_ usage: TokenUsage?) -> String {
         guard let usage else {
-            return "Input: - | Output: - | Total: -\nIn-Details: - | Out-Details: -"
+            return "Input: - | Output: - | Total: -"
         }
 
         let inputSummary = "Input: \(usage.inputTokens.map(String.init) ?? "-")"
         let outputSummary = "Output: \(usage.outputTokens.map(String.init) ?? "-")"
         let totalSummary = "Total: \(usage.totalTokens.map(String.init) ?? "-")"
-        let inputDetails = "In-Details: text \(usage.inputTextTokens.map(String.init) ?? "-") cached \(usage.cachedInputTokens.map(String.init) ?? "-") audio \(usage.inputAudioTokens.map(String.init) ?? "-") image \(usage.inputImageTokens.map(String.init) ?? "-")"
-        let outputDetails = "Out-Details: text \(usage.outputTextTokens.map(String.init) ?? "-") audio \(usage.outputAudioTokens.map(String.init) ?? "-")"
-        return "\(inputSummary) | \(outputSummary) | \(totalSummary)\n\(inputDetails) | \(outputDetails)"
+        return "\(inputSummary) | \(outputSummary) | \(totalSummary)"
+    }
+
+    private func configureRecordButton(isRecording: Bool) {
+        recordButton.image = NSImage(
+            systemSymbolName: isRecording ? "stop.circle.fill" : "mic.fill",
+            accessibilityDescription: isRecording ? "Aufnahme stoppen" : "Aufnehmen")
+        recordButton.contentTintColor = isRecording
+            ? NSColor.systemRed.withAlphaComponent(0.95)
+            : NSColor.white.withAlphaComponent(0.92)
     }
 
     private func setBusy(_ busy: Bool) {
         isBusy = busy
         cancelButton.isEnabled = busy
+        voicePopup.isEnabled = !busy && !availableVoices.isEmpty
+        if busy {
+            activityIndicator.startAnimation(nil)
+        } else {
+            activityIndicator.stopAnimation(nil)
+        }
         setActivity(busy)
     }
 
@@ -973,8 +1165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var inputWindow: NSPanel?
     private weak var viewController: StatusBarViewController?
-    private var activityTimer: Timer?
-    private var activityFrame = 0
     private var isBusy = false
 
     init(serverURL: URL) {
@@ -1013,26 +1203,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             positionInputWindow(inputWindow)
             NSApp.activate(ignoringOtherApps: true)
             inputWindow.makeKeyAndOrderFront(sender)
-            viewController?.focusTextField()
+            DispatchQueue.main.async { [weak self] in
+                self?.viewController?.focusTextField()
+            }
         }
     }
 
     private func makeInputWindow(contentViewController: NSViewController) -> NSPanel {
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 250),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+        let panel = OverlayPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 236),
+            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false)
         panel.contentViewController = contentViewController
         panel.title = "AIDesk"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
         panel.isFloatingPanel = true
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.isMovableByWindowBackground = true
+        panel.hasShadow = true
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
-        panel.standardWindowButton(.zoomButton)?.isHidden = true
-        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         positionInputWindow(panel)
         return panel
     }
@@ -1047,27 +1242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setBusy(_ busy: Bool) {
-        guard isBusy != busy else {
-            return
-        }
-
         isBusy = busy
-        if busy {
-            activityFrame = 0
-            activityTimer?.invalidate()
-            activityTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
-                guard let self else {
-                    return
-                }
-
-                self.activityFrame = (self.activityFrame + 1) % 3
-                self.updateStatusItemTitle()
-            }
-        } else {
-            activityTimer?.invalidate()
-            activityTimer = nil
-        }
-
         updateStatusItemTitle()
     }
 
@@ -1076,12 +1251,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        if isBusy {
-            let suffixes = [".", "..", "..."]
-            button.title = "AIDesk\(suffixes[activityFrame])"
-        } else {
-            button.title = "AIDesk"
-        }
+        button.title = "AIDesk"
     }
 }
 

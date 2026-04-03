@@ -121,6 +121,11 @@ dotnet run --project src/AIDeskAssistant
 dotnet run --project src/AIDeskAssistant -- --menu-bar
 ```
 
+Current macOS note:
+
+- The menu bar helper is started as a Swift script through `xcrun swift`, so the target system currently needs Apple's developer tools available, typically Xcode Command Line Tools.
+- If you want to distribute this without Xcode or Command Line Tools on the target machine, the Swift helper would need to be bundled as a prebuilt binary or the UI would need to be hosted differently.
+
 Useful companion commands:
 
 ```bash

@@ -9,14 +9,16 @@ namespace AIDeskAssistant.Services;
 
 internal sealed class RealtimeAssistantService : IAsyncDisposable
 {
+    private static readonly string[] BuiltInVoiceIds = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"];
+
     private readonly string _model;
-    private readonly string _voice;
     private readonly int _sampleRate;
     private readonly DesktopToolExecutor _executor;
     private readonly RealtimeClient _client;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _turnLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
+    private string _voice;
 
     private RealtimeSessionClient? _session;
     private Task? _receiveLoopTask;
@@ -29,8 +31,45 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         _client = new RealtimeClient(apiKey);
         _executor = executor;
         _model = model;
-        _voice = Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE") ?? "alloy";
+        _voice = NormalizeVoiceId(Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE") ?? "alloy");
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
+    }
+
+    public string CurrentVoice => _voice;
+
+    public IReadOnlyList<string> GetAvailableVoices()
+    {
+        string currentVoice = _voice;
+        if (BuiltInVoiceIds.Contains(currentVoice, StringComparer.OrdinalIgnoreCase))
+            return BuiltInVoiceIds;
+
+        return [currentVoice, .. BuiltInVoiceIds];
+    }
+
+    public async Task<string> SetVoiceAsync(string voiceId, CancellationToken ct = default)
+    {
+        string normalizedVoiceId = NormalizeVoiceId(voiceId);
+
+        await _turnLock.WaitAsync(ct);
+        try
+        {
+            await _sessionLock.WaitAsync(ct);
+            try
+            {
+                _voice = normalizedVoiceId;
+                Environment.SetEnvironmentVariable("AIDESK_REALTIME_VOICE", normalizedVoiceId);
+
+                return normalizedVoiceId;
+            }
+            finally
+            {
+                _sessionLock.Release();
+            }
+        }
+        finally
+        {
+            _turnLock.Release();
+        }
     }
 
     public async Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default)
@@ -523,9 +562,11 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         return options;
     }
 
-    private static RealtimeResponseOptions CreateResponseOptions()
+    private RealtimeResponseOptions CreateResponseOptions()
     {
         RealtimeResponseOptions options = new();
+        options.AudioOptions.OutputAudioOptions.AudioFormat = new RealtimePcmAudioFormat();
+        options.AudioOptions.OutputAudioOptions.Voice = new RealtimeVoice(_voice);
 
         options.OutputModalities.Add(new RealtimeOutputModality("audio"));
         return options;
@@ -565,6 +606,16 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
 
     private static int TryGetPositiveInt(string? value, int fallback)
         => int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
+
+    private static string NormalizeVoiceId(string voiceId)
+    {
+        if (string.IsNullOrWhiteSpace(voiceId))
+            throw new ArgumentException("Voice is required.", nameof(voiceId));
+
+        string trimmedVoiceId = voiceId.Trim();
+        string? builtInVoice = BuiltInVoiceIds.FirstOrDefault(candidate => candidate.Equals(trimmedVoiceId, StringComparison.OrdinalIgnoreCase));
+        return builtInVoice ?? trimmedVoiceId;
+    }
 
     private sealed class PendingTurn
     {

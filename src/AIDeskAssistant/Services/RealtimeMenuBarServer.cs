@@ -94,6 +94,26 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 return;
             }
 
+            if (context.Request.HttpMethod == "GET" && path == "/voices")
+            {
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(_assistant.CurrentVoice, _assistant.GetAvailableVoices()), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/voice")
+            {
+                VoiceRequest? request = await JsonSerializer.DeserializeAsync<VoiceRequest>(context.Request.InputStream, JsonOptions, ct);
+                if (request is null || string.IsNullOrWhiteSpace(request.Voice))
+                {
+                    await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new { error = "Voice is required." }, ct);
+                    return;
+                }
+
+                string currentVoice = await _assistant.SetVoiceAsync(request.Voice, ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(currentVoice, _assistant.GetAvailableVoices()), ct);
+                return;
+            }
+
             if (context.Request.HttpMethod == "POST" && path == "/message")
             {
                 MessageRequest? request = await JsonSerializer.DeserializeAsync<MessageRequest>(context.Request.InputStream, JsonOptions, ct);
@@ -265,6 +285,12 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         };
     }
 
+    internal static object CreateVoiceSettingsPayload(string currentVoice, IReadOnlyList<string> availableVoices) => new
+    {
+        currentVoice,
+        availableVoices,
+    };
+
     internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
     {
         string? queryValue = queryString["includeAudio"];
@@ -357,5 +383,10 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     {
         public string Text { get; set; } = string.Empty;
         public bool? IncludeAudio { get; set; }
+    }
+
+    private sealed class VoiceRequest
+    {
+        public string Voice { get; set; } = string.Empty;
     }
 }
