@@ -135,9 +135,11 @@ if (menuBarHostRequested)
     }
 
     debugLogger ??= AIDebugLogger.CreateFromArgsAndEnvironment(args, forceEnabled: true);
+    var menuBarAi = new AIService(apiKey, executor, model, debugLogger);
+    var speechService = new MenuBarSpeechService(apiKey, realtimeModel);
 
-    await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel, debugLogger);
-    await using var server = new RealtimeMenuBarServer(realtimeAssistant);
+    await using var menuBarAssistant = new MenuBarAssistantService(menuBarAi, speechService, debugLogger);
+    await using var server = new RealtimeMenuBarServer(menuBarAssistant);
     await server.StartAsync();
     MenuBarRuntimeState.RegisterCurrentProcess(server.BaseUri);
 
@@ -145,7 +147,8 @@ if (menuBarHostRequested)
     {
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
-        Console.WriteLine($"Realtime model: {realtimeModel}");
+        Console.WriteLine($"Speech model: {realtimeModel}");
+        Console.WriteLine($"Conversation + tools model: {model}");
         Console.WriteLine($"Status file: {MenuBarRuntimeState.StatusFilePath}");
         if (!string.IsNullOrWhiteSpace(envFilePath))
             Console.WriteLine($"Loaded environment from: {envFilePath}");

@@ -13,12 +13,12 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     };
     private static readonly object DiagnosticsLogSync = new();
 
-    private readonly RealtimeAssistantService _assistant;
+    private readonly IMenuBarAssistantService _assistant;
     private readonly HttpListener _listener = new();
     private readonly CancellationTokenSource _cts = new();
     private Task? _serverTask;
 
-    public RealtimeMenuBarServer(RealtimeAssistantService assistant)
+    public RealtimeMenuBarServer(IMenuBarAssistantService assistant)
     {
         _assistant = assistant;
     }

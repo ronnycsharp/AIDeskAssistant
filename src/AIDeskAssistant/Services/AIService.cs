@@ -327,6 +327,21 @@ internal sealed class AIService
         return true;
     }
 
+    internal static string AppendScreenshotAnalysis(string result, string analysis)
+    {
+        if (string.IsNullOrWhiteSpace(analysis))
+            return result;
+
+        const string base64Marker = "Base64:";
+        int base64Index = result.IndexOf(base64Marker, StringComparison.Ordinal);
+        if (base64Index < 0)
+            return $"{result}{Environment.NewLine}Vision analysis: {analysis.Trim()}";
+
+        string summary = result[..base64Index].TrimEnd();
+        string payload = result[base64Index..];
+        return $"{summary} GPT-5.4 screenshot analysis: {analysis.Trim()} {payload}";
+    }
+
     internal static bool TryCompactScreenshotToolMessage(ToolChatMessage toolMessage, bool retainImage, out ToolChatMessage replacement)
     {
         ChatMessageContentPart[] contentParts = toolMessage.Content.ToArray();
