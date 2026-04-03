@@ -90,6 +90,9 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
     public IReadOnlyList<string> LastSidebarTitles = Array.Empty<string>();
     public string? LastFocusedContentApplicationName;
     public string? FocusContentExceptionMessage;
+    public string FrontmostUiSummary = "Frontmost app: TestApp\nVisible UI elements:\n- AXWindow | title=Main | x=10,y=20,w=800,h=600";
+
+    public string SummarizeFrontmostUiElements() => FrontmostUiSummary;
 
     public void ClickDockApplication(IReadOnlyList<string> titles) => LastDockTitles = titles.ToArray();
 
@@ -150,6 +153,7 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Capture bounds: X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(839,0), BL=(0,639), BR=(839,639).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
+        Assert.Contains("Likely content area: X=34, Y=90, Width=772, Height=518.", result);
         Assert.Contains("Edge ruler: major ticks every 50 px with minor ticks every 25 px.", result);
     }
 
@@ -160,6 +164,15 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Equal((300, 400), _mouse.LastMoveTarget);
         Assert.Equal("Mouse moved to (300, 400)", result);
+    }
+
+    [Fact]
+    public void Execute_GetFrontmostUiElements_ReturnsUiAutomationSummary()
+    {
+        string result = _sut.Execute("get_frontmost_ui_elements", "{}");
+
+        Assert.Contains("Frontmost app: TestApp", result);
+        Assert.Contains("AXWindow | title=Main", result);
     }
 
     [Fact]
@@ -196,6 +209,23 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Equal("Hello", _keyboard.LastTypedText);
         Assert.Equal("Typed 5 character(s)", result);
+    }
+
+    [Theory]
+    [InlineData("HOME")]
+    [InlineData("right right right")]
+    [InlineData("pageDown")]
+    [InlineData("ENTER")]
+    [InlineData("TAB")]
+    [InlineData("ESC")]
+    [InlineData("BACKSPACE")]
+    public void Execute_TypeText_BlocksNavigationLikeInput(string text)
+    {
+        string result = _sut.Execute("type_text", $"{{\"text\":\"{text}\"}}");
+
+        Assert.Equal(string.Empty, _keyboard.LastTypedText);
+        Assert.Contains("Blocked type_text", result);
+        Assert.Contains("Use press_key", result);
     }
 
     [Fact]

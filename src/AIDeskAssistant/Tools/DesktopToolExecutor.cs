@@ -13,6 +13,29 @@ internal sealed class DesktopToolExecutor
     private const string HeightArg = "height";
     private const string FullScreenScreenshotTarget = "full_screen";
     private const string ActiveWindowScreenshotTarget = "active_window";
+    private static readonly HashSet<string> SpecialInputTextTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "up",
+        "down",
+        "left",
+        "right",
+        "enter",
+        "return",
+        "tab",
+        "escape",
+        "esc",
+        "backspace",
+        "delete",
+        "del",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "pgup",
+        "pgdown",
+        "page-up",
+        "page-down",
+    };
 
     private readonly IScreenshotService _screenshot;
     private readonly ScreenshotOptimizer _screenshotOptimizer;
@@ -47,6 +70,7 @@ internal sealed class DesktopToolExecutor
         {
             "take_screenshot" => TakeScreenshot(args),
             "get_screen_info" => GetScreenInfo(),
+            "get_frontmost_ui_elements" => GetFrontmostUiElements(),
             "get_cursor_position" => GetCursorPosition(),
             "move_mouse" => MoveMouse(args),
             "click" => Click(args),
@@ -83,12 +107,15 @@ internal sealed class DesktopToolExecutor
 
         ScreenInfo screenInfo = _screenshot.GetScreenInfo();
         WindowBounds captureBounds = bounds ?? new WindowBounds(0, 0, screenInfo.Width, screenInfo.Height);
+        WindowBounds? suggestedContentArea = string.Equals(target, ActiveWindowScreenshotTarget, StringComparison.Ordinal)
+            ? ScreenshotAnnotationData.CreateSuggestedContentArea(captureBounds)
+            : null;
         var (cursorX, cursorY) = _mouse.GetPosition();
 
         byte[] screenshot = _screenshot.TakeScreenshot(options);
-        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, new ScreenshotAnnotationData(captureBounds, cursorX, cursorY));
+        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea));
         ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
-        return BuildScreenshotToolResult(payload, target, purpose, captureBounds, cursorX, cursorY);
+        return BuildScreenshotToolResult(payload, target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea);
     }
 
     private bool TryResolveScreenshotCaptureOptions(
@@ -143,9 +170,9 @@ internal sealed class DesktopToolExecutor
         return new WindowBounds(x, y, width, height);
     }
 
-    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY)
+    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY, WindowBounds? suggestedContentArea)
     {
-        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY);
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea);
         var parts = new List<string>
         {
             "Screenshot taken.",
@@ -158,6 +185,8 @@ internal sealed class DesktopToolExecutor
         parts.Add($"Capture bounds: X={captureBounds.X}, Y={captureBounds.Y}, Width={captureBounds.Width}, Height={captureBounds.Height}.");
         parts.Add($"Corner pixels: TL=({annotation.TopLeft.X},{annotation.TopLeft.Y}), TR=({annotation.TopRight.X},{annotation.TopRight.Y}), BL=({annotation.BottomLeft.X},{annotation.BottomLeft.Y}), BR=({annotation.BottomRight.X},{annotation.BottomRight.Y}).");
         parts.Add($"Cursor: X={cursorX}, Y={cursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
+        if (annotation.HasSuggestedContentArea && annotation.SuggestedContentArea is WindowBounds contentArea)
+            parts.Add($"Likely content area: X={contentArea.X}, Y={contentArea.Y}, Width={contentArea.Width}, Height={contentArea.Height}. Prefer clicks and typing inside this region unless the screenshot shows a more specific control elsewhere.");
         parts.Add($"Edge ruler: major ticks every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor ticks every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
 
         parts.Add($"Original: {payload.OriginalByteCount} bytes.");
@@ -189,6 +218,18 @@ internal sealed class DesktopToolExecutor
     {
         ScreenInfo info = _screenshot.GetScreenInfo();
         return $"Screen: {info.Width}x{info.Height}, {info.Depth} bpp";
+    }
+
+    private string GetFrontmostUiElements()
+    {
+        try
+        {
+            return _uiAutomation.SummarizeFrontmostUiElements();
+        }
+        catch (Exception ex)
+        {
+            return $"Frontmost UI element summary unavailable: {ex.Message}";
+        }
     }
 
     private string GetCursorPosition()
@@ -239,8 +280,26 @@ internal sealed class DesktopToolExecutor
     private string TypeText(Dictionary<string, JsonElement> args)
     {
         string text = DesktopToolDefinitions.GetString(args, "text");
+
+        if (LooksLikeSpecialInputText(text))
+            return "Blocked type_text because the payload looks like special key or caret-navigation input. Use press_key for arrow keys, enter, return, tab, escape, backspace, delete, home, end, page up, or page down instead.";
+
         _keyboard.TypeText(text);
         return $"Typed {text.Length} character(s)";
+    }
+
+    private static bool LooksLikeSpecialInputText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        string[] tokens = text
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        if (tokens.Length == 0)
+            return false;
+
+        return tokens.All(static token => SpecialInputTextTokens.Contains(token));
     }
 
     private string PressKey(Dictionary<string, JsonElement> args)

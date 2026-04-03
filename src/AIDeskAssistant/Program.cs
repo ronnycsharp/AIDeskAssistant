@@ -135,11 +135,10 @@ if (menuBarHostRequested)
     }
 
     debugLogger ??= AIDebugLogger.CreateFromArgsAndEnvironment(args, forceEnabled: true);
-    var menuBarAi = new AIService(apiKey, executor, model, debugLogger);
-    var speechService = new MenuBarSpeechService(apiKey, realtimeModel);
+    IScreenshotAnalysisService screenshotAnalysisService = new ScreenshotAnalysisService(apiKey, model);
 
-    await using var menuBarAssistant = new MenuBarAssistantService(menuBarAi, speechService, debugLogger);
-    await using var server = new RealtimeMenuBarServer(menuBarAssistant);
+    await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel, debugLogger, screenshotAnalysisService);
+    await using var server = new RealtimeMenuBarServer(realtimeAssistant);
     await server.StartAsync();
     MenuBarRuntimeState.RegisterCurrentProcess(server.BaseUri);
 
@@ -147,8 +146,8 @@ if (menuBarHostRequested)
     {
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
-        Console.WriteLine($"Speech model: {realtimeModel}");
-        Console.WriteLine($"Conversation + tools model: {model}");
+        Console.WriteLine($"Realtime speech + tool model: {realtimeModel}");
+        Console.WriteLine($"Screenshot analysis model: {model}");
         Console.WriteLine($"Status file: {MenuBarRuntimeState.StatusFilePath}");
         if (!string.IsNullOrWhiteSpace(envFilePath))
             Console.WriteLine($"Loaded environment from: {envFilePath}");
@@ -165,7 +164,7 @@ if (menuBarHostRequested)
     }
 }
 
-var ai = new AIService(apiKey, executor, model, debugLogger);
+var chatAssistant = new AIService(apiKey, executor, model, debugLogger);
 
 // ── REPL ─────────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Green;
@@ -202,7 +201,7 @@ while (true)
 
             case "/clear":
             case "/reset":
-                ai.ClearHistory();
+                chatAssistant.ClearHistory();
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine("Conversation history cleared.");
                 Console.ResetColor();
@@ -242,7 +241,7 @@ while (true)
             }
         };
 
-        string response = await ai.SendMessageAsync(
+        string response = await chatAssistant.SendMessageAsync(
             input,
             onToolCall: msg =>
             {

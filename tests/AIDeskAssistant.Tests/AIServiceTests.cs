@@ -20,6 +20,12 @@ public sealed class AIServiceTests
         Assert.Contains("compare the validation screenshot with the pre-action screenshot", prompt);
         Assert.Contains("subtle edge ruler with labeled spacing", prompt);
         Assert.Contains("Microsoft Word and Microsoft Excel", prompt);
+        Assert.Contains("In text editors and document apps such as Microsoft Word, cursor navigation must always use press_key with arrow keys", prompt);
+        Assert.Contains("Never type words like 'up', 'down', 'left', 'right', 'home', 'end', 'page up', or 'page down' into the document when the intent is to move the caret", prompt);
+        Assert.Contains("Use press_key for special keys like enter, return, tab, escape, backspace, delete, arrows, or shortcuts", prompt);
+        Assert.Contains("Never type words like 'enter', 'tab', 'escape', 'backspace', or 'delete' into the document", prompt);
+        Assert.Contains("arrow navigation must always use press_key with arrow keys", prompt);
+        Assert.Contains("Never type words like 'up', 'down', 'left', or 'right' into a cell", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
     }
@@ -33,6 +39,19 @@ public sealed class AIServiceTests
 
         Assert.Contains("Current screen info: Screen: 1920x1080, 32 bpp", result);
         Assert.Contains("User task: Open Word and write a poem.", result);
+    }
+
+    [Fact]
+    public void BuildUserMessageWithScreenInfo_IncludesUiContextWhenAvailable()
+    {
+        string result = AIService.BuildUserMessageWithScreenInfo(
+            "Open Word and write a poem.",
+            "Screen: 1920x1080, 32 bpp",
+            "Frontmost app: Word\nVisible UI elements:\n- AXWindow | title=Document1 | x=0,y=25,w=1440,h=900");
+
+        Assert.Contains("Current macOS Accessibility UI summary:", result);
+        Assert.Contains("Frontmost app: Word", result);
+        Assert.Contains("AXWindow | title=Document1", result);
     }
 
     [Fact]

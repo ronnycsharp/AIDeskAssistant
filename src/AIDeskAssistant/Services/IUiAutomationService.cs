@@ -2,6 +2,9 @@ namespace AIDeskAssistant.Services;
 
 public interface IUiAutomationService
 {
+    /// <summary>Returns a compact summary of visible UI elements for the frontmost macOS application.</summary>
+    string SummarizeFrontmostUiElements();
+
     /// <summary>Clicks an application in the macOS Dock by title.</summary>
     void ClickDockApplication(IReadOnlyList<string> titles);
 

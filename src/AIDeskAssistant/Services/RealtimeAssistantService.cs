@@ -7,7 +7,7 @@ using OpenAI.Realtime;
 
 namespace AIDeskAssistant.Services;
 
-internal sealed class RealtimeAssistantService : IAsyncDisposable
+internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 {
     private static readonly string[] BuiltInVoiceIds = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"];
     private const double ScreenshotHistorySimilarityThreshold = 0.995;
@@ -102,7 +102,9 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
             string screenInfo = GetScreenInfoContext();
-            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo);
+            string uiContext = GetFrontmostUiContext();
+            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo, uiContext);
+            _debugLogger?.LogUiContext(uiContext);
             _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
             _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
             await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
@@ -131,7 +133,9 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
             string screenInfo = GetScreenInfoContext();
-            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo);
+            string uiContext = GetFrontmostUiContext();
+            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo, uiContext);
+            _debugLogger?.LogUiContext(uiContext);
             _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
             _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
             await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
@@ -740,6 +744,18 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         catch (Exception ex)
         {
             return $"Screen information unavailable: {ex.Message}";
+        }
+    }
+
+    private string GetFrontmostUiContext()
+    {
+        try
+        {
+            return _executor.Execute("get_frontmost_ui_elements", "{}");
+        }
+        catch (Exception ex)
+        {
+            return $"Frontmost UI context unavailable: {ex.Message}";
         }
     }
 

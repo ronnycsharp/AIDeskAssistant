@@ -1,43 +1,45 @@
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.Diagnostics.CodeAnalysis;
+using AIDeskAssistant.Models;
+using SkiaSharp;
 
 namespace AIDeskAssistant.Services;
 
-[SuppressMessage("Interoperability", "CA1416:Validate platform compatibility", Justification = "System.Drawing is intentionally enabled for this desktop app, including Unix support via runtime configuration.")]
 internal static class ScreenshotAnnotator
 {
-    private static readonly Color CornerColor = Color.FromArgb(255, 0, 170, 140);
-    private static readonly Color CursorColor = Color.FromArgb(255, 255, 106, 0);
-    private static readonly Color RulerTickColor = Color.FromArgb(120, 255, 255, 255);
-    private static readonly Color RulerGuideColor = Color.FromArgb(28, 255, 255, 255);
-    private static readonly Color LabelBackgroundColor = Color.FromArgb(210, 18, 18, 18);
-    private static readonly Color LabelBorderColor = Color.FromArgb(235, 255, 255, 255);
-    private static readonly Brush LabelTextBrush = Brushes.White;
+    private static readonly SKColor CornerColor = new(0, 170, 140, 255);
+    private static readonly SKColor CursorColor = new(255, 106, 0, 255);
+    private static readonly SKColor ContentAreaColor = new(0, 122, 255, 255);
+    private static readonly SKColor RulerTickColor = new(255, 255, 255, 120);
+    private static readonly SKColor RulerGuideColor = new(255, 255, 255, 28);
+    private static readonly SKColor LabelBackgroundColor = new(18, 18, 18, 210);
+    private static readonly SKColor LabelBorderColor = new(255, 255, 255, 235);
+    private static readonly SKColor LabelTextColor = SKColors.White;
 
     public static byte[] Annotate(byte[] screenshotBytes, ScreenshotAnnotationData annotation)
     {
         try
         {
-            using var input = new MemoryStream(screenshotBytes);
-            using var image = Image.FromStream(input);
-            using var bitmap = new Bitmap(image.Width, image.Height, PixelFormat.Format32bppArgb);
-            using var graphics = Graphics.FromImage(bitmap);
+            using SKBitmap? sourceBitmap = SKBitmap.Decode(screenshotBytes);
+            if (sourceBitmap is null)
+                return screenshotBytes;
 
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            graphics.DrawImage(image, 0, 0, image.Width, image.Height);
+            using var surface = SKSurface.Create(new SKImageInfo(sourceBitmap.Width, sourceBitmap.Height, SKColorType.Rgba8888, SKAlphaType.Premul));
+            if (surface is null)
+                return screenshotBytes;
 
-            using var font = CreateFont(bitmap.Size);
-            DrawEdgeRuler(graphics, font, bitmap.Size, annotation);
-            DrawCornerAnnotations(graphics, font, bitmap.Size, annotation);
-            DrawCursorAnnotation(graphics, font, bitmap.Size, annotation);
+            SKCanvas canvas = surface.Canvas;
+            canvas.Clear(SKColors.Transparent);
+            canvas.DrawBitmap(sourceBitmap, 0, 0);
 
-            using var output = new MemoryStream();
-            bitmap.Save(output, ImageFormat.Png);
-            return output.ToArray();
+            float fontSize = CreateFontSize(sourceBitmap.Width, sourceBitmap.Height);
+            var metrics = new ImageMetrics(sourceBitmap.Width, sourceBitmap.Height, fontSize);
+            DrawEdgeRuler(canvas, metrics, annotation);
+            DrawSuggestedContentArea(canvas, metrics, annotation);
+            DrawCornerAnnotations(canvas, metrics, annotation);
+            DrawCursorAnnotation(canvas, metrics, annotation);
+
+            using SKImage image = surface.Snapshot();
+            using SKData data = image.Encode(SKEncodedImageFormat.Png, 100);
+            return data.ToArray();
         }
         catch
         {
@@ -45,80 +47,90 @@ internal static class ScreenshotAnnotator
         }
     }
 
-    private static Font CreateFont(Size imageSize)
-    {
-        float size = Math.Clamp(Math.Min(imageSize.Width, imageSize.Height) / 36f, 12f, 24f);
-        return new Font(FontFamily.GenericSansSerif, size, FontStyle.Bold, GraphicsUnit.Pixel);
-    }
+    private static float CreateFontSize(int imageWidth, int imageHeight)
+        => Math.Clamp(Math.Min(imageWidth, imageHeight) / 36f, 12f, 24f);
 
-    private static void DrawEdgeRuler(Graphics graphics, Font font, Size imageSize, ScreenshotAnnotationData annotation)
+    private static void DrawEdgeRuler(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
     {
-        int majorStep = CalculateMajorStep(imageSize);
+        int majorStep = CalculateMajorStep(annotation.CaptureBounds.Width, annotation.CaptureBounds.Height);
         int minorStep = Math.Max(majorStep / 2, 25);
-        float edgeBand = Math.Clamp(Math.Min(imageSize.Width, imageSize.Height) / 28f, 18f, 32f);
-        using var tickPen = new Pen(RulerTickColor, 1.5f);
-        using var guidePen = new Pen(RulerGuideColor, 1f);
+        float edgeBand = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 28f, 18f, 32f);
+        using var tickPaint = new SKPaint { Color = RulerTickColor, IsAntialias = true, StrokeWidth = 1.5f, Style = SKPaintStyle.Stroke };
+        using var guidePaint = new SKPaint { Color = RulerGuideColor, IsAntialias = true, StrokeWidth = 1f, Style = SKPaintStyle.Stroke };
+        var rulerStyle = new RulerStyle(minorStep, majorStep, edgeBand, tickPaint, guidePaint);
 
-        DrawVerticalRuler(graphics, font, imageSize, annotation, minorStep, majorStep, edgeBand, tickPen, guidePen);
-        DrawHorizontalRuler(graphics, font, imageSize, annotation, minorStep, majorStep, edgeBand, tickPen, guidePen);
+        DrawVerticalRuler(canvas, metrics, annotation, rulerStyle);
+        DrawHorizontalRuler(canvas, metrics, annotation, rulerStyle);
     }
 
-    private static void DrawVerticalRuler(Graphics graphics, Font font, Size imageSize, ScreenshotAnnotationData annotation, int minorStep, int majorStep, float edgeBand, Pen tickPen, Pen guidePen)
+    private static void DrawVerticalRuler(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation, RulerStyle rulerStyle)
     {
-        for (int x = 0; x < imageSize.Width; x += minorStep)
+        int left = annotation.CaptureBounds.X;
+        int right = annotation.CaptureBounds.X + Math.Max(0, annotation.CaptureBounds.Width - 1);
+
+        for (int globalX = AlignDown(left, rulerStyle.MinorStep); globalX <= right; globalX += rulerStyle.MinorStep)
         {
-            bool isMajor = x % majorStep == 0;
-            float tickLength = isMajor ? edgeBand : edgeBand * 0.45f;
-            graphics.DrawLine(tickPen, x, 0, x, tickLength);
-            graphics.DrawLine(tickPen, x, imageSize.Height - tickLength, x, imageSize.Height);
+            if (globalX < left)
+                continue;
+
+            float x = MapGlobalXToImage(annotation, globalX, metrics.Width);
+            bool isMajor = globalX % rulerStyle.MajorStep == 0;
+            float tickLength = isMajor ? rulerStyle.EdgeBand : rulerStyle.EdgeBand * 0.45f;
+            canvas.DrawLine(x, 0, x, tickLength, rulerStyle.TickPaint);
+            canvas.DrawLine(x, metrics.Height - tickLength, x, metrics.Height, rulerStyle.TickPaint);
 
             if (!isMajor)
                 continue;
 
-            if (x > 0 && x < imageSize.Width - 1)
-                graphics.DrawLine(guidePen, x, 0, x, imageSize.Height - 1);
+            if (x > 0 && x < metrics.Width - 1)
+                canvas.DrawLine(x, 0, x, metrics.Height - 1, rulerStyle.GuidePaint);
 
-            int globalX = annotation.CaptureBounds.X + x;
-            DrawRulerLabel(graphics, font, globalX.ToString(), new PointF(Math.Min(imageSize.Width - 8f, x + 4f), 6f));
+            DrawRulerLabel(canvas, metrics.FontSize, globalX.ToString(), new SKPoint(Math.Min(metrics.Width - 8f, x + 4f), 6f), metrics.Width, metrics.Height);
         }
     }
 
-    private static void DrawHorizontalRuler(Graphics graphics, Font font, Size imageSize, ScreenshotAnnotationData annotation, int minorStep, int majorStep, float edgeBand, Pen tickPen, Pen guidePen)
+    private static void DrawHorizontalRuler(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation, RulerStyle rulerStyle)
     {
-        for (int y = 0; y < imageSize.Height; y += minorStep)
+        int top = annotation.CaptureBounds.Y;
+        int bottom = annotation.CaptureBounds.Y + Math.Max(0, annotation.CaptureBounds.Height - 1);
+
+        for (int globalY = AlignDown(top, rulerStyle.MinorStep); globalY <= bottom; globalY += rulerStyle.MinorStep)
         {
-            bool isMajor = y % majorStep == 0;
-            float tickLength = isMajor ? edgeBand : edgeBand * 0.45f;
-            graphics.DrawLine(tickPen, 0, y, tickLength, y);
-            graphics.DrawLine(tickPen, imageSize.Width - tickLength, y, imageSize.Width, y);
+            if (globalY < top)
+                continue;
+
+            float y = MapGlobalYToImage(annotation, globalY, metrics.Height);
+            bool isMajor = globalY % rulerStyle.MajorStep == 0;
+            float tickLength = isMajor ? rulerStyle.EdgeBand : rulerStyle.EdgeBand * 0.45f;
+            canvas.DrawLine(0, y, tickLength, y, rulerStyle.TickPaint);
+            canvas.DrawLine(metrics.Width - tickLength, y, metrics.Width, y, rulerStyle.TickPaint);
 
             if (!isMajor)
                 continue;
 
-            if (y > 0 && y < imageSize.Height - 1)
-                graphics.DrawLine(guidePen, 0, y, imageSize.Width - 1, y);
+            if (y > 0 && y < metrics.Height - 1)
+                canvas.DrawLine(0, y, metrics.Width - 1, y, rulerStyle.GuidePaint);
 
-            int globalY = annotation.CaptureBounds.Y + y;
-            DrawRulerLabel(graphics, font, globalY.ToString(), new PointF(6f, Math.Min(imageSize.Height - 8f, y + 4f)));
+            DrawRulerLabel(canvas, metrics.FontSize, globalY.ToString(), new SKPoint(6f, Math.Min(metrics.Height - 8f, y + 4f)), metrics.Width, metrics.Height);
         }
     }
 
-    private static void DrawCornerAnnotations(Graphics graphics, Font font, Size imageSize, ScreenshotAnnotationData annotation)
+    private static void DrawCornerAnnotations(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
     {
         var corners = new[]
         {
-            new CornerLabel("TL", annotation.TopLeft, new Point(18, 18), CornerAnchor.TopLeft),
-            new CornerLabel("TR", annotation.TopRight, new Point(imageSize.Width - 18, 18), CornerAnchor.TopRight),
-            new CornerLabel("BL", annotation.BottomLeft, new Point(18, imageSize.Height - 18), CornerAnchor.BottomLeft),
-            new CornerLabel("BR", annotation.BottomRight, new Point(imageSize.Width - 18, imageSize.Height - 18), CornerAnchor.BottomRight),
+            new CornerLabel("TL", annotation.TopLeft, new SKPoint(18, 18), CornerAnchor.TopLeft),
+            new CornerLabel("TR", annotation.TopRight, new SKPoint(metrics.Width - 18, 18), CornerAnchor.TopRight),
+            new CornerLabel("BL", annotation.BottomLeft, new SKPoint(18, metrics.Height - 18), CornerAnchor.BottomLeft),
+            new CornerLabel("BR", annotation.BottomRight, new SKPoint(metrics.Width - 18, metrics.Height - 18), CornerAnchor.BottomRight),
         };
 
         foreach (CornerLabel corner in corners)
         {
-            Point anchorPoint = GetCornerAnchorPoint(imageSize, corner.Anchor);
+            SKPoint anchorPoint = GetCornerAnchorPoint(metrics.Width, metrics.Height, corner.Anchor);
             DrawLabelWithAnchor(
-                graphics,
-                font,
+                canvas,
+                metrics,
                 $"{corner.Name} ({corner.GlobalPoint.X},{corner.GlobalPoint.Y})",
                 corner.LabelOrigin,
                 anchorPoint,
@@ -127,74 +139,102 @@ internal static class ScreenshotAnnotator
         }
     }
 
-    private static void DrawCursorAnnotation(Graphics graphics, Font font, Size imageSize, ScreenshotAnnotationData annotation)
+    private static void DrawSuggestedContentArea(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
+    {
+        if (!annotation.HasSuggestedContentArea || annotation.SuggestedContentArea is not WindowBounds contentArea)
+            return;
+
+        SKPoint topLeft = MapGlobalPointToImage(annotation, contentArea.X, contentArea.Y, metrics.Width, metrics.Height);
+        SKPoint bottomRight = MapGlobalPointToImage(
+            annotation,
+            contentArea.X + Math.Max(0, contentArea.Width - 1),
+            contentArea.Y + Math.Max(0, contentArea.Height - 1),
+            metrics.Width,
+            metrics.Height);
+
+        var rect = new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        rect = NormalizeRect(rect);
+
+        using var fillPaint = new SKPaint { Color = ContentAreaColor.WithAlpha(26), IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var strokePaint = new SKPaint { Color = ContentAreaColor.WithAlpha(220), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, PathEffect = SKPathEffect.CreateDash(new float[] { 14f, 10f }, 0f) };
+
+        canvas.DrawRect(rect, fillPaint);
+        canvas.DrawRect(rect, strokePaint);
+
+        string label = $"Likely content area ({contentArea.X},{contentArea.Y})-{(contentArea.X + Math.Max(0, contentArea.Width - 1))},{(contentArea.Y + Math.Max(0, contentArea.Height - 1))}";
+        DrawDetachedBadge(
+            canvas,
+            Math.Max(11f, metrics.FontSize * 0.8f),
+            label,
+            new SKRect(rect.Left + 10f, Math.Max(18f, rect.Top + 10f), Math.Min(metrics.Width - 18f, rect.Right - 10f), Math.Min(metrics.Height - 18f, rect.Top + 64f)),
+            ContentAreaColor,
+            metrics.Width,
+            metrics.Height);
+    }
+
+    private static void DrawCursorAnnotation(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
     {
         string cursorText = $"Cursor ({annotation.CursorX},{annotation.CursorY})";
         if (!annotation.CursorIsInsideCapture)
         {
             DrawDetachedBadge(
-                graphics,
-                font,
+                canvas,
+                metrics.FontSize,
                 $"{cursorText} outside capture",
-                new RectangleF(18, 18, Math.Max(180, imageSize.Width - 36), 36),
-                CursorColor);
+                new SKRect(18, 18, Math.Max(180, metrics.Width - 18), 54),
+                CursorColor,
+                metrics.Width,
+                metrics.Height);
             return;
         }
 
-        Point cursorPoint = MapGlobalPointToImage(annotation.CaptureBounds, annotation.CursorX, annotation.CursorY, imageSize);
-        float radius = Math.Clamp(Math.Min(imageSize.Width, imageSize.Height) / 24f, 16f, 34f);
-        using var fillBrush = new SolidBrush(Color.FromArgb(80, CursorColor));
-        using var pen = new Pen(CursorColor, Math.Max(3f, radius / 6f));
+        SKPoint cursorPoint = MapGlobalPointToImage(annotation, annotation.CursorX, annotation.CursorY, metrics.Width, metrics.Height);
+        float radius = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 24f, 16f, 34f);
+        using var fillPaint = new SKPaint { Color = CursorColor.WithAlpha(80), IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var strokePaint = new SKPaint { Color = CursorColor, IsAntialias = true, StrokeWidth = Math.Max(3f, radius / 6f), Style = SKPaintStyle.Stroke };
 
-        graphics.FillEllipse(fillBrush, cursorPoint.X - radius, cursorPoint.Y - radius, radius * 2, radius * 2);
-        graphics.DrawEllipse(pen, cursorPoint.X - radius, cursorPoint.Y - radius, radius * 2, radius * 2);
-        graphics.DrawLine(pen, cursorPoint.X - radius - 10, cursorPoint.Y, cursorPoint.X + radius + 10, cursorPoint.Y);
-        graphics.DrawLine(pen, cursorPoint.X, cursorPoint.Y - radius - 10, cursorPoint.X, cursorPoint.Y + radius + 10);
+        canvas.DrawCircle(cursorPoint, radius, fillPaint);
+        canvas.DrawCircle(cursorPoint, radius, strokePaint);
+        canvas.DrawLine(cursorPoint.X - radius - 10, cursorPoint.Y, cursorPoint.X + radius + 10, cursorPoint.Y, strokePaint);
+        canvas.DrawLine(cursorPoint.X, cursorPoint.Y - radius - 10, cursorPoint.X, cursorPoint.Y + radius + 10, strokePaint);
 
-        Point labelOrigin = new(
-            Math.Min(imageSize.Width - 18, cursorPoint.X + (int)radius + 14),
-            Math.Max(18, cursorPoint.Y - (int)radius - 10));
+        SKPoint labelOrigin = new(
+            Math.Min(metrics.Width - 18, cursorPoint.X + radius + 14),
+            Math.Max(18, cursorPoint.Y - radius - 10));
 
-        DrawLabelWithAnchor(graphics, font, cursorText, labelOrigin, cursorPoint, CornerAnchor.TopLeft, CursorColor);
+        DrawLabelWithAnchor(canvas, metrics, cursorText, labelOrigin, cursorPoint, CornerAnchor.TopLeft, CursorColor);
     }
 
-    private static void DrawDetachedBadge(Graphics graphics, Font font, string text, RectangleF preferredBounds, Color accentColor)
+    private static void DrawDetachedBadge(SKCanvas canvas, float fontSize, string text, SKRect preferredBounds, SKColor accentColor, int imageWidth, int imageHeight)
     {
-        SizeF textSize = graphics.MeasureString(text, font);
-        float width = Math.Min(preferredBounds.Width, textSize.Width + 20f);
-        RectangleF badgeRect = new(preferredBounds.X, preferredBounds.Y, width, textSize.Height + 14f);
-        DrawBadge(graphics, font, text, badgeRect, accentColor);
+        using var textPaint = CreateTextPaint(fontSize);
+        SKRect textBounds = default;
+        textPaint.MeasureText(text, ref textBounds);
+        float width = Math.Min(preferredBounds.Width, textBounds.Width + 20f);
+        SKRect badgeRect = new(preferredBounds.Left, preferredBounds.Top, preferredBounds.Left + width, preferredBounds.Top + textBounds.Height + 18f);
+        DrawBadge(canvas, textPaint, text, badgeRect, accentColor, new ImageMetrics(imageWidth, imageHeight, fontSize));
     }
 
-    private static void DrawRulerLabel(Graphics graphics, Font font, string text, PointF origin)
+    private static void DrawRulerLabel(SKCanvas canvas, float fontSize, string text, SKPoint origin, int imageWidth, int imageHeight)
     {
-        using var labelFont = new Font(font.FontFamily, Math.Max(10f, font.Size * 0.7f), FontStyle.Bold, GraphicsUnit.Pixel);
-        SizeF textSize = graphics.MeasureString(text, labelFont);
-        RectangleF rect = ClampRectangle(new RectangleF(origin.X, origin.Y, textSize.Width + 10f, textSize.Height + 6f), graphics.VisibleClipBounds.Size);
-        using var backgroundBrush = new SolidBrush(Color.FromArgb(105, 10, 10, 10));
-        using var borderPen = new Pen(Color.FromArgb(95, 255, 255, 255), 1f);
-        using GraphicsPath path = CreateRoundedRectangle(rect, 6f);
-
-        graphics.FillPath(backgroundBrush, path);
-        graphics.DrawPath(borderPen, path);
-
-        RectangleF textRect = new(rect.X + 5f, rect.Y + 3f, rect.Width - 10f, rect.Height - 6f);
-        using var format = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-        graphics.DrawString(text, labelFont, LabelTextBrush, textRect, format);
+        using var textPaint = CreateTextPaint(Math.Max(10f, fontSize * 0.7f));
+        DrawBadge(
+            canvas,
+            textPaint,
+            text,
+            MeasureBadgeRect(textPaint, text, origin),
+            LabelBorderColor.WithAlpha(95),
+            new ImageMetrics(imageWidth, imageHeight, fontSize),
+            new BadgeStyle(LabelBackgroundColor.WithAlpha(105), 1f, 6f));
     }
 
-    private static void DrawLabelWithAnchor(
-        Graphics graphics,
-        Font font,
-        string text,
-        Point preferredOrigin,
-        Point anchorPoint,
-        CornerAnchor anchor,
-        Color accentColor)
+    private static void DrawLabelWithAnchor(SKCanvas canvas, ImageMetrics metrics, string text, SKPoint preferredOrigin, SKPoint anchorPoint, CornerAnchor anchor, SKColor accentColor)
     {
-        SizeF textSize = graphics.MeasureString(text, font);
-        float width = textSize.Width + 20f;
-        float height = textSize.Height + 14f;
+        using var textPaint = CreateTextPaint(metrics.FontSize);
+        SKRect textBounds = default;
+        textPaint.MeasureText(text, ref textBounds);
+        float width = textBounds.Width + 20f;
+        float height = textBounds.Height + 18f;
 
         float x = anchor switch
         {
@@ -208,82 +248,102 @@ internal static class ScreenshotAnnotator
             _ => preferredOrigin.Y,
         };
 
-        RectangleF rect = new(x, y, width, height);
-        rect = ClampRectangle(rect, graphics.VisibleClipBounds.Size);
+        SKRect rect = ClampRectangle(new SKRect(x, y, x + width, y + height), metrics.Width, metrics.Height);
 
-        using var connectorPen = new Pen(accentColor, 3f);
-        Point rectAnchor = GetNearestPointOnRectangle(rect, anchorPoint);
-        graphics.DrawLine(connectorPen, anchorPoint, rectAnchor);
-        DrawBadge(graphics, font, text, rect, accentColor);
+        using var connectorPaint = new SKPaint { Color = accentColor, IsAntialias = true, StrokeWidth = 3f, Style = SKPaintStyle.Stroke };
+        SKPoint rectAnchor = GetNearestPointOnRectangle(rect, anchorPoint);
+        canvas.DrawLine(anchorPoint, rectAnchor, connectorPaint);
+        DrawBadge(canvas, textPaint, text, rect, accentColor, metrics);
     }
 
-    private static void DrawBadge(Graphics graphics, Font font, string text, RectangleF rect, Color accentColor)
+    private static void DrawBadge(SKCanvas canvas, SKPaint textPaint, string text, SKRect rect, SKColor accentColor, ImageMetrics metrics, BadgeStyle? badgeStyle = null)
     {
-        using var backgroundBrush = new SolidBrush(LabelBackgroundColor);
-        using var borderPen = new Pen(accentColor, 2f);
-        using var innerBorderPen = new Pen(LabelBorderColor, 1f);
-        using GraphicsPath path = CreateRoundedRectangle(rect, 10f);
+        BadgeStyle style = badgeStyle ?? new BadgeStyle(null, 2f, 10f);
+        rect = ClampRectangle(rect, metrics.Width, metrics.Height);
+        using var backgroundPaint = new SKPaint { Color = style.BackgroundColorOverride ?? LabelBackgroundColor, IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var borderPaint = new SKPaint { Color = accentColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = style.BorderWidth };
+        using var innerBorderPaint = new SKPaint { Color = LabelBorderColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1f };
+        var roundRect = new SKRoundRect(rect, style.Radius, style.Radius);
 
-        graphics.FillPath(backgroundBrush, path);
-        graphics.DrawPath(borderPen, path);
-        graphics.DrawPath(innerBorderPen, path);
+        canvas.DrawRoundRect(roundRect, backgroundPaint);
+        canvas.DrawRoundRect(roundRect, borderPaint);
+        canvas.DrawRoundRect(roundRect, innerBorderPaint);
 
-        RectangleF textRect = new(rect.X + 10f, rect.Y + 7f, rect.Width - 20f, rect.Height - 14f);
-        using var format = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
-        graphics.DrawString(text, font, LabelTextBrush, textRect, format);
+        SKFontMetrics fontMetrics = textPaint.FontMetrics;
+        float baseline = rect.Top + ((rect.Height - (fontMetrics.Descent - fontMetrics.Ascent)) / 2f) - fontMetrics.Ascent;
+        canvas.DrawText(text, rect.Left + 10f, baseline, textPaint);
     }
 
-    private static GraphicsPath CreateRoundedRectangle(RectangleF rect, float radius)
+    private static SKRect ClampRectangle(SKRect rect, int imageWidth, int imageHeight)
     {
-        float diameter = radius * 2f;
-        var path = new GraphicsPath();
-        path.AddArc(rect.X, rect.Y, diameter, diameter, 180, 90);
-        path.AddArc(rect.Right - diameter, rect.Y, diameter, diameter, 270, 90);
-        path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
+        float x = Math.Clamp(rect.Left, 8f, Math.Max(8f, imageWidth - rect.Width - 8f));
+        float y = Math.Clamp(rect.Top, 8f, Math.Max(8f, imageHeight - rect.Height - 8f));
+        return new SKRect(x, y, x + rect.Width, y + rect.Height);
     }
 
-    private static RectangleF ClampRectangle(RectangleF rect, SizeF bounds)
+    private static SKRect NormalizeRect(SKRect rect)
     {
-        float x = Math.Clamp(rect.X, 8f, Math.Max(8f, bounds.Width - rect.Width - 8f));
-        float y = Math.Clamp(rect.Y, 8f, Math.Max(8f, bounds.Height - rect.Height - 8f));
-        return new RectangleF(x, y, rect.Width, rect.Height);
+        float left = Math.Min(rect.Left, rect.Right);
+        float right = Math.Max(rect.Left, rect.Right);
+        float top = Math.Min(rect.Top, rect.Bottom);
+        float bottom = Math.Max(rect.Top, rect.Bottom);
+        return new SKRect(left, top, right, bottom);
     }
 
-    private static Point GetNearestPointOnRectangle(RectangleF rect, Point point)
+    private static SKPoint GetNearestPointOnRectangle(SKRect rect, SKPoint point)
     {
-        int x = (int)Math.Clamp(point.X, rect.Left, rect.Right);
-        int y = (int)Math.Clamp(point.Y, rect.Top, rect.Bottom);
-        return new Point(x, y);
+        float x = Math.Clamp(point.X, rect.Left, rect.Right);
+        float y = Math.Clamp(point.Y, rect.Top, rect.Bottom);
+        return new SKPoint(x, y);
     }
 
-    private static Point GetCornerAnchorPoint(Size imageSize, CornerAnchor anchor)
+    private static SKPoint GetCornerAnchorPoint(int imageWidth, int imageHeight, CornerAnchor anchor)
     {
         return anchor switch
         {
-            CornerAnchor.TopLeft => new Point(0, 0),
-            CornerAnchor.TopRight => new Point(Math.Max(0, imageSize.Width - 1), 0),
-            CornerAnchor.BottomLeft => new Point(0, Math.Max(0, imageSize.Height - 1)),
-            CornerAnchor.BottomRight => new Point(Math.Max(0, imageSize.Width - 1), Math.Max(0, imageSize.Height - 1)),
-            _ => Point.Empty,
+            CornerAnchor.TopLeft => new SKPoint(0, 0),
+            CornerAnchor.TopRight => new SKPoint(Math.Max(0, imageWidth - 1), 0),
+            CornerAnchor.BottomLeft => new SKPoint(0, Math.Max(0, imageHeight - 1)),
+            CornerAnchor.BottomRight => new SKPoint(Math.Max(0, imageWidth - 1), Math.Max(0, imageHeight - 1)),
+            _ => SKPoint.Empty,
         };
     }
 
-    private static Point MapGlobalPointToImage(AIDeskAssistant.Models.WindowBounds bounds, int globalX, int globalY, Size imageSize)
+    private static SKPoint MapGlobalPointToImage(ScreenshotAnnotationData annotation, int globalX, int globalY, int imageWidth, int imageHeight)
     {
-        double relativeX = bounds.Width <= 1 ? 0d : (double)(globalX - bounds.X) / (bounds.Width - 1);
-        double relativeY = bounds.Height <= 1 ? 0d : (double)(globalY - bounds.Y) / (bounds.Height - 1);
+        double relativeX = annotation.CaptureBounds.Width <= 1 ? 0d : (double)(globalX - annotation.CaptureBounds.X) / (annotation.CaptureBounds.Width - 1);
+        double relativeY = annotation.CaptureBounds.Height <= 1 ? 0d : (double)(globalY - annotation.CaptureBounds.Y) / (annotation.CaptureBounds.Height - 1);
 
-        int x = (int)Math.Round(relativeX * Math.Max(0, imageSize.Width - 1));
-        int y = (int)Math.Round(relativeY * Math.Max(0, imageSize.Height - 1));
-        return new Point(Math.Clamp(x, 0, Math.Max(0, imageSize.Width - 1)), Math.Clamp(y, 0, Math.Max(0, imageSize.Height - 1)));
+        float x = (float)Math.Round(relativeX * Math.Max(0, imageWidth - 1));
+        float y = (float)Math.Round(relativeY * Math.Max(0, imageHeight - 1));
+        return new SKPoint(Math.Clamp(x, 0, Math.Max(0, imageWidth - 1)), Math.Clamp(y, 0, Math.Max(0, imageHeight - 1)));
     }
 
-    private static int CalculateMajorStep(Size imageSize)
+    private static float MapGlobalXToImage(ScreenshotAnnotationData annotation, int globalX, int imageWidth)
+        => MapGlobalPointToImage(annotation, globalX, annotation.CaptureBounds.Y, imageWidth, 1).X;
+
+    private static float MapGlobalYToImage(ScreenshotAnnotationData annotation, int globalY, int imageHeight)
+        => MapGlobalPointToImage(annotation, annotation.CaptureBounds.X, globalY, 1, imageHeight).Y;
+
+    private static SKPaint CreateTextPaint(float fontSize)
+        => new()
+        {
+            Color = LabelTextColor,
+            IsAntialias = true,
+            TextSize = fontSize,
+            Typeface = SKTypeface.FromFamilyName("Helvetica", SKFontStyle.Bold),
+        };
+
+    private static SKRect MeasureBadgeRect(SKPaint textPaint, string text, SKPoint origin)
     {
-        int reference = Math.Min(imageSize.Width, imageSize.Height);
+        SKRect textBounds = default;
+        textPaint.MeasureText(text, ref textBounds);
+        return new SKRect(origin.X, origin.Y, origin.X + textBounds.Width + 10f, origin.Y + textBounds.Height + 8f);
+    }
+
+    private static int CalculateMajorStep(int logicalWidth, int logicalHeight)
+    {
+        int reference = Math.Min(logicalWidth, logicalHeight);
         if (reference >= 1800)
             return 200;
 
@@ -293,7 +353,16 @@ internal static class ScreenshotAnnotator
         return 50;
     }
 
-    private readonly record struct CornerLabel(string Name, (int X, int Y) GlobalPoint, Point LabelOrigin, CornerAnchor Anchor);
+    private static int AlignDown(int value, int step)
+        => step <= 0 ? value : value - MathHelpers.PositiveModulo(value, step);
+
+    private readonly record struct CornerLabel(string Name, (int X, int Y) GlobalPoint, SKPoint LabelOrigin, CornerAnchor Anchor);
+
+    private readonly record struct ImageMetrics(int Width, int Height, float FontSize);
+
+    private readonly record struct RulerStyle(int MinorStep, int MajorStep, float EdgeBand, SKPaint TickPaint, SKPaint GuidePaint);
+
+    private readonly record struct BadgeStyle(SKColor? BackgroundColorOverride, float BorderWidth, float Radius);
 
     private enum CornerAnchor
     {
@@ -301,5 +370,14 @@ internal static class ScreenshotAnnotator
         TopRight,
         BottomLeft,
         BottomRight,
+    }
+}
+
+internal static class MathHelpers
+{
+    public static int PositiveModulo(int value, int divisor)
+    {
+        int remainder = value % divisor;
+        return remainder < 0 ? remainder + divisor : remainder;
     }
 }

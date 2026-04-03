@@ -1,4 +1,4 @@
-using OpenAI.Chat;
+using OpenAI.Realtime;
 
 namespace AIDeskAssistant.Services;
 
@@ -6,26 +6,23 @@ internal sealed class MenuBarSpeechService
 {
     private static readonly string[] BuiltInVoiceIds = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"];
     private const int OutputSampleRate = 24_000;
-    private const string TranscriptionPrompt =
+    private const string SpeechInstructions =
         """
-        Transkribiere die Nutzeraudio exakt.
-        Antworte nur mit dem erkannten deutschen Klartext.
-        Keine Einleitung, keine Zusammenfassung, keine Interpretation.
-        Wenn keine verständliche Sprache vorhanden ist, antworte nur mit: <no-speech>
-        """;
-    private const string SpeechPrompt =
-        """
-        Sprich den vom Nutzer gegebenen Text genau so aus.
+        Du bist nur für Sprachausgabe zuständig.
+        Sprich den erhaltenen Text auf Deutsch exakt vor.
         Füge nichts hinzu und lasse nichts weg.
-        Antworte ausschließlich mit Audio und dem identischen Transkript.
         """;
 
-    private readonly ChatClient _client;
+    private readonly RealtimeClient _client;
+    private readonly string _speechModel;
+    private readonly string _transcriptionModel;
     private string _voice;
 
-    public MenuBarSpeechService(string apiKey, string model)
+    public MenuBarSpeechService(string apiKey, string speechModel, string transcriptionModel)
     {
-        _client = new ChatClient(model, apiKey);
+        _client = new RealtimeClient(apiKey);
+        _speechModel = speechModel;
+        _transcriptionModel = transcriptionModel;
         string configuredVoice = Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE")
             ?? RealtimeVoicePreferenceStore.TryLoadVoice()
             ?? "alloy";
@@ -54,16 +51,45 @@ internal sealed class MenuBarSpeechService
 
     public async Task<string> TranscribeWaveAsync(byte[] waveBytes, CancellationToken ct = default)
     {
-        UserChatMessage userMessage = new(
-            ChatMessageContentPart.CreateTextPart("Transkribiere diese Spracheingabe."),
-            ChatMessageContentPart.CreateInputAudioPart(BinaryData.FromBytes(waveBytes), ChatInputAudioFormat.Wav));
+        if (!WaveAudioUtility.TryExtractPcm16FromWave(waveBytes, OutputSampleRate, out byte[] pcmBytes, out string error))
+            throw new InvalidOperationException(error);
 
-        ChatCompletion completion = await _client.CompleteChatAsync(
-            [new SystemChatMessage(TranscriptionPrompt), userMessage],
-            cancellationToken: ct);
+        RealtimeSessionClient session = await _client.StartTranscriptionSessionAsync(new RealtimeSessionClientOptions(), ct);
+        try
+        {
+            RealtimeTranscriptionSessionOptions options = new()
+            {
+                AudioOptions = new RealtimeTranscriptionSessionAudioOptions
+                {
+                    InputAudioOptions = new RealtimeTranscriptionSessionInputAudioOptions
+                    {
+                        AudioFormat = new RealtimePcmAudioFormat(),
+                        AudioTranscriptionOptions = new RealtimeAudioTranscriptionOptions
+                        {
+                            Model = _transcriptionModel,
+                            Language = "de",
+                            Prompt = "Transkribiere deutsche Sprache exakt. Wenn keine verständliche Sprache erkannt wird, gib einen leeren Transkriptionsstring zurück.",
+                        },
+                    },
+                },
+            };
 
-        string transcript = FlattenText(completion).Trim();
-        return string.Equals(transcript, "<no-speech>", StringComparison.OrdinalIgnoreCase) ? string.Empty : transcript;
+            await session.ConfigureTranscriptionSessionAsync(options, ct);
+            await session.SendInputAudioAsync(BinaryData.FromBytes(pcmBytes), ct);
+            await session.CommitPendingAudioAsync(ct);
+
+            await foreach (RealtimeServerUpdate update in session.ReceiveUpdatesAsync(ct))
+            {
+                if (update is RealtimeServerUpdateConversationItemInputAudioTranscriptionCompleted completed)
+                    return completed.Transcript?.Trim() ?? string.Empty;
+            }
+
+            return string.Empty;
+        }
+        finally
+        {
+            session.Dispose();
+        }
     }
 
     public async Task<byte[]?> GenerateSpeechWavAsync(string text, CancellationToken ct = default)
@@ -71,19 +97,52 @@ internal sealed class MenuBarSpeechService
         if (string.IsNullOrWhiteSpace(text))
             return null;
 
-        ChatCompletionOptions options = new()
+        RealtimeSessionClient session = await _client.StartConversationSessionAsync(_speechModel, new RealtimeSessionClientOptions(), ct);
+        try
         {
-            ResponseModalities = ChatResponseModalities.Text | ChatResponseModalities.Audio,
-            AudioOptions = new(new ChatOutputAudioVoice(_voice), ChatOutputAudioFormat.Pcm16),
-        };
+            RealtimeConversationSessionOptions options = new()
+            {
+                Instructions = SpeechInstructions,
+                AudioOptions = new RealtimeConversationSessionAudioOptions
+                {
+                    OutputAudioOptions = new RealtimeConversationSessionOutputAudioOptions
+                    {
+                        AudioFormat = new RealtimePcmAudioFormat(),
+                        Voice = new RealtimeVoice(_voice),
+                    },
+                },
+            };
 
-        ChatCompletion completion = await _client.CompleteChatAsync(
-            [new SystemChatMessage(SpeechPrompt), new UserChatMessage(text)],
-            options,
-            ct);
+            options.OutputModalities.Add(RealtimeOutputModality.Audio);
 
-        byte[]? pcmBytes = completion.OutputAudio?.AudioBytes.ToArray();
-        return pcmBytes is null || pcmBytes.Length == 0 ? null : WaveAudioUtility.CreateWaveFile(pcmBytes, OutputSampleRate);
+            await session.ConfigureConversationSessionAsync(options, ct);
+            await session.AddItemAsync(new RealtimeMessageItem(new RealtimeMessageRole("user"), [new RealtimeInputTextMessageContentPart(text)]), ct);
+            await session.StartResponseAsync(new RealtimeResponseOptions
+            {
+                OutputModalities = { RealtimeOutputModality.Audio }
+            }, ct);
+
+            using var audioBuffer = new MemoryStream();
+            await foreach (RealtimeServerUpdate update in session.ReceiveUpdatesAsync(ct))
+            {
+                if (update is RealtimeServerUpdateResponseOutputAudioDelta audioDelta)
+                {
+                    byte[] chunk = audioDelta.Delta.ToArray();
+                    audioBuffer.Write(chunk, 0, chunk.Length);
+                    continue;
+                }
+
+                if (update is RealtimeServerUpdateResponseDone)
+                    break;
+            }
+
+            byte[] pcmBytes = audioBuffer.ToArray();
+            return pcmBytes.Length == 0 ? null : WaveAudioUtility.CreateWaveFile(pcmBytes, OutputSampleRate);
+        }
+        finally
+        {
+            session.Dispose();
+        }
     }
 
     public static bool TryExtractStreamingPcm(byte[]? audioWavBytes, out byte[] pcmBytes)
@@ -94,9 +153,6 @@ internal sealed class MenuBarSpeechService
 
         return WaveAudioUtility.TryExtractPcm16FromWave(audioWavBytes, OutputSampleRate, out pcmBytes, out _);
     }
-
-    private static string FlattenText(ChatCompletion completion)
-        => string.Concat(completion.Content.Where(static part => part.Kind == ChatMessageContentPartKind.Text).Select(static part => part.Text));
 
     private static string NormalizeVoiceId(string voiceId)
     {

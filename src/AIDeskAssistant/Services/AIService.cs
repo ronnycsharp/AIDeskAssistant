@@ -39,6 +39,7 @@ internal sealed class AIService
         For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
         For desktop application workflows such as Mail, Calendar, Word, Excel, Outlook, Finder, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would, then verify the app is frontmost before typing or clicking inside it.
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
+        The current request may include a compact Accessibility UI summary for the frontmost macOS app, including visible roles, titles, and frames. Treat that summary as high-value structure about what is currently on screen and use it together with the screenshot.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
         For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
@@ -47,7 +48,9 @@ internal sealed class AIService
         For Microsoft Word save tasks on macOS, do not stop after pressing Save. Wait, take another screenshot, confirm the dialog is gone, and verify the document returned to the editing window before declaring success.
         When the user asks to save a document to a specific folder such as the Desktop, verify the file exists using a concrete absolute path before you stop.
         The run_command tool does not execute a shell. Do not use shell syntax such as ~, $HOME, $(whoami), pipes, redirection, globbing, or quoted one-liners inside its arguments. If you need the home directory, first call run_command with printenv HOME and then use the returned absolute path literally in a second command.
-        When entering text into editors or forms, use type_text only for literal text content. Use press_key for special keys like enter, return, tab, escape, arrows, or shortcuts. Never type words like 'enter' or 'tab' into the document unless the user explicitly asked for those literal words.
+        When entering text into editors or forms, use type_text only for literal text content. Use press_key for special keys like enter, return, tab, escape, backspace, delete, arrows, or shortcuts. Never type words like 'enter', 'tab', 'escape', 'backspace', or 'delete' into the document unless the user explicitly asked for those literal words.
+        In text editors and document apps such as Microsoft Word, cursor navigation must always use press_key with arrow keys. Never type words like 'up', 'down', 'left', 'right', 'home', 'end', 'page up', or 'page down' into the document when the intent is to move the caret.
+        In spreadsheets such as Microsoft Excel, arrow navigation must always use press_key with arrow keys. Never type words like 'up', 'down', 'left', or 'right' into a cell when the intent is to move the active selection.
         Before typing into a desktop app document or form, explicitly ensure the correct target app is frontmost. If there is any doubt, use focus_application for that app, wait briefly, take a screenshot, and only then use type_text or press_key.
         The current screen resolution will be provided with each user request. Use it as the coordinate frame for mouse positioning together with screenshots.
         After opening an application, make sure it is actually in the foreground before typing. If needed, wait briefly, take another screenshot, and only then continue.
@@ -90,7 +93,9 @@ internal sealed class AIService
         CancellationToken ct         = default)
     {
         string screenInfo = GetScreenInfoContext();
-        string preparedUserMessage = BuildUserMessageWithScreenInfo(userMessage, screenInfo);
+        string uiContext = GetFrontmostUiContext();
+        string preparedUserMessage = BuildUserMessageWithScreenInfo(userMessage, screenInfo, uiContext);
+        _debugLogger?.LogUiContext(uiContext);
         _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
         _history.Add(new UserChatMessage(preparedUserMessage));
         _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
@@ -247,8 +252,25 @@ internal sealed class AIService
         }
     }
 
-    internal static string BuildUserMessageWithScreenInfo(string userMessage, string screenInfo)
-        => $"Current screen info: {screenInfo}\n\nUser task: {userMessage}";
+    private string GetFrontmostUiContext()
+    {
+        try
+        {
+            return _executor.Execute("get_frontmost_ui_elements", "{}");
+        }
+        catch (Exception ex)
+        {
+            return $"Frontmost UI context unavailable: {ex.Message}";
+        }
+    }
+
+    internal static string BuildUserMessageWithScreenInfo(string userMessage, string screenInfo, string? uiContext = null)
+    {
+        if (string.IsNullOrWhiteSpace(uiContext))
+            return $"Current screen info: {screenInfo}\n\nUser task: {userMessage}";
+
+        return $"Current screen info: {screenInfo}\n\nCurrent macOS Accessibility UI summary:\n{uiContext}\n\nUser task: {userMessage}";
+    }
 
     private static string TruncateForDisplay(string s, int maxLength = 120)
         => s.Length <= maxLength ? s : s[..maxLength] + "…";

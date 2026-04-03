@@ -9,6 +9,9 @@ internal sealed class UnsupportedUiAutomationService : IUiAutomationService
         _platformName = platformName;
     }
 
+    public string SummarizeFrontmostUiElements()
+        => $"Accessibility UI automation is not available on {_platformName}.";
+
     public void ClickDockApplication(IReadOnlyList<string> titles)
         => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
 

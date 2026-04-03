@@ -8,6 +8,188 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
 {
     private const int ScriptTimeoutMs = 15_000;
 
+    private const string FrontmostUiSummaryScript =
+        """
+        import AppKit
+        import ApplicationServices
+        import Foundation
+
+        func fail(_ message: String) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            exit(1)
+        }
+
+        func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(element, name, &value)
+            return error == .success ? value : nil
+        }
+
+        func stringAttribute(_ element: AXUIElement, _ name: CFString) -> String? {
+            attribute(element, name) as? String
+        }
+
+        func elementAttribute(_ element: AXUIElement, _ name: CFString) -> AXUIElement? {
+            guard let value = attribute(element, name) else { return nil }
+            return unsafeBitCast(value, to: AXUIElement.self)
+        }
+
+        func elementArrayAttribute(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
+            guard let values = attribute(element, name) as? [AnyObject] else { return [] }
+            return values.map { unsafeBitCast($0, to: AXUIElement.self) }
+        }
+
+        func children(of element: AXUIElement) -> [AXUIElement] {
+            elementArrayAttribute(element, kAXChildrenAttribute as CFString)
+        }
+
+        func descendants(of root: AXUIElement, depth: Int = 0) -> [AXUIElement] {
+            if depth > 10 { return [] }
+            let directChildren = children(of: root)
+            return directChildren + directChildren.flatMap { descendants(of: $0, depth: depth + 1) }
+        }
+
+        func pointAttribute(_ element: AXUIElement, _ name: CFString) -> CGPoint? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var point = CGPoint.zero
+            return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+        }
+
+        func sizeAttribute(_ element: AXUIElement, _ name: CFString) -> CGSize? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var size = CGSize.zero
+            return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+        }
+
+        func frame(of element: AXUIElement) -> CGRect? {
+            guard let position = pointAttribute(element, "AXPosition" as CFString),
+                  let size = sizeAttribute(element, "AXSize" as CFString) else {
+                return nil
+            }
+
+            let rect = CGRect(origin: position, size: size)
+            return rect.width > 0 && rect.height > 0 ? rect : nil
+        }
+
+        func normalizedText(_ value: String?) -> String {
+            guard let value else { return "" }
+            return value
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "  ", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func role(of element: AXUIElement) -> String {
+            normalizedText(stringAttribute(element, kAXRoleAttribute as CFString))
+        }
+
+        func subrole(of element: AXUIElement) -> String {
+            normalizedText(stringAttribute(element, kAXSubroleAttribute as CFString))
+        }
+
+        func title(of element: AXUIElement) -> String {
+            normalizedText(stringAttribute(element, kAXTitleAttribute as CFString))
+        }
+
+        func valueDescription(of element: AXUIElement) -> String {
+            normalizedText(stringAttribute(element, kAXValueAttribute as CFString))
+        }
+
+        func matchesInterestingRole(_ role: String) -> Bool {
+            [
+                "AXWindow",
+                "AXButton",
+                "AXTextField",
+                "AXTextArea",
+                "AXStaticText",
+                "AXGroup",
+                "AXScrollArea",
+                "AXOutline",
+                "AXRow",
+                "AXCell",
+                "AXToolbar",
+                "AXSplitGroup",
+                "AXMenuBar",
+                "AXMenuBarItem",
+                "AXRadioButton",
+                "AXCheckBox",
+                "AXPopUpButton",
+                "AXComboBox"
+            ].contains(role)
+        }
+
+        struct SummaryLine {
+            let orderY: CGFloat
+            let orderX: CGFloat
+            let text: String
+        }
+
+        guard AXIsProcessTrusted() else {
+            fail("Accessibility permission is required for AXUIElement inspection.")
+        }
+
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            fail("Could not determine the frontmost application.")
+        }
+
+        let appName = app.localizedName ?? "<unknown>"
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let mainWindow = elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
+            ?? elementAttribute(appElement, kAXMainWindowAttribute as CFString)
+            ?? elementArrayAttribute(appElement, kAXWindowsAttribute as CFString).first
+
+        var output: [String] = []
+        output.append("Frontmost app: \(appName)")
+
+        if let mainWindow, let windowFrame = frame(of: mainWindow) {
+            let windowTitle = title(of: mainWindow)
+            output.append(String(format: "Focused window: %@ at x=%.0f,y=%.0f,w=%.0f,h=%.0f", windowTitle.isEmpty ? "<untitled>" : windowTitle, windowFrame.origin.x, windowFrame.origin.y, windowFrame.size.width, windowFrame.size.height))
+
+            let candidates = [mainWindow] + descendants(of: mainWindow)
+            var summaries: [SummaryLine] = []
+            var seen = Set<String>()
+
+            for element in candidates {
+                let elementRole = role(of: element)
+                guard matchesInterestingRole(elementRole), let rect = frame(of: element) else { continue }
+
+                let elementTitle = title(of: element)
+                let elementValue = valueDescription(of: element)
+                let elementSubrole = subrole(of: element)
+
+                var labelParts: [String] = [elementRole]
+                if !elementSubrole.isEmpty { labelParts.append(elementSubrole) }
+                if !elementTitle.isEmpty { labelParts.append("title=\(elementTitle)") }
+                if !elementValue.isEmpty && elementValue != elementTitle { labelParts.append("value=\(elementValue)") }
+                labelParts.append(String(format: "x=%.0f,y=%.0f,w=%.0f,h=%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height))
+
+                let line = labelParts.joined(separator: " | ")
+                if seen.insert(line).inserted {
+                    summaries.append(SummaryLine(orderY: rect.origin.y, orderX: rect.origin.x, text: line))
+                }
+            }
+
+            let sorted = summaries
+                .sorted { lhs, rhs in
+                    if lhs.orderY == rhs.orderY { return lhs.orderX < rhs.orderX }
+                    return lhs.orderY < rhs.orderY
+                }
+                .prefix(25)
+
+            output.append("Visible UI elements:")
+            for summary in sorted {
+                output.append("- \(summary.text)")
+            }
+        }
+        else {
+            output.append("Focused window unavailable.")
+        }
+
+        print(output.joined(separator: "\n"))
+        """;
+
     private const string DockApplicationScript =
         """
         import AppKit
@@ -417,6 +599,9 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
 
         print(title(of: match) ?? requestedTitles[0])
         """;
+
+    public string SummarizeFrontmostUiElements()
+        => RunSwiftScriptAndCaptureOutput(FrontmostUiSummaryScript, []);
 
     private const string FocusFrontmostWindowContentScript =
         """

@@ -8,6 +8,7 @@ internal sealed class AIDebugLogger
     private readonly string _sessionDirectoryPath;
     private int _historyIndex;
     private int _userMessageIndex;
+    private int _uiContextIndex;
     private int _screenshotIndex;
 
     private AIDebugLogger(string sessionDirectoryPath)
@@ -44,6 +45,18 @@ internal sealed class AIDebugLogger
             string filePath = Path.Combine(_sessionDirectoryPath, $"{_userMessageIndex:D2}-user-message.txt");
             File.WriteAllText(filePath, message);
         }
+    }
+
+    public void LogUiContext(string context)
+    {
+        lock (_syncRoot)
+        {
+            _uiContextIndex++;
+            string filePath = Path.Combine(_sessionDirectoryPath, $"{_uiContextIndex:D2}-ui-context.txt");
+            File.WriteAllText(filePath, context);
+        }
+
+        LogHistoryEntry("ui", context);
     }
 
     public void LogToolCall(string message)
