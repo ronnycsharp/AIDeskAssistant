@@ -211,6 +211,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         text = result.Text,
         audioBase64 = includeAudio && result.AudioWavBytes is not null ? Convert.ToBase64String(result.AudioWavBytes) : null,
         audioMimeType = includeAudio && result.AudioWavBytes is not null ? "audio/wav" : null,
+        usage = CreateUsagePayload(result.Usage),
     };
 
     internal static object CreateStreamResponseEvent(RealtimeAssistantStreamEvent streamEvent) => streamEvent.Type switch
@@ -231,6 +232,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         {
             type = "completed",
             text = streamEvent.FinalText,
+            usage = CreateUsagePayload(streamEvent.Usage),
         },
         RealtimeAssistantStreamEventType.Error => new
         {
@@ -243,6 +245,25 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
             error = "Unknown stream event type."
         },
     };
+
+    private static object? CreateUsagePayload(RealtimeAssistantUsage? usage)
+    {
+        if (usage is null)
+            return null;
+
+        return new
+        {
+            inputTokens = usage.InputTokens,
+            inputTextTokens = usage.InputTextTokens,
+            inputAudioTokens = usage.InputAudioTokens,
+            inputImageTokens = usage.InputImageTokens,
+            cachedInputTokens = usage.CachedInputTokens,
+            outputTokens = usage.OutputTokens,
+            outputTextTokens = usage.OutputTextTokens,
+            outputAudioTokens = usage.OutputAudioTokens,
+            totalTokens = usage.TotalTokens,
+        };
+    }
 
     internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
     {

@@ -13,4 +13,5 @@ internal sealed record RealtimeAssistantStreamEvent(
     string? TextDelta = null,
     byte[]? AudioPcmBytes = null,
     string? FinalText = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    RealtimeAssistantUsage? Usage = null);

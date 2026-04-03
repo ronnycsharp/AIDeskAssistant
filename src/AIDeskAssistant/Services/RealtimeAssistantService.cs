@@ -451,7 +451,8 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
                     await HandleFunctionCallAsync(functionCall, pendingTurn, ct);
                     break;
 
-                case RealtimeServerUpdateResponseDone when pendingTurn is not null:
+                case RealtimeServerUpdateResponseDone responseDone when pendingTurn is not null:
+                    pendingTurn.AddUsage(CreateUsage(responseDone.Response.Usage));
                     if (pendingTurn.DecrementOutstandingResponses() == 0)
                         pendingTurn.TrySetResult();
                     break;
@@ -533,6 +534,23 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     private static RealtimeMessageItem CreateUserTextMessage(string text)
         => new(new RealtimeMessageRole("user"), [new RealtimeInputTextMessageContentPart(text)]);
 
+    private static RealtimeAssistantUsage? CreateUsage(RealtimeResponseUsage? usage)
+    {
+        if (usage is null)
+            return null;
+
+        return new RealtimeAssistantUsage(
+            InputTokens: usage.InputTokenCount,
+            InputTextTokens: usage.InputTokenDetails?.TextTokenCount,
+            InputAudioTokens: usage.InputTokenDetails?.AudioTokenCount,
+            InputImageTokens: usage.InputTokenDetails?.ImageTokenCount,
+            CachedInputTokens: usage.InputTokenDetails?.CachedTokenCount,
+            OutputTokens: usage.OutputTokenCount,
+            OutputTextTokens: usage.OutputTokenDetails?.TextTokenCount,
+            OutputAudioTokens: usage.OutputTokenDetails?.AudioTokenCount,
+            TotalTokens: usage.TotalTokenCount);
+    }
+
     private string GetScreenInfoContext()
     {
         try
@@ -559,6 +577,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             SingleReader = true,
             SingleWriter = false,
         });
+        private RealtimeAssistantUsage? _usage;
         private int _outstandingResponses;
 
         public PendingTurn(int sampleRate)
@@ -602,6 +621,14 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
                 _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.AudioDelta, AudioPcmBytes: bytes));
         }
 
+        public void AddUsage(RealtimeAssistantUsage? usage)
+        {
+            if (usage is null)
+                return;
+
+            _usage = _usage is null ? usage : _usage.Add(usage);
+        }
+
         public void IncrementOutstandingResponses() => Interlocked.Increment(ref _outstandingResponses);
 
         public int DecrementOutstandingResponses() => Interlocked.Decrement(ref _outstandingResponses);
@@ -610,8 +637,8 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         {
             string text = _text.Length > 0 ? _text.ToString() : _transcript.ToString();
             byte[]? audio = _audio.Length > 0 ? WaveAudioUtility.CreateWaveFile(_audio.ToArray(), _sampleRate) : null;
-            Completion.TrySetResult(new RealtimeAssistantTurnResult(text, audio));
-            _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Completed, FinalText: text));
+            Completion.TrySetResult(new RealtimeAssistantTurnResult(text, audio, _usage));
+            _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Completed, FinalText: text, Usage: _usage));
             _events.Writer.TryComplete();
         }
 

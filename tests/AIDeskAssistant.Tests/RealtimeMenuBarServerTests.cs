@@ -57,13 +57,29 @@ public sealed class RealtimeMenuBarServerTests
     {
         RealtimeAssistantStreamEvent streamEvent = new(
             RealtimeAssistantStreamEventType.Completed,
-            FinalText: "Bereit.");
+            FinalText: "Bereit.",
+            Usage: new RealtimeAssistantUsage(
+                InputTokens: 120,
+                InputTextTokens: 100,
+                CachedInputTokens: 20,
+                OutputTokens: 45,
+                OutputTextTokens: 40,
+                OutputAudioTokens: 5,
+                TotalTokens: 165));
 
         object payload = RealtimeMenuBarServer.CreateStreamResponseEvent(streamEvent);
         JsonElement json = JsonSerializer.SerializeToElement(payload);
 
         Assert.Equal("completed", json.GetProperty("type").GetString());
         Assert.Equal("Bereit.", json.GetProperty("text").GetString());
+        JsonElement usage = json.GetProperty("usage");
+        Assert.Equal(120, usage.GetProperty("inputTokens").GetInt32());
+        Assert.Equal(100, usage.GetProperty("inputTextTokens").GetInt32());
+        Assert.Equal(20, usage.GetProperty("cachedInputTokens").GetInt32());
+        Assert.Equal(45, usage.GetProperty("outputTokens").GetInt32());
+        Assert.Equal(40, usage.GetProperty("outputTextTokens").GetInt32());
+        Assert.Equal(5, usage.GetProperty("outputAudioTokens").GetInt32());
+        Assert.Equal(165, usage.GetProperty("totalTokens").GetInt32());
     }
 
     [Fact]
