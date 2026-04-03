@@ -81,9 +81,14 @@ internal sealed class DesktopToolExecutor
         if (!TryResolveScreenshotCaptureOptions(target, padding, out ScreenshotCaptureOptions options, out WindowBounds? bounds, out string error))
             return error;
 
+        ScreenInfo screenInfo = _screenshot.GetScreenInfo();
+        WindowBounds captureBounds = bounds ?? new WindowBounds(0, 0, screenInfo.Width, screenInfo.Height);
+        var (cursorX, cursorY) = _mouse.GetPosition();
+
         byte[] screenshot = _screenshot.TakeScreenshot(options);
-        ScreenshotPayload payload = _screenshotOptimizer.Optimize(screenshot);
-        return BuildScreenshotToolResult(payload, target, purpose, bounds);
+        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, new ScreenshotAnnotationData(captureBounds, cursorX, cursorY));
+        ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
+        return BuildScreenshotToolResult(payload, target, purpose, captureBounds, cursorX, cursorY);
     }
 
     private bool TryResolveScreenshotCaptureOptions(
@@ -138,8 +143,9 @@ internal sealed class DesktopToolExecutor
         return new WindowBounds(x, y, width, height);
     }
 
-    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds? bounds)
+    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY)
     {
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY);
         var parts = new List<string>
         {
             "Screenshot taken.",
@@ -149,8 +155,9 @@ internal sealed class DesktopToolExecutor
         if (!string.IsNullOrWhiteSpace(purpose))
             parts.Add($"Purpose: {purpose}.");
 
-        if (bounds is WindowBounds region)
-            parts.Add($"Region: X={region.X}, Y={region.Y}, Width={region.Width}, Height={region.Height}.");
+        parts.Add($"Capture bounds: X={captureBounds.X}, Y={captureBounds.Y}, Width={captureBounds.Width}, Height={captureBounds.Height}.");
+        parts.Add($"Corner pixels: TL=({annotation.TopLeft.X},{annotation.TopLeft.Y}), TR=({annotation.TopRight.X},{annotation.TopRight.Y}), BL=({annotation.BottomLeft.X},{annotation.BottomLeft.Y}), BR=({annotation.BottomRight.X},{annotation.BottomRight.Y}).");
+        parts.Add($"Cursor: X={cursorX}, Y={cursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
 
         parts.Add($"Original: {payload.OriginalByteCount} bytes.");
         parts.Add($"Final: {payload.FinalByteCount} bytes.");

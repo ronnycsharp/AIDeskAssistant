@@ -562,6 +562,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         try
         {
             toolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
+            toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, toolResult);
         }
         catch (Exception ex)
         {

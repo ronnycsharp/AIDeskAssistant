@@ -13,6 +13,8 @@ internal sealed class AIService
 {
     private const string DefaultModel       = "gpt-4o";
     private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
+    private const string RealtimeScreenshotOmittedNote = "Screenshot image bytes omitted from realtime tool output to keep the payload bounded.";
+    private const int MaxRealtimeToolResultLength = 12_000;
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
     private const string SystemPrompt =
@@ -36,6 +38,8 @@ internal sealed class AIService
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
+        For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
+        For Microsoft Word and Microsoft Excel on macOS, do not keep sending 'cmd+n' in a loop. If one blank document or workbook is already open, use the frontmost one. Only retry 'cmd+n' when a follow-up screenshot clearly shows that no editable blank document or workbook was opened.
         For Microsoft Word on macOS, do not declare success after typing unless a follow-up screenshot shows visible document text or the status bar word count is no longer 0. If the document still looks blank, keep troubleshooting.
         For Microsoft Word save tasks on macOS, do not stop after pressing Save. Wait, take another screenshot, confirm the dialog is gone, and verify the document returned to the editing window before declaring success.
         When the user asks to save a document to a specific folder such as the Desktop, verify the file exists using a concrete absolute path before you stop.
@@ -48,7 +52,7 @@ internal sealed class AIService
         If the task is confined to one app or one document window, prefer take_screenshot with target='active_window' so the image is smaller, cheaper, and more focused than a full-screen capture.
         Whenever you call take_screenshot, include a short purpose string that explains what the screenshot is intended to validate in the current step.
         After each significant action, take another screenshot to confirm the result.
-        Be precise with coordinates — use the screenshot to determine exact pixel positions.
+        Be precise with coordinates — use the screenshot to determine exact pixel positions. Screenshots include capture-bound corner labels and cursor coordinates; use those annotations when you choose X/Y values.
         If something doesn't work, try an alternative approach.
         Explain what you are doing at each step.
         """;
@@ -278,6 +282,26 @@ internal sealed class AIService
             toolMessage.ToolCallId,
             ChatMessageContentPart.CreateTextPart($"{HistoricalScreenshotNote} {summary}"));
         return true;
+    }
+
+    internal static string CompactToolResultForRealtimeTransport(string toolName, string result)
+    {
+        if (string.Equals(toolName, "take_screenshot", StringComparison.Ordinal)
+            && TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment)
+            && attachment is not null)
+        {
+            return $"{attachment.Summary} {RealtimeScreenshotOmittedNote}";
+        }
+
+        return TruncateForRealtimeTransport(result);
+    }
+
+    private static string TruncateForRealtimeTransport(string result)
+    {
+        if (string.IsNullOrEmpty(result) || result.Length <= MaxRealtimeToolResultLength)
+            return result;
+
+        return $"{result[..MaxRealtimeToolResultLength]}\n… [tool result truncated to {MaxRealtimeToolResultLength} characters for realtime transport]";
     }
 }
 

@@ -105,6 +105,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let bottomInset: CGFloat = 12
     private static let defaultTextHeight: CGFloat = 36
     private static let maximumTextHeight: CGFloat = 108
+    private static let maximumStatusLength = 240
 
     private let serverURL: URL
     private let dismissPopover: () -> Void
@@ -130,6 +131,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let captureEngine = AVAudioEngine()
     private let captureFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 24_000, channels: 1, interleaved: true)!
     private let captureQueue = DispatchQueue(label: "aidesk.statusbar.capture")
+    private let followUpNoSpeechTimeout: TimeInterval = 4.0
     private let silenceCommitInterval: TimeInterval
     private let silenceAmplitudeThreshold: Double
     private let minimumRmsThreshold: Double
@@ -153,6 +155,13 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var availableVoices: [String] = []
     private var isUpdatingVoiceSelection = false
     private var isBusy = false
+    private var pendingPlaybackChunkCount = 0
+    private var pendingPlaybackDurationSeconds = 0.0
+    private var currentResponseAllowsAutoFollowUpRecording = false
+    private var currentResponseReceivedAudio = false
+    private var shouldAutoResumeRecordingAfterPlayback = false
+    private var isAutoFollowUpRecording = false
+    private var autoResumeAfterPlaybackTask: Task<Void, Never>?
 
     init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
         self.serverURL = serverURL
@@ -358,7 +367,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         if liveAudioSessionId != nil {
             stopRecordingAndSend(autoTriggered: false)
         } else {
-            startRecording()
+            startRecording(autoFollowUp: false, interruptCurrentWork: true)
         }
     }
 
@@ -385,14 +394,21 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         NSApp.terminate(nil)
     }
 
-    private func startRecording() {
+    private func startRecording(autoFollowUp: Bool, interruptCurrentWork: Bool) {
         recordButton.isEnabled = false
-        setStatus("Starte Live-Mikrofon …")
+        resetCurrentResponseAudioState()
+        isAutoFollowUpRecording = autoFollowUp
+        setStatus(autoFollowUp ? "Höre wieder zu …" : "Starte Live-Mikrofon …")
         clearUsage()
         setBusy(true)
 
         Task { [weak self] in
-            await self?.interruptCurrentResponse(sendRemoteCancel: true)
+            if interruptCurrentWork {
+                await self?.interruptCurrentResponse(sendRemoteCancel: true)
+            }
+            await MainActor.run { [weak self] in
+                self?.setStatus(autoFollowUp ? "Auto-Aufnahme startet …" : "Starte Live-Mikrofon …")
+            }
             await self?.beginLiveRecording()
         }
     }
@@ -410,10 +426,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
 
         liveAudioSessionId = nil
+        isAutoFollowUpRecording = false
 
         setStatus(autoTriggered ? "Stille erkannt, verarbeite Live-Audio …" : "Verarbeite Live-Audio …")
         setBusy(true)
-        dismissForAutomation()
         diagnosticsLogger.log(autoTriggered ? "Auto-committing live audio after silence" : "Live recording stopped, committing streamed audio")
 
         var components = URLComponents(url: serverURL.appendingPathComponent("audio-live/commit-stream"), resolvingAgainstBaseURL: false)
@@ -429,7 +445,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("{}".utf8)
 
-        startStreamingRequest(request, sendRemoteCancel: false)
+        startStreamingRequest(request, sendRemoteCancel: false, allowAutoFollowUpAfterResponse: true)
     }
 
     private func beginLiveRecording() async {
@@ -448,24 +464,24 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             startAutoCommitMonitor(sessionId: sessionId)
 
             await MainActor.run { [weak self] in
-                self?.configureRecordButton(isRecording: true)
+                self?.configureRecordButton(isRecording: true, isAutoFollowUp: self?.isAutoFollowUpRecording ?? false)
                 self?.recordButton.isEnabled = true
-                self?.setStatus("Nehme live auf … Stop ist optional.")
+                self?.setStatus((self?.isAutoFollowUpRecording ?? false) ? "Auto-Aufnahme aktiv …" : "Nehme live auf … Stop ist optional.")
             }
 
             diagnosticsLogger.log("Live audio thresholds: peak=\(String(format: "%.4f", silenceAmplitudeThreshold)) rmsMin=\(String(format: "%.4f", minimumRmsThreshold)) silence=\(String(format: "%.2f", silenceCommitInterval))s calibration=\(String(format: "%.2f", rmsCalibrationDuration))s")
-            diagnosticsLogger.log("Live recording started with session \(sessionId)")
+            diagnosticsLogger.log("Live recording started with session \(sessionId), autoFollowUp=\(isAutoFollowUpRecording)")
         } catch {
             diagnosticsLogger.log("Failed to start live recording: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
-                self?.configureRecordButton(isRecording: false)
+                self?.configureRecordButton(isRecording: false, isAutoFollowUp: false)
                 self?.recordButton.isEnabled = true
-                self?.setStatus("Live-Aufnahmefehler: \(error.localizedDescription)")
+                self?.setStatus((self?.isAutoFollowUpRecording ?? false) ? "Auto-Aufnahmefehler: \(error.localizedDescription)" : "Live-Aufnahmefehler: \(error.localizedDescription)")
             }
         }
     }
 
-    private func startStreamingRequest(_ request: URLRequest, sendRemoteCancel: Bool = true) {
+    private func startStreamingRequest(_ request: URLRequest, sendRemoteCancel: Bool = true, allowAutoFollowUpAfterResponse: Bool = false) {
         let previousResponseTask = responseTask
         clearUsage()
         setBusy(true)
@@ -475,7 +491,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
 
             await self.interruptCurrentResponse(previousResponseTask: previousResponseTask, sendRemoteCancel: sendRemoteCancel)
-            self.diagnosticsLogger.log("Starting streaming request to \(request.url?.absoluteString ?? "<unknown>")")
+            self.currentResponseAllowsAutoFollowUpRecording = allowAutoFollowUpAfterResponse
+            self.currentResponseReceivedAudio = false
+            self.shouldAutoResumeRecordingAfterPlayback = false
+            self.diagnosticsLogger.log("Starting streaming request to \(request.url?.absoluteString ?? "<unknown>") autoFollowUpAfterResponse=\(allowAutoFollowUpAfterResponse)")
             await self.consumeStreamingResponse(request)
         }
     }
@@ -503,6 +522,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let hadActiveResponse = previousResponseTask != nil || audioPlayerNode.isPlaying || (audioPlayer?.isPlaying ?? false)
         previousResponseTask?.cancel()
         stopPlayback()
+        resetCurrentResponseAudioState()
+        isAutoFollowUpRecording = false
         accumulatedResponseText = ""
 
         if activeLiveAudioSessionId != nil {
@@ -632,6 +653,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         recordingStartedAt = nil
         lastSpeechAt = nil
         hasDetectedSpeech = false
+        isAutoFollowUpRecording = false
         diagnosticsLogger.log("Live capture engine stopped")
     }
 
@@ -646,9 +668,30 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 try? await Task.sleep(nanoseconds: 150_000_000)
 
                 guard self.liveAudioSessionId == sessionId,
-                      self.hasDetectedSpeech,
-                      let lastSpeechAt = self.lastSpeechAt,
                       let recordingStartedAt = self.recordingStartedAt else {
+                    continue
+                }
+
+                if self.hasDetectedSpeech == false {
+                    if self.isAutoFollowUpRecording {
+                        let idleDuration = Date().timeIntervalSince(recordingStartedAt)
+                        if idleDuration >= self.followUpNoSpeechTimeout {
+                            self.diagnosticsLogger.log("Auto follow-up recording stopped after \(String(format: "%.2f", idleDuration))s without speech")
+                            await MainActor.run { [weak self] in
+                                guard let self, self.liveAudioSessionId == sessionId else {
+                                    return
+                                }
+
+                                self.stopRecordingWithoutSending(sessionId: sessionId, reason: "Keine Sprache erkannt")
+                            }
+                            return
+                        }
+                    }
+
+                    continue
+                }
+
+                guard let lastSpeechAt = self.lastSpeechAt else {
                     continue
                 }
 
@@ -851,15 +894,23 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                     self?.present(event: event)
                 }
             }
+
+            await MainActor.run { [weak self] in
+                self?.responseTask = nil
+                self?.resumeRecordingAfterPlaybackIfPossible()
+            }
         } catch is CancellationError {
             diagnosticsLogger.log("Streaming request cancelled")
             await MainActor.run { [weak self] in
+                self?.responseTask = nil
                 self?.setBusy(false)
             }
             return
         } catch {
             diagnosticsLogger.log("Streaming request error: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
+                self?.responseTask = nil
+                self?.resetCurrentResponseAudioState()
                 self?.setStatus("Fehler: \(error.localizedDescription)")
                 self?.setBusy(false)
             }
@@ -942,6 +993,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
 
             do {
+                currentResponseReceivedAudio = true
+                pendingPlaybackDurationSeconds += Double(pcmData.count) / Double(24_000 * MemoryLayout<Int16>.size)
                 try enqueuePCMChunk(pcmData)
                 diagnosticsLogger.log("Received audio delta: \(pcmData.count) bytes")
             } catch {
@@ -959,6 +1012,14 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
             presentUsage(event.usage)
             setBusy(false)
+            responseTask = nil
+            shouldAutoResumeRecordingAfterPlayback = currentResponseAllowsAutoFollowUpRecording && currentResponseReceivedAudio
+            if shouldAutoResumeRecordingAfterPlayback {
+                setStatus("Antwort fertig. Auto-Aufnahme folgt …")
+                scheduleAutoResumeRecordingAfterPlayback()
+            } else {
+                resetCurrentResponseAudioState()
+            }
 
         case "error":
             diagnosticsLogger.log("Received error event: \(event.error ?? "<none>")")
@@ -967,6 +1028,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             } else {
                 setStatus("Realtime-Stream fehlgeschlagen")
             }
+            resetCurrentResponseAudioState()
             setBusy(false)
 
         case "cancelled":
@@ -975,6 +1037,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 setStatus("Antwort abgebrochen")
             }
             clearUsage()
+            resetCurrentResponseAudioState()
             setBusy(false)
 
         default:
@@ -1005,7 +1068,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             channelData[0].update(from: source, count: Int(frameCount))
         }
 
-        audioPlayerNode.scheduleBuffer(buffer, completionHandler: nil)
+        pendingPlaybackChunkCount += 1
+        audioPlayerNode.scheduleBuffer(buffer) { [weak self] in
+            DispatchQueue.main.async {
+                self?.handlePlaybackChunkCompleted()
+            }
+        }
         if !audioPlayerNode.isPlaying {
             audioPlayerNode.play()
             diagnosticsLogger.log("PCM playback started")
@@ -1033,17 +1101,111 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         audioPlayer?.stop()
         audioPlayer = nil
         audioPlayerNode.stop()
+        pendingPlaybackChunkCount = 0
+        pendingPlaybackDurationSeconds = 0
+        autoResumeAfterPlaybackTask?.cancel()
+        autoResumeAfterPlaybackTask = nil
         if audioEngine.isRunning {
             audioEngine.stop()
         }
         diagnosticsLogger.log("Playback stopped")
     }
 
+    private func stopRecordingWithoutSending(sessionId: String, reason: String) {
+        stopCaptureEngine()
+        drainCaptureQueue(reason: "without sending follow-up audio")
+        liveAudioSessionId = nil
+        configureRecordButton(isRecording: false)
+        recordButton.isEnabled = true
+        clearUsage()
+        setBusy(false)
+        setStatus(reason)
+
+        Task { [weak self] in
+            await self?.sendLiveAudioCancelRequest(sessionId: sessionId)
+        }
+    }
+
+    private func handlePlaybackChunkCompleted() {
+        pendingPlaybackChunkCount = max(0, pendingPlaybackChunkCount - 1)
+        if pendingPlaybackChunkCount == 0 {
+            audioPlayerNode.stop()
+            if audioEngine.isRunning {
+                audioEngine.stop()
+            }
+            diagnosticsLogger.log("PCM playback finished")
+            if shouldAutoResumeRecordingAfterPlayback {
+                scheduleAutoResumeRecordingAfterPlayback(delaySeconds: 0.05)
+            }
+        }
+    }
+
+    private func scheduleAutoResumeRecordingAfterPlayback(delaySeconds: TimeInterval? = nil) {
+        autoResumeAfterPlaybackTask?.cancel()
+        let effectiveDelaySeconds = delaySeconds ?? max(0.35, pendingPlaybackDurationSeconds + 0.2)
+        let delayNanoseconds = UInt64(effectiveDelaySeconds * 1_000_000_000)
+        diagnosticsLogger.log("Scheduling auto-resume recording after \(String(format: "%.2f", effectiveDelaySeconds))s, playbackChunks=\(pendingPlaybackChunkCount), audioPlayerNodePlaying=\(audioPlayerNode.isPlaying), audioPlayerPlaying=\(audioPlayer?.isPlaying ?? false)")
+
+        autoResumeAfterPlaybackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            await MainActor.run { [weak self] in
+                self?.resumeRecordingAfterPlaybackIfPossible()
+            }
+        }
+    }
+
+    private func resumeRecordingAfterPlaybackIfPossible() {
+        guard shouldAutoResumeRecordingAfterPlayback,
+              currentResponseAllowsAutoFollowUpRecording,
+              liveAudioSessionId == nil else {
+            diagnosticsLogger.log("Auto-resume skipped: should=\(shouldAutoResumeRecordingAfterPlayback) allows=\(currentResponseAllowsAutoFollowUpRecording) liveSession=\(liveAudioSessionId ?? "<none>")")
+            return
+        }
+
+        if audioPlayerNode.isPlaying || (audioPlayer?.isPlaying ?? false) {
+            diagnosticsLogger.log("Auto-resume delayed: audioPlayerNodePlaying=\(audioPlayerNode.isPlaying) audioPlayerPlaying=\(audioPlayer?.isPlaying ?? false)")
+            scheduleAutoResumeRecordingAfterPlayback(delaySeconds: 0.2)
+            return
+        }
+
+        if pendingPlaybackChunkCount > 0 {
+            diagnosticsLogger.log("Ignoring stale playback chunk count \(pendingPlaybackChunkCount) and resuming recording")
+            pendingPlaybackChunkCount = 0
+        }
+
+        diagnosticsLogger.log("Auto-resuming live recording after spoken response")
+        setStatus("Auto-Aufnahme startet …")
+        autoResumeAfterPlaybackTask?.cancel()
+        autoResumeAfterPlaybackTask = nil
+        resetCurrentResponseAudioState()
+        startRecording(autoFollowUp: true, interruptCurrentWork: false)
+    }
+
+    private func resetCurrentResponseAudioState() {
+        autoResumeAfterPlaybackTask?.cancel()
+        autoResumeAfterPlaybackTask = nil
+        pendingPlaybackDurationSeconds = 0
+        currentResponseAllowsAutoFollowUpRecording = false
+        currentResponseReceivedAudio = false
+        shouldAutoResumeRecordingAfterPlayback = false
+    }
+
     private func setStatus(_ text: String) {
         diagnosticsLogger.log("Status: \(text)")
-        statusLabel.stringValue = text
-        statusLabel.isHidden = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let displayText = Self.truncatedStatusText(text)
+        statusLabel.stringValue = displayText
+        statusLabel.isHidden = displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         updateOverlayLayout(animated: true)
+    }
+
+    private static func truncatedStatusText(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maximumStatusLength else {
+            return text
+        }
+
+        let prefix = trimmed.prefix(maximumStatusLength - 1)
+        return String(prefix) + "…"
     }
 
     private func updateOverlayLayout(animated: Bool) {
@@ -1221,13 +1383,16 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         return "\(inputSummary) | \(outputSummary) | \(totalSummary)"
     }
 
-    private func configureRecordButton(isRecording: Bool) {
+    private func configureRecordButton(isRecording: Bool, isAutoFollowUp: Bool = false) {
         recordButton.image = NSImage(
             systemSymbolName: isRecording ? "stop.circle.fill" : "mic.fill",
             accessibilityDescription: isRecording ? "Aufnahme stoppen" : "Aufnehmen")
         recordButton.contentTintColor = isRecording
-            ? NSColor.systemRed.withAlphaComponent(0.95)
+            ? (isAutoFollowUp ? NSColor.systemYellow.withAlphaComponent(0.95) : NSColor.systemRed.withAlphaComponent(0.95))
             : NSColor.white.withAlphaComponent(0.92)
+        recordButton.toolTip = isRecording
+            ? (isAutoFollowUp ? "Automatische Folgeaufnahme aktiv" : "Aufnahme läuft")
+            : "Aufnahme starten oder stoppen"
     }
 
     private func setBusy(_ busy: Bool) {

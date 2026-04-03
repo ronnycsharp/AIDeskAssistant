@@ -16,6 +16,9 @@ public sealed class AIServiceTests
         Assert.Contains("target='active_window'", prompt);
         Assert.Contains("purpose string", prompt);
         Assert.Contains("After each significant action, take another screenshot", prompt);
+        Assert.Contains("Microsoft Word and Microsoft Excel", prompt);
+        Assert.Contains("press_key with 'cmd+n'", prompt);
+        Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
     }
 
     [Fact]
@@ -32,7 +35,7 @@ public sealed class AIServiceTests
     [Fact]
     public void TryParseScreenshotAttachment_ExtractsImageBytesAndMetadata()
     {
-        string result = "Screenshot taken. Target: active_window. Purpose: verify word content. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
+        string result = "Screenshot taken. Target: active_window. Purpose: verify word content. Capture bounds: X=40, Y=50, Width=1280, Height=800. Corner pixels: TL=(40,50), TR=(1319,50), BL=(40,849), BR=(1319,849). Cursor: X=300, Y=400, InsideCapture=True. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
 
         bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
 
@@ -40,6 +43,7 @@ public sealed class AIServiceTests
         Assert.NotNull(attachment);
         Assert.Equal("image/jpeg", attachment.MediaType);
         Assert.Equal([1, 2, 3], attachment.Bytes);
+        Assert.Contains("Corner pixels: TL=(40,50)", attachment.Summary);
         Assert.Contains("Resolution: 1280x800.", attachment.Summary);
         Assert.Contains("Purpose: verify word content.", attachment.Summary);
     }
@@ -85,5 +89,28 @@ public sealed class AIServiceTests
 
         Assert.False(compacted);
         Assert.Same(original, replacement);
+    }
+
+    [Fact]
+    public void CompactToolResultForRealtimeTransport_RemovesScreenshotBase64()
+    {
+        string result = "Screenshot taken. Target: active_window. Capture bounds: X=40, Y=50, Width=1280, Height=800. Corner pixels: TL=(40,50), TR=(1319,50), BL=(40,849), BR=(1319,849). Cursor: X=300, Y=400, InsideCapture=True. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID";
+
+        string compacted = AIService.CompactToolResultForRealtimeTransport("take_screenshot", result);
+
+        Assert.Contains("Capture bounds: X=40, Y=50, Width=1280, Height=800.", compacted);
+        Assert.Contains("Screenshot image bytes omitted from realtime tool output", compacted);
+        Assert.DoesNotContain("Base64:", compacted);
+    }
+
+    [Fact]
+    public void CompactToolResultForRealtimeTransport_TruncatesLongNonScreenshotText()
+    {
+        string result = new('x', 13_000);
+
+        string compacted = AIService.CompactToolResultForRealtimeTransport("run_command", result);
+
+        Assert.True(compacted.Length < result.Length);
+        Assert.Contains("tool result truncated", compacted);
     }
 }

@@ -36,9 +36,8 @@ internal sealed class ScreenshotOptimizer
 
     internal static ScreenshotOptimizationOptions ReadFromEnvironment()
     {
-        int maxDimension = ReadInt("AIDESK_SCREENSHOT_MAX_DIMENSION", 1280, 320, 4096);
-        long jpegQuality = ReadInt("AIDESK_SCREENSHOT_JPEG_QUALITY", 60, 30, 95);
-        return new ScreenshotOptimizationOptions(maxDimension, jpegQuality);
+        long jpegQuality = ReadInt("AIDESK_SCREENSHOT_JPEG_QUALITY", 100, 30, 100);
+        return new ScreenshotOptimizationOptions(jpegQuality);
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("macos")]
@@ -54,7 +53,6 @@ internal sealed class ScreenshotOptimizer
             var process = Process.Start(new ProcessStartInfo(
                 "sips",
                 [
-                    "--resampleHeightWidthMax", _options.MaxDimension.ToString(),
                     "-s", "format", "jpeg",
                     "-s", "formatOptions", _options.JpegQuality.ToString(),
                     inputPath,
@@ -99,8 +97,7 @@ internal sealed class ScreenshotOptimizer
         using var inputStream = new MemoryStream(screenshotBytes);
         using var image = Image.FromStream(inputStream);
 
-        Size targetSize = CalculateTargetSize(image.Width, image.Height);
-        using var bitmap = new Bitmap(targetSize.Width, targetSize.Height, PixelFormat.Format24bppRgb);
+        using var bitmap = new Bitmap(image.Width, image.Height, PixelFormat.Format24bppRgb);
         using var graphics = Graphics.FromImage(bitmap);
 
         graphics.CompositingQuality = CompositingQuality.HighQuality;
@@ -108,7 +105,7 @@ internal sealed class ScreenshotOptimizer
         graphics.SmoothingMode = SmoothingMode.HighQuality;
         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
         graphics.Clear(Color.White);
-        graphics.DrawImage(image, 0, 0, targetSize.Width, targetSize.Height);
+        graphics.DrawImage(image, 0, 0, image.Width, image.Height);
 
         using var outputStream = new MemoryStream();
         ImageCodecInfo jpegEncoder = GetEncoder(ImageFormat.Jpeg);
@@ -119,8 +116,8 @@ internal sealed class ScreenshotOptimizer
         byte[] jpegBytes = outputStream.ToArray();
         byte[] finalBytes = jpegBytes.Length < screenshotBytes.Length ? jpegBytes : screenshotBytes;
         string mediaType = jpegBytes.Length < screenshotBytes.Length ? JpegMediaType : PngMediaType;
-        int width = jpegBytes.Length < screenshotBytes.Length ? targetSize.Width : image.Width;
-        int height = jpegBytes.Length < screenshotBytes.Length ? targetSize.Height : image.Height;
+        int width = image.Width;
+        int height = image.Height;
 
         return new ScreenshotPayload(
             finalBytes,
@@ -129,18 +126,6 @@ internal sealed class ScreenshotOptimizer
             finalBytes.Length,
             width,
             height);
-    }
-
-    private Size CalculateTargetSize(int width, int height)
-    {
-        int longestEdge = Math.Max(width, height);
-        if (longestEdge <= _options.MaxDimension)
-            return new Size(width, height);
-
-        double scale = (double)_options.MaxDimension / longestEdge;
-        return new Size(
-            Math.Max(1, (int)Math.Round(width * scale)),
-            Math.Max(1, (int)Math.Round(height * scale)));
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("macos")]
@@ -187,4 +172,4 @@ internal sealed class ScreenshotOptimizer
 
 }
 
-internal sealed record ScreenshotOptimizationOptions(int MaxDimension, long JpegQuality);
+internal sealed record ScreenshotOptimizationOptions(long JpegQuality);
