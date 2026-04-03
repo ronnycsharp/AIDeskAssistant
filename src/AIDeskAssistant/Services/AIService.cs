@@ -13,13 +13,16 @@ internal sealed class AIService
 {
     private const string DefaultModel       = "gpt-4o";
     private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
+    private const string SimilarScreenshotNote = "Screenshot image omitted from history because it is visually almost unchanged compared with the previous retained screenshot.";
     private const string RealtimeScreenshotOmittedNote = "Screenshot image bytes omitted from realtime tool output to keep the payload bounded.";
     private const int MaxRealtimeToolResultLength = 12_000;
+    private const double ScreenshotHistorySimilarityThreshold = 0.995;
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
     private const string SystemPrompt =
         """
         You are an AI desktop assistant that can control the user's computer.
+        Default language is German for both text and spoken interactions. Unless the user explicitly asks for another language, interpret text input and spoken input as German and respond in German.
         You have access to tools that let you:
         - Take screenshots to see the current state of the screen
         - Move the mouse and click
@@ -51,8 +54,10 @@ internal sealed class AIService
         Always take a screenshot first to understand the current screen state before acting.
         If the task is confined to one app or one document window, prefer take_screenshot with target='active_window' so the image is smaller, cheaper, and more focused than a full-screen capture.
         Whenever you call take_screenshot, include a short purpose string that explains what the screenshot is intended to validate in the current step.
-        After each significant action, take another screenshot to confirm the result.
-        Be precise with coordinates — use the screenshot to determine exact pixel positions. Screenshots include capture-bound corner labels and cursor coordinates; use those annotations when you choose X/Y values.
+        After each significant action, take a validation screenshot to confirm the desired result. Explicitly compare the validation screenshot with the pre-action screenshot and verify that the intended UI change is now visible.
+        If the validation screenshot shows that the action did not succeed, retry the action once or choose a different approach before continuing.
+        Be precise with coordinates — use the screenshot to determine exact pixel positions. Screenshots include capture-bound corner labels, cursor coordinates, and a subtle edge ruler with labeled spacing; use those annotations when you choose X/Y values.
+        When using the mouse, do not assume the cursor landed correctly. Prefer active-window screenshots for targeting, check the cursor marker against the intended UI element, and validate the result with a follow-up screenshot after clicking.
         If something doesn't work, try an alternative approach.
         Explain what you are doing at each step.
         """;
@@ -61,6 +66,8 @@ internal sealed class AIService
     private readonly DesktopToolExecutor _executor;
     private readonly AIDebugLogger?      _debugLogger;
     private readonly List<ChatMessage>   _history;
+    private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
+    private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
     public AIService(string apiKey, DesktopToolExecutor executor, string model = DefaultModel, AIDebugLogger? debugLogger = null)
     {
@@ -68,6 +75,7 @@ internal sealed class AIService
         _executor = executor;
         _debugLogger = debugLogger;
         _history  = new List<ChatMessage> { new SystemChatMessage(BuildSystemPrompt()) };
+        _debugLogger?.LogHistoryEntry("system", BuildSystemPrompt());
     }
 
     /// <summary>
@@ -85,6 +93,7 @@ internal sealed class AIService
         string preparedUserMessage = BuildUserMessageWithScreenInfo(userMessage, screenInfo);
         _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
         _history.Add(new UserChatMessage(preparedUserMessage));
+        _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
 
         ChatCompletionOptions options = CreateChatCompletionOptions();
 
@@ -100,6 +109,7 @@ internal sealed class AIService
             if (toolRounds > maxToolRounds)
             {
                 _history.Add(new AssistantChatMessage(MaxToolRoundsReachedMessage));
+                _debugLogger?.LogHistoryEntry("assistant", MaxToolRoundsReachedMessage);
                 return MaxToolRoundsReachedMessage;
             }
 
@@ -125,6 +135,7 @@ internal sealed class AIService
         Action<string>? onToolResult)
     {
         _history.Add(new AssistantChatMessage(completion));
+        _debugLogger?.LogHistoryEntry("assistant", $"Requested {completion.ToolCalls.Count} tool call(s): {string.Join(", ", completion.ToolCalls.Select(static call => call.FunctionName))}");
 
         foreach (ToolChatMessage toolResult in ExecuteToolCalls(completion.ToolCalls, onToolCall, onToolResult))
             _history.Add(toolResult);
@@ -159,11 +170,52 @@ internal sealed class AIService
             && TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment)
             && attachment is not null)
         {
-            _debugLogger?.LogScreenshotAttachment(toolCall.Id, attachment);
-            return CreateScreenshotToolMessage(toolCall.Id, attachment);
+            ToolChatMessage screenshotMessage = CreateScreenshotHistoryMessage(toolCall.Id, attachment);
+            string historySummary = screenshotMessage.Content
+                .Where(part => part.Kind == ChatMessageContentPartKind.Text)
+                .Select(part => part.Text)
+                .FirstOrDefault(static text => !string.IsNullOrWhiteSpace(text))
+                ?? attachment.Summary;
+            _debugLogger?.LogHistoryEntry("tool", historySummary);
+            return screenshotMessage;
         }
 
+        _debugLogger?.LogHistoryEntry("tool", result);
         return new ToolChatMessage(toolCall.Id, result);
+    }
+
+    private ToolChatMessage CreateScreenshotHistoryMessage(string toolCallId, ScreenshotModelAttachment attachment)
+    {
+        ScreenshotFingerprint currentFingerprint = ScreenshotHistoryComparer.CreateFingerprint(attachment.Bytes);
+        double? similarity = null;
+
+        if (_latestRetainedScreenshotFingerprint is not null)
+        {
+            similarity = ScreenshotHistoryComparer.CalculateSimilarity(_latestRetainedScreenshotFingerprint, currentFingerprint);
+            if (similarity.Value >= ScreenshotHistorySimilarityThreshold)
+            {
+                _debugLogger?.LogScreenshotAttachment(toolCallId, attachment, retainedInHistory: false, similarityToPrevious: similarity);
+                return new ToolChatMessage(
+                    toolCallId,
+                    ChatMessageContentPart.CreateTextPart($"{SimilarScreenshotNote} Similarity: {similarity.Value:P2}. {attachment.Summary}"));
+            }
+        }
+
+        byte[]? differenceBytes = null;
+
+        if (_latestRetainedScreenshotAttachment is not null)
+        {
+            differenceBytes = ScreenshotHistoryComparer.CreateDifferenceVisualization(_latestRetainedScreenshotAttachment.Bytes, attachment.Bytes);
+            if (differenceBytes is not null)
+            {
+                _debugLogger?.LogScreenshotDifference(toolCallId, differenceBytes, "image/png", $"Visual diff against previous retained screenshot. Similarity: {(similarity.HasValue ? similarity.Value.ToString("P2") : "n/a")}");
+            }
+        }
+
+        _latestRetainedScreenshotAttachment = attachment;
+        _latestRetainedScreenshotFingerprint = currentFingerprint;
+        _debugLogger?.LogScreenshotAttachment(toolCallId, attachment, retainedInHistory: true, similarityToPrevious: similarity);
+        return CreateScreenshotToolMessage(toolCallId, attachment, differenceBytes, similarity);
     }
 
     private string FinalizeAssistantResponse(ChatCompletion completion)
@@ -178,6 +230,9 @@ internal sealed class AIService
     public void ClearHistory()
     {
         _history.RemoveRange(1, _history.Count - 1);
+        _latestRetainedScreenshotAttachment = null;
+        _latestRetainedScreenshotFingerprint = null;
+        _debugLogger?.LogHistoryEntry("system", "Conversation history cleared.");
     }
 
     private string GetScreenInfoContext()
@@ -220,12 +275,29 @@ internal sealed class AIService
         }
     }
 
-    private static ToolChatMessage CreateScreenshotToolMessage(string toolCallId, ScreenshotModelAttachment attachment)
+    private static ToolChatMessage CreateScreenshotToolMessage(string toolCallId, ScreenshotModelAttachment attachment, byte[]? differenceBytes, double? similarity)
     {
+        string summary = attachment.Summary;
+        if (differenceBytes is not null)
+        {
+            summary = $"{attachment.Summary} Difference image included to show the visual change since the previous retained screenshot.";
+            if (similarity.HasValue)
+                summary = $"{summary} Similarity: {similarity.Value:P2}.";
+        }
+
+        if (differenceBytes is null)
+        {
+            return new ToolChatMessage(
+                toolCallId,
+                ChatMessageContentPart.CreateTextPart(summary),
+                ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low));
+        }
+
         return new ToolChatMessage(
             toolCallId,
-            ChatMessageContentPart.CreateTextPart(attachment.Summary),
-            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low));
+            ChatMessageContentPart.CreateTextPart(summary),
+            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low),
+            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(differenceBytes), "image/png", ChatImageDetailLevel.Low));
     }
 
     internal static bool TryParseScreenshotAttachment(string result, out ScreenshotModelAttachment? attachment)

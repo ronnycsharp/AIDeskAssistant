@@ -132,6 +132,8 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Capture bounds: X=0, Y=0, Width=1920, Height=1080.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(1919,0), BL=(0,1079), BR=(1919,1079).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
+        Assert.Contains("Edge ruler: major ticks every", result);
+        Assert.Contains("minor ticks every", result);
         Assert.Contains("Original:", result);
         Assert.Contains("Final:", result);
         Assert.Equal(default, _screenshot.LastOptions);
@@ -148,6 +150,7 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Capture bounds: X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(839,0), BL=(0,639), BR=(839,639).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
+        Assert.Contains("Edge ruler: major ticks every 50 px with minor ticks every 25 px.", result);
     }
 
     [Fact]

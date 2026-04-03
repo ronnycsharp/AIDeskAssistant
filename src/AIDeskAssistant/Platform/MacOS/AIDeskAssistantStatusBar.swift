@@ -120,7 +120,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let quitButton = NSButton(title: "AIDesk beenden", target: nil, action: nil)
+    private let quitSeparator = NSBox(frame: .zero)
+    private let quitButton = NSButton(title: "⏻", target: nil, action: nil)
     private var currentPanelHeight: CGFloat = minimumPanelHeight
 
     private var audioPlayer: AVAudioPlayer?
@@ -242,7 +243,9 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         usageLabel.lineBreakMode = .byWordWrapping
         usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        usageLabel.textColor = NSColor.white.withAlphaComponent(0.58)
+        usageLabel.textColor = NSColor.white.withAlphaComponent(0.82)
+        usageLabel.alignment = .left
+        usageLabel.cell?.truncatesLastVisibleLine = true
 
         activityIndicator.style = .spinning
         activityIndicator.controlSize = .small
@@ -265,9 +268,19 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
         cancelButton.toolTip = "Laufende Antwort abbrechen"
 
+        quitSeparator.boxType = .custom
+        quitSeparator.borderType = .lineBorder
+        quitSeparator.borderWidth = 1
+        quitSeparator.cornerRadius = 0
+        quitSeparator.borderColor = NSColor.white.withAlphaComponent(0.18)
+        quitSeparator.fillColor = .clear
+
         quitButton.target = self
         quitButton.action = #selector(quitApp)
         quitButton.bezelStyle = .rounded
+        quitButton.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
+        quitButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        quitButton.toolTip = "AIDesk beenden"
 
         backgroundView.addSubview(voicePopup)
         backgroundView.addSubview(textScrollView)
@@ -276,6 +289,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         backgroundView.addSubview(activityIndicator)
         backgroundView.addSubview(recordButton)
         backgroundView.addSubview(cancelButton)
+        backgroundView.addSubview(quitSeparator)
         backgroundView.addSubview(quitButton)
 
         configureRecordButton(isRecording: false)
@@ -1225,8 +1239,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let bottomRowY = Self.bottomInset
 
         voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: 170, height: 30)
-        recordButton.frame = NSRect(x: contentWidth - Self.sideInset - 74, y: topRowY, width: 34, height: 30)
-        cancelButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
+        quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
+        quitSeparator.frame = NSRect(x: quitButton.frame.minX - 12, y: topRowY + 4, width: 1, height: 22)
+        cancelButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
+        recordButton.frame = NSRect(x: cancelButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
 
         textScrollView.frame = NSRect(x: Self.textHorizontalInset, y: textY, width: contentWidth - (Self.textHorizontalInset * 2), height: textHeight)
         textView.textContainer?.containerSize = NSSize(width: textScrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
@@ -1234,9 +1250,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
         statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: 320, height: 22)
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
-        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: 240, height: 18)
-        quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 150, y: bottomRowY, width: 150, height: 34)
-
+        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
         if textScrollView.hasVerticalScroller {
             scrollTextSelectionToVisible()
@@ -1365,11 +1379,15 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func presentUsage(_ usage: TokenUsage?) {
+        diagnosticsLogger.log("Usage update: \(formatUsage(usage))")
         usageLabel.stringValue = formatUsage(usage)
+        updateOverlayLayout(animated: false)
     }
 
     private func clearUsage() {
+        diagnosticsLogger.log("Usage cleared")
         usageLabel.stringValue = formatUsage(nil)
+        updateOverlayLayout(animated: false)
     }
 
     private func formatUsage(_ usage: TokenUsage?) -> String {
@@ -1377,10 +1395,27 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             return "Input: - | Output: - | Total: -"
         }
 
-        let inputSummary = "Input: \(usage.inputTokens.map(String.init) ?? "-")"
-        let outputSummary = "Output: \(usage.outputTokens.map(String.init) ?? "-")"
-        let totalSummary = "Total: \(usage.totalTokens.map(String.init) ?? "-")"
-        return "\(inputSummary) | \(outputSummary) | \(totalSummary)"
+        let derivedInput = usage.inputTokens
+            ?? Self.sumUsageParts(usage.inputTextTokens, usage.inputAudioTokens, usage.inputImageTokens)
+        let derivedOutput = usage.outputTokens
+            ?? Self.sumUsageParts(usage.outputTextTokens, usage.outputAudioTokens)
+        let derivedTotal = usage.totalTokens
+            ?? Self.sumUsageParts(derivedInput, derivedOutput)
+
+        let inputSummary = "Input: \(derivedInput.map(String.init) ?? "-")"
+        let outputSummary = "Output: \(derivedOutput.map(String.init) ?? "-")"
+        let totalSummary = "Total: \(derivedTotal.map(String.init) ?? "-")"
+        let cacheSummary = usage.cachedInputTokens.map { " | Cache: \($0)" } ?? ""
+        return "\(inputSummary) | \(outputSummary) | \(totalSummary)\(cacheSummary)"
+    }
+
+    private static func sumUsageParts(_ values: Int?...) -> Int? {
+        let resolvedValues = values.compactMap { $0 }
+        guard !resolvedValues.isEmpty else {
+            return nil
+        }
+
+        return resolvedValues.reduce(0, +)
     }
 
     private func configureRecordButton(isRecording: Bool, isAutoFollowUp: Bool = false) {

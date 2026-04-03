@@ -158,6 +158,7 @@ internal sealed class DesktopToolExecutor
         parts.Add($"Capture bounds: X={captureBounds.X}, Y={captureBounds.Y}, Width={captureBounds.Width}, Height={captureBounds.Height}.");
         parts.Add($"Corner pixels: TL=({annotation.TopLeft.X},{annotation.TopLeft.Y}), TR=({annotation.TopRight.X},{annotation.TopRight.Y}), BL=({annotation.BottomLeft.X},{annotation.BottomLeft.Y}), BR=({annotation.BottomRight.X},{annotation.BottomRight.Y}).");
         parts.Add($"Cursor: X={cursorX}, Y={cursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
+        parts.Add($"Edge ruler: major ticks every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor ticks every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
 
         parts.Add($"Original: {payload.OriginalByteCount} bytes.");
         parts.Add($"Final: {payload.FinalByteCount} bytes.");
@@ -168,6 +169,21 @@ internal sealed class DesktopToolExecutor
 
         return string.Join(" ", parts);
     }
+
+    private static int GetScreenshotRulerMajorStep(int width, int height)
+    {
+        int reference = Math.Min(width, height);
+        if (reference >= 1800)
+            return 200;
+
+        if (reference >= 900)
+            return 100;
+
+        return 50;
+    }
+
+    private static int GetScreenshotRulerMinorStep(int width, int height)
+        => Math.Max(GetScreenshotRulerMajorStep(width, height) / 2, 25);
 
     private string GetScreenInfo()
     {

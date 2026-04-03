@@ -134,7 +134,9 @@ if (menuBarHostRequested)
         return 1;
     }
 
-    await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel);
+    debugLogger ??= AIDebugLogger.CreateFromArgsAndEnvironment(args, forceEnabled: true);
+
+    await using var realtimeAssistant = new RealtimeAssistantService(apiKey, executor, realtimeModel, debugLogger);
     await using var server = new RealtimeMenuBarServer(realtimeAssistant);
     await server.StartAsync();
     MenuBarRuntimeState.RegisterCurrentProcess(server.BaseUri);
@@ -147,6 +149,8 @@ if (menuBarHostRequested)
         Console.WriteLine($"Status file: {MenuBarRuntimeState.StatusFilePath}");
         if (!string.IsNullOrWhiteSpace(envFilePath))
             Console.WriteLine($"Loaded environment from: {envFilePath}");
+        if (debugLogger is not null)
+            Console.WriteLine($"AI debug mode enabled. Session logs: {debugLogger.SessionDirectoryPath}");
         Console.ResetColor();
 
         int exitCode = await MacOSStatusBarLauncher.RunAsync(server.BaseUri);

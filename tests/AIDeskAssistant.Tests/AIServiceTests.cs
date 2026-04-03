@@ -13,9 +13,12 @@ public sealed class AIServiceTests
         string prompt = AIService.BuildSystemPrompt();
 
         Assert.Contains("Always take a screenshot first", prompt);
+        Assert.Contains("Default language is German for both text and spoken interactions", prompt);
         Assert.Contains("target='active_window'", prompt);
         Assert.Contains("purpose string", prompt);
-        Assert.Contains("After each significant action, take another screenshot", prompt);
+        Assert.Contains("After each significant action, take a validation screenshot", prompt);
+        Assert.Contains("compare the validation screenshot with the pre-action screenshot", prompt);
+        Assert.Contains("subtle edge ruler with labeled spacing", prompt);
         Assert.Contains("Microsoft Word and Microsoft Excel", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);

@@ -10,15 +10,18 @@ namespace AIDeskAssistant.Services;
 internal sealed class RealtimeAssistantService : IAsyncDisposable
 {
     private static readonly string[] BuiltInVoiceIds = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"];
+    private const double ScreenshotHistorySimilarityThreshold = 0.995;
 
     private readonly string _model;
     private readonly int _sampleRate;
     private readonly DesktopToolExecutor _executor;
     private readonly RealtimeClient _client;
+    private readonly AIDebugLogger? _debugLogger;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _turnLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
     private string _voice;
+    private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
     private RealtimeSessionClient? _session;
     private Task? _receiveLoopTask;
@@ -26,17 +29,20 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     private PendingTurn? _pendingTurn;
     private CancellationTokenSource? _activeTurnCts;
     private LiveAudioInputSession? _liveAudioInputSession;
+    private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
 
-    public RealtimeAssistantService(string apiKey, DesktopToolExecutor executor, string model)
+    public RealtimeAssistantService(string apiKey, DesktopToolExecutor executor, string model, AIDebugLogger? debugLogger = null)
     {
         _client = new RealtimeClient(apiKey);
         _executor = executor;
         _model = model;
+        _debugLogger = debugLogger;
         string configuredVoice = Environment.GetEnvironmentVariable("AIDESK_REALTIME_VOICE")
             ?? RealtimeVoicePreferenceStore.TryLoadVoice()
             ?? "alloy";
         _voice = NormalizeVoiceId(configuredVoice);
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
+        _debugLogger?.LogHistoryEntry("system", AIService.BuildSystemPrompt());
     }
 
     public string CurrentVoice => _voice;
@@ -94,7 +100,10 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
             string screenInfo = GetScreenInfoContext();
-            await _session!.AddItemAsync(CreateUserTextMessage(AIService.BuildUserMessageWithScreenInfo(text, screenInfo)), turnCts.Token);
+            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo);
+            _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
+            _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
+            await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
             await StartResponseAsync(pendingTurn, turnCts.Token);
             return await pendingTurn.Completion.Task.WaitAsync(turnCts.Token);
         }
@@ -120,7 +129,10 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
             string screenInfo = GetScreenInfoContext();
-            await _session!.AddItemAsync(CreateUserTextMessage(AIService.BuildUserMessageWithScreenInfo(text, screenInfo)), turnCts.Token);
+            string preparedUserMessage = AIService.BuildUserMessageWithScreenInfo(text, screenInfo);
+            _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
+            _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
+            await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
             await StartResponseAsync(pendingTurn, turnCts.Token);
 
             await foreach (RealtimeAssistantStreamEvent streamEvent in pendingTurn.ReadEventsAsync(turnCts.Token))
@@ -147,6 +159,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             using CancellationTokenSource turnCts = CreateTurnCancellationSource(ct);
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
+            _debugLogger?.LogHistoryEntry("user", $"Wave audio input received: {waveBytes.Length} byte(s)");
             await ClearInputAudioBufferAsync(turnCts.Token);
             await _session!.SendInputAudioAsync(BinaryData.FromBytes(pcmBytes), turnCts.Token);
             await _session!.CommitPendingAudioAsync(turnCts.Token);
@@ -174,6 +187,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             using CancellationTokenSource turnCts = CreateTurnCancellationSource(ct);
             _activeTurnCts = turnCts;
             PendingTurn pendingTurn = BeginTurn();
+            _debugLogger?.LogHistoryEntry("user", $"Wave audio input received: {waveBytes.Length} byte(s)");
             await ClearInputAudioBufferAsync(turnCts.Token);
             await _session!.SendInputAudioAsync(BinaryData.FromBytes(pcmBytes), turnCts.Token);
             await _session!.CommitPendingAudioAsync(turnCts.Token);
@@ -414,7 +428,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         if (_pendingTurn is not null)
             throw new InvalidOperationException("Another realtime turn is already in progress.");
 
-        _pendingTurn = new PendingTurn(_sampleRate);
+        _pendingTurn = new PendingTurn(_sampleRate, _debugLogger);
         return _pendingTurn;
     }
 
@@ -558,19 +572,65 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
     {
         string argumentsJson = functionCall.FunctionArguments.ToString();
         string toolResult;
+        _debugLogger?.LogToolCall($"→ Tool: {functionCall.FunctionName}({argumentsJson})");
+        _debugLogger?.LogHistoryEntry("assistant", $"Requested tool call: {functionCall.FunctionName}({argumentsJson})");
 
         try
         {
-            toolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
-            toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, toolResult);
+            string rawToolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
+            LogRealtimeToolResult(functionCall.CallId, functionCall.FunctionName, rawToolResult);
+            toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, rawToolResult);
         }
         catch (Exception ex)
         {
             toolResult = $"Tool '{functionCall.FunctionName}' failed: {ex.Message}";
         }
 
+        _debugLogger?.LogToolResult($"← Result: {toolResult}");
+        _debugLogger?.LogHistoryEntry("tool", toolResult);
+
         await _session!.AddItemAsync(new RealtimeFunctionCallOutputItem(functionCall.CallId, toolResult), ct);
         await StartResponseAsync(pendingTurn, ct);
+    }
+
+    private void LogRealtimeToolResult(string toolCallId, string toolName, string rawToolResult)
+    {
+        if (_debugLogger is null)
+            return;
+
+        if (!string.Equals(toolName, "take_screenshot", StringComparison.Ordinal)
+            || !AIService.TryParseScreenshotAttachment(rawToolResult, out ScreenshotModelAttachment? attachment)
+            || attachment is null)
+        {
+            return;
+        }
+
+        ScreenshotFingerprint currentFingerprint = ScreenshotHistoryComparer.CreateFingerprint(attachment.Bytes);
+        double? similarity = null;
+        bool retainedInHistory = true;
+
+        if (_latestRetainedScreenshotFingerprint is not null)
+        {
+            similarity = ScreenshotHistoryComparer.CalculateSimilarity(_latestRetainedScreenshotFingerprint, currentFingerprint);
+            retainedInHistory = similarity.Value < ScreenshotHistorySimilarityThreshold;
+        }
+
+        if (retainedInHistory)
+        {
+            if (_latestRetainedScreenshotAttachment is not null)
+            {
+                byte[]? differenceBytes = ScreenshotHistoryComparer.CreateDifferenceVisualization(_latestRetainedScreenshotAttachment.Bytes, attachment.Bytes);
+                if (differenceBytes is not null)
+                {
+                    _debugLogger.LogScreenshotDifference(toolCallId, differenceBytes, "image/png", $"Visual diff against previous retained screenshot. Similarity: {(similarity.HasValue ? similarity.Value.ToString("P2") : "n/a")}");
+                }
+            }
+
+            _latestRetainedScreenshotAttachment = attachment;
+            _latestRetainedScreenshotFingerprint = currentFingerprint;
+        }
+
+        _debugLogger.LogScreenshotAttachment(toolCallId, attachment, retainedInHistory, similarity);
     }
 
     private RealtimeConversationSessionOptions CreateConversationOptions()
@@ -681,9 +741,12 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         private RealtimeAssistantUsage? _usage;
         private int _outstandingResponses;
 
-        public PendingTurn(int sampleRate)
+        private readonly AIDebugLogger? _debugLogger;
+
+        public PendingTurn(int sampleRate, AIDebugLogger? debugLogger)
         {
             _sampleRate = sampleRate;
+            _debugLogger = debugLogger;
             Completion = new TaskCompletionSource<RealtimeAssistantTurnResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
@@ -739,6 +802,8 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
             string text = _text.Length > 0 ? _text.ToString() : _transcript.ToString();
             byte[]? audio = _audio.Length > 0 ? WaveAudioUtility.CreateWaveFile(_audio.ToArray(), _sampleRate) : null;
             Completion.TrySetResult(new RealtimeAssistantTurnResult(text, audio, _usage));
+            _debugLogger?.LogAssistantResponse(text);
+            _debugLogger?.LogHistoryEntry("assistant", text);
             _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Completed, FinalText: text, Usage: _usage));
             _events.Writer.TryComplete();
         }
@@ -746,6 +811,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         public void TrySetException(Exception exception)
         {
             Completion.TrySetException(exception);
+            _debugLogger?.LogHistoryEntry("assistant", $"Error: {exception.Message}");
             _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Error, ErrorMessage: exception.Message));
             _events.Writer.TryComplete();
         }
@@ -753,6 +819,7 @@ internal sealed class RealtimeAssistantService : IAsyncDisposable
         public void TrySetCanceled()
         {
             Completion.TrySetCanceled();
+            _debugLogger?.LogHistoryEntry("assistant", "Cancelled");
             _events.Writer.TryComplete();
         }
     }
