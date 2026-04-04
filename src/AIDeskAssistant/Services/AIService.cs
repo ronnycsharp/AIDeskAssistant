@@ -20,6 +20,8 @@ internal sealed class AIService
     private const double ScreenshotHistorySimilarityThreshold = 0.995;
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
+    private const string MandatoryFinalValidationInstruction =
+        "Mandatory final validation loop: do not answer the user yet. Re-verify the current desktop state from the live UI. If you changed the UI, take a fresh validation screenshot and confirm the requested outcome is actually visible now. If the task involves files or terminal output, run one concrete verification step against the current state. If validation fails, continue working instead of claiming success. Only after this extra validation loop may you send the final user-facing completion message.";
     private const string SystemPrompt =
         """
         You are an AI desktop assistant that can control the user's computer.
@@ -67,8 +69,10 @@ internal sealed class AIService
         Whenever you call take_screenshot, include a short purpose string that explains what the screenshot is intended to validate in the current step.
         After each significant action, take a validation screenshot to confirm the desired result. Explicitly compare the validation screenshot with the pre-action screenshot and verify that the intended UI change is now visible.
         If the validation screenshot shows that the action did not succeed, retry the action once or choose a different approach before continuing.
+        Before you send any final success message after using a state-changing desktop tool, you must perform one extra final validation loop from the current live state. Take a fresh validation screenshot or another concrete verification step, confirm the requested outcome is actually present now, and only then declare completion.
         Be precise with coordinates — use the screenshot to determine exact pixel positions. Screenshots include capture-bound corner labels, cursor coordinates, and a visible coordinate raster with labeled spacing; use those annotations when you choose X/Y values.
         When using the mouse, do not assume the cursor landed correctly. Prefer active-window screenshots for targeting, check the cursor marker against the intended UI element, and validate the result with a follow-up screenshot after clicking.
+        After a follow-up instruction from the AIDesk menu bar while editing Microsoft Word on macOS, assume focus may have returned to AIDesk or another helper window. Before the next edit step, explicitly bring Microsoft Word back to the foreground, focus the document content, and validate with a screenshot before typing or pressing navigation keys.
         If something doesn't work, try an alternative approach.
         Explain what you are doing at each step.
         """;
@@ -111,12 +115,27 @@ internal sealed class AIService
         ChatCompletionOptions options = CreateChatCompletionOptions();
 
         int toolRounds = 0;
+        bool performedStateChangingTool = false;
+        bool finalValidationRequested = false;
         while (true)
         {
             ChatCompletion completion = await _client.CompleteChatAsync(_history, options, ct);
 
             if (completion.FinishReason != ChatFinishReason.ToolCalls)
+            {
+                if (performedStateChangingTool && !finalValidationRequested)
+                {
+                    finalValidationRequested = true;
+                    string draftResponse = completion.Content[0].Text;
+                    _history.Add(new AssistantChatMessage(draftResponse));
+                    _debugLogger?.LogHistoryEntry("assistant", $"Draft final response before mandatory validation: {draftResponse}");
+                    _history.Add(new UserChatMessage(BuildMandatoryFinalValidationInstruction()));
+                    _debugLogger?.LogHistoryEntry("user", BuildMandatoryFinalValidationInstruction());
+                    continue;
+                }
+
                 return FinalizeAssistantResponse(completion);
+            }
 
             toolRounds++;
             if (toolRounds > maxToolRounds)
@@ -126,7 +145,8 @@ internal sealed class AIService
                 return MaxToolRoundsReachedMessage;
             }
 
-            await HandleToolCallsAsync(completion, onToolCall, onToolResult);
+            if (await HandleToolCallsAsync(completion, onToolCall, onToolResult))
+                performedStateChangingTool = true;
         }
     }
 
@@ -142,7 +162,24 @@ internal sealed class AIService
     internal static string BuildSystemPrompt()
         => SystemPrompt;
 
-    private async Task HandleToolCallsAsync(
+    internal static string BuildMandatoryFinalValidationInstruction()
+        => MandatoryFinalValidationInstruction;
+
+    internal static bool RequiresMandatoryFinalValidation(string toolName)
+        => toolName switch
+        {
+            "move_mouse" => false,
+            "take_screenshot" => false,
+            "get_screen_info" => false,
+            "get_frontmost_ui_elements" => false,
+            "get_cursor_position" => false,
+            "get_active_window_bounds" => false,
+            "wait" => false,
+            "run_command" => false,
+            _ => true,
+        };
+
+    private async Task<bool> HandleToolCallsAsync(
         ChatCompletion completion,
         Action<string>? onToolCall,
         Action<string>? onToolResult)
@@ -150,19 +187,9 @@ internal sealed class AIService
         _history.Add(new AssistantChatMessage(completion));
         _debugLogger?.LogHistoryEntry("assistant", $"Requested {completion.ToolCalls.Count} tool call(s): {string.Join(", ", completion.ToolCalls.Select(static call => call.FunctionName))}");
 
-        foreach (ToolChatMessage toolResult in ExecuteToolCalls(completion.ToolCalls, onToolCall, onToolResult))
-            _history.Add(toolResult);
+        bool performedStateChangingTool = false;
 
-        PruneHistoricalScreenshotImages();
-        await Task.CompletedTask;
-    }
-
-    private IEnumerable<ToolChatMessage> ExecuteToolCalls(
-        IReadOnlyList<ChatToolCall> toolCalls,
-        Action<string>? onToolCall,
-        Action<string>? onToolResult)
-    {
-        foreach (ChatToolCall toolCall in toolCalls)
+        foreach (ChatToolCall toolCall in completion.ToolCalls)
         {
             string toolName = toolCall.FunctionName;
             string argsJson = toolCall.FunctionArguments.ToString();
@@ -173,8 +200,13 @@ internal sealed class AIService
 
             onToolResult?.Invoke($"← Result: {TruncateForDisplay(result)}");
 
-            yield return CreateToolResultMessage(toolCall, toolName, result);
+            _history.Add(CreateToolResultMessage(toolCall, toolName, result));
+            performedStateChangingTool |= RequiresMandatoryFinalValidation(toolName);
         }
+
+        PruneHistoricalScreenshotImages();
+        await Task.CompletedTask;
+        return performedStateChangingTool;
     }
 
     private ToolChatMessage CreateToolResultMessage(ChatToolCall toolCall, string toolName, string result)

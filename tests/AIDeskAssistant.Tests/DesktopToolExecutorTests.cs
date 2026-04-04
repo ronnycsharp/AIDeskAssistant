@@ -88,12 +88,32 @@ internal sealed class FakeWindowService : IWindowService
 {
     public WindowBounds Bounds = new(10, 20, 800, 600);
     public WindowHitTestResult? WindowAtPoint = new("Microsoft Word", "Document1", new WindowBounds(0, 0, 840, 640));
+    public string FrontmostApplicationName = "Microsoft Word";
+    public IReadOnlyList<WindowInfo> Windows =
+    [
+        new WindowInfo("Microsoft Word", "Document1", new WindowBounds(10, 20, 800, 600), true, false),
+        new WindowInfo("Finder", "Downloads", new WindowBounds(100, 80, 720, 540), false, false),
+    ];
     public (int X, int Y) LastMoveTarget;
     public (int Width, int Height) LastResizeTarget;
+    public string? LastFocusApplicationName;
+    public string? LastFocusTitleSubstring;
+    public bool FocusWindowResult = true;
 
     public WindowBounds GetActiveWindowBounds() => Bounds;
 
     public WindowHitTestResult? GetWindowAtPoint(int x, int y) => WindowAtPoint;
+
+    public string GetFrontmostApplicationName() => FrontmostApplicationName;
+
+    public IReadOnlyList<WindowInfo> ListWindows() => Windows;
+
+    public bool FocusWindow(string? applicationName, string? titleSubstring)
+    {
+        LastFocusApplicationName = applicationName;
+        LastFocusTitleSubstring = titleSubstring;
+        return FocusWindowResult;
+    }
 
     public void MoveActiveWindow(int x, int y) => LastMoveTarget = (x, y);
 
@@ -107,7 +127,21 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
     public IReadOnlyList<string> LastSidebarTitles = Array.Empty<string>();
     public string? LastFocusedContentApplicationName;
     public string? FocusContentExceptionMessage;
+    public string? LastFindTitle;
+    public string? LastFindRole;
+    public string? LastFindValue;
+    public string? LastClickTitle;
+    public string? LastClickRole;
+    public string? LastClickValue;
+    public int LastClickMatchIndex;
     public string FrontmostUiSummary = "Frontmost app: TestApp\nVisible UI elements:\n- AXWindow | title=Main | x=10,y=20,w=800,h=600";
+    public IReadOnlyList<UiElementInfo> MatchingElements =
+    [
+        new UiElementInfo("AXButton", "Save", string.Empty, new WindowBounds(420, 300, 80, 28), false, true),
+        new UiElementInfo("AXTextField", "Filename", "poem.docx", new WindowBounds(320, 240, 240, 24), true, true),
+    ];
+    public UiElementInfo? FocusedElement = new("AXTextField", "Filename", "poem.docx", new WindowBounds(320, 240, 240, 24), true, true);
+    public string ClickUiElementResult = "Clicked UI element: role=AXButton, title=Save, value=, x=420, y=300, width=80, height=28";
 
     public string SummarizeFrontmostUiElements() => FrontmostUiSummary;
 
@@ -125,6 +159,25 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
             throw new InvalidOperationException(FocusContentExceptionMessage);
 
         return $"Focused frontmost window content for {applicationName ?? "<frontmost>"}";
+    }
+
+    public IReadOnlyList<UiElementInfo> FindFrontmostUiElements(string? title = null, string? role = null, string? value = null)
+    {
+        LastFindTitle = title;
+        LastFindRole = role;
+        LastFindValue = value;
+        return MatchingElements;
+    }
+
+    public UiElementInfo? GetFocusedUiElement() => FocusedElement;
+
+    public string ClickFrontmostUiElement(string? title = null, string? role = null, string? value = null, int matchIndex = 0)
+    {
+        LastClickTitle = title;
+        LastClickRole = role;
+        LastClickValue = value;
+        LastClickMatchIndex = matchIndex;
+        return ClickUiElementResult;
     }
 }
 
@@ -209,6 +262,24 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Contains("Frontmost app: TestApp", result);
         Assert.Contains("AXWindow | title=Main", result);
+    }
+
+    [Fact]
+    public void Execute_GetFrontmostApplication_UsesWindowService()
+    {
+        string result = _sut.Execute("get_frontmost_application", "{}");
+
+        Assert.Equal("Frontmost application: Microsoft Word", result);
+    }
+
+    [Fact]
+    public void Execute_ListWindows_ReturnsWindowSummary()
+    {
+        string result = _sut.Execute("list_windows", "{}");
+
+        Assert.Contains("App=Microsoft Word", result);
+        Assert.Contains("Title=Document1", result);
+        Assert.Contains("Frontmost=True", result);
     }
 
     [Fact]
@@ -365,12 +436,87 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_FocusWindow_ForwardsFilters()
+    {
+        string result = _sut.Execute("focus_window", "{\"application_name\":\"Microsoft Word\",\"title_contains\":\"Document1\"}");
+
+        Assert.Equal("Microsoft Word", _window.LastFocusApplicationName);
+        Assert.Equal("Document1", _window.LastFocusTitleSubstring);
+        Assert.Contains("Focused window matching", result);
+    }
+
+    [Fact]
+    public void Execute_WaitForWindow_ReturnsImmediateMatch()
+    {
+        string result = _sut.Execute("wait_for_window", "{\"application_name\":\"Microsoft Word\",\"frontmost\":true,\"timeout_ms\":100,\"poll_interval_ms\":50}");
+
+        Assert.Contains("Matched window became available", result);
+    }
+
+    [Fact]
     public void Execute_FocusFrontmostWindowContent_ForwardsApplicationName()
     {
         string result = _sut.Execute("focus_frontmost_window_content", "{\"application_name\":\"Safari\"}");
 
         Assert.Equal("Safari", _uiAutomation.LastFocusedContentApplicationName);
         Assert.Equal("Focused frontmost window content for Safari", result);
+    }
+
+    [Fact]
+    public void Execute_FindUiElement_ForwardsFilters()
+    {
+        string result = _sut.Execute("find_ui_element", "{\"title\":\"Save\",\"role\":\"AXButton\"}");
+
+        Assert.Equal("Save", _uiAutomation.LastFindTitle);
+        Assert.Equal("AXButton", _uiAutomation.LastFindRole);
+        Assert.Contains("Role=AXButton", result);
+        Assert.Contains("Title=Save", result);
+    }
+
+    [Fact]
+    public void Execute_ClickUiElement_ForwardsFilters()
+    {
+        string result = _sut.Execute("click_ui_element", "{\"title\":\"Save\",\"role\":\"AXButton\",\"match_index\":1}");
+
+        Assert.Equal("Save", _uiAutomation.LastClickTitle);
+        Assert.Equal("AXButton", _uiAutomation.LastClickRole);
+        Assert.Equal(1, _uiAutomation.LastClickMatchIndex);
+        Assert.Contains("Clicked UI element", result);
+    }
+
+    [Fact]
+    public void Execute_WaitForUiElement_ReturnsImmediateMatch()
+    {
+        string result = _sut.Execute("wait_for_ui_element", "{\"title\":\"Save\",\"role\":\"AXButton\",\"timeout_ms\":100,\"poll_interval_ms\":50}");
+
+        Assert.Contains("Matched UI element became available", result);
+    }
+
+    [Fact]
+    public void Execute_GetFocusedUiElement_ReturnsFocusedElement()
+    {
+        string result = _sut.Execute("get_focused_ui_element", "{}");
+
+        Assert.Contains("Focused UI element:", result);
+        Assert.Contains("Title=Filename", result);
+    }
+
+    [Fact]
+    public void Execute_AssertState_FrontmostApplicationPasses()
+    {
+        string result = _sut.Execute("assert_state", "{\"state\":\"frontmost_application\",\"application_name\":\"Word\"}");
+
+        Assert.Contains("Assertion passed", result);
+        Assert.Contains("Frontmost application is Microsoft Word", result);
+    }
+
+    [Fact]
+    public void Execute_AssertState_FocusedUiElementPasses()
+    {
+        string result = _sut.Execute("assert_state", "{\"state\":\"focused_ui_element\",\"title_contains\":\"Filename\",\"role\":\"AXTextField\"}");
+
+        Assert.Contains("Assertion passed", result);
+        Assert.Contains("Focused UI element", result);
     }
 
     [Fact]

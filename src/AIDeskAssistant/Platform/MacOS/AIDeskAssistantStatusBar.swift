@@ -44,6 +44,20 @@ struct TokenUsage: Decodable {
     let totalTokens: Int?
 }
 
+struct ActivitySnapshot: Decodable {
+    let CurrentStep: String?
+    let ActiveTool: String?
+    let LastUpdatedUtc: String?
+    let Entries: [ActivityEntry]
+}
+
+struct ActivityEntry: Decodable {
+    let TimestampUtc: String?
+    let Message: String
+    let Kind: String?
+    let ToolName: String?
+}
+
 private struct AudioLevelMetrics {
     let peak: Double
     let rms: Double
@@ -96,8 +110,8 @@ final class OverlayPanel: NSPanel {
 
 final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let panelWidth: CGFloat = 460
-    private static let minimumPanelHeight: CGFloat = 206
-    private static let maximumPanelHeight: CGFloat = 278
+    private static let minimumPanelHeight: CGFloat = 320
+    private static let maximumPanelHeight: CGFloat = 430
     private static let backgroundInset: CGFloat = 10
     private static let sideInset: CGFloat = 28
     private static let textHorizontalInset: CGFloat = 20
@@ -106,6 +120,17 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let defaultTextHeight: CGFloat = 36
     private static let maximumTextHeight: CGFloat = 108
     private static let maximumStatusLength = 240
+    private static let activityLogHeight: CGFloat = 92
+    private static let activityFilePath: String = {
+        if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_ACTIVITY_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return path
+        }
+
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AIDeskAssistant", isDirectory: true)
+            .appendingPathComponent("menu-bar-activity.json")
+            .path
+    }()
 
     private let serverURL: URL
     private let dismissPopover: () -> Void
@@ -117,6 +142,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
+    private let activitySectionLabel = NSTextField(labelWithString: "Aktivität")
+    private let activityStepLabel = NSTextField(labelWithString: "Leerlauf")
+    private let activeToolLabel = NSTextField(labelWithString: "Tool: -")
+    private let activityScrollView = NSScrollView(frame: .zero)
+    private let activityTextView = NSTextView(frame: .zero)
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
@@ -163,6 +193,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var shouldAutoResumeRecordingAfterPlayback = false
     private var isAutoFollowUpRecording = false
     private var autoResumeAfterPlaybackTask: Task<Void, Never>?
+    private var activityPollTimer: Timer?
 
     init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
         self.serverURL = serverURL
@@ -247,6 +278,37 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         usageLabel.alignment = .left
         usageLabel.cell?.truncatesLastVisibleLine = true
 
+        activitySectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        activitySectionLabel.textColor = NSColor.white.withAlphaComponent(0.70)
+
+        activityStepLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        activityStepLabel.textColor = NSColor.white.withAlphaComponent(0.95)
+        activityStepLabel.lineBreakMode = .byTruncatingTail
+
+        activeToolLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        activeToolLabel.textColor = NSColor.white.withAlphaComponent(0.78)
+        activeToolLabel.lineBreakMode = .byTruncatingTail
+
+        activityScrollView.borderType = .noBorder
+        activityScrollView.drawsBackground = false
+        activityScrollView.hasVerticalScroller = true
+        activityScrollView.hasHorizontalScroller = false
+        activityScrollView.autohidesScrollers = true
+
+        activityTextView.isEditable = false
+        activityTextView.isSelectable = true
+        activityTextView.isRichText = false
+        activityTextView.importsGraphics = false
+        activityTextView.isVerticallyResizable = true
+        activityTextView.isHorizontallyResizable = false
+        activityTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        activityTextView.textColor = NSColor.white.withAlphaComponent(0.86)
+        activityTextView.backgroundColor = NSColor.white.withAlphaComponent(0.04)
+        activityTextView.textContainerInset = NSSize(width: 6, height: 6)
+        activityTextView.textContainer?.widthTracksTextView = true
+        activityTextView.string = "Noch keine Aktivität"
+        activityScrollView.documentView = activityTextView
+
         activityIndicator.style = .spinning
         activityIndicator.controlSize = .small
         activityIndicator.isDisplayedWhenStopped = false
@@ -286,6 +348,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
         backgroundView.addSubview(usageLabel)
+        backgroundView.addSubview(activitySectionLabel)
+        backgroundView.addSubview(activityStepLabel)
+        backgroundView.addSubview(activeToolLabel)
+        backgroundView.addSubview(activityScrollView)
         backgroundView.addSubview(activityIndicator)
         backgroundView.addSubview(recordButton)
         backgroundView.addSubview(cancelButton)
@@ -299,9 +365,14 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     override func viewDidAppear() {
         super.viewDidAppear()
         focusTextField()
+        startActivityPolling()
         Task { [weak self] in
             await self?.loadVoiceSettings()
         }
+    }
+
+    deinit {
+        activityPollTimer?.invalidate()
     }
 
     func focusTextField() {
@@ -333,7 +404,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 return false
             }
 
-            sendText(nil)
+            submitCurrentText(dismissAfterSend: false)
             return true
         }
 
@@ -346,6 +417,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func sendText(_ sender: Any?) {
+        submitCurrentText(dismissAfterSend: true)
+    }
+
+    private func submitCurrentText(dismissAfterSend: Bool) {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             setStatus("")
@@ -354,7 +429,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
         textView.string = ""
         updateOverlayLayout(animated: true)
-        dismissPopover()
+        if dismissAfterSend {
+            dismissPopover()
+        } else {
+            focusTextField()
+        }
         submitText(text)
     }
 
@@ -1213,6 +1292,61 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         updateOverlayLayout(animated: true)
     }
 
+    private func startActivityPolling() {
+        activityPollTimer?.invalidate()
+        refreshActivitySnapshot()
+        activityPollTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            self?.refreshActivitySnapshot()
+        }
+    }
+
+    private func refreshActivitySnapshot() {
+        let snapshot = loadActivitySnapshot()
+        renderActivity(snapshot)
+    }
+
+    private func loadActivitySnapshot() -> ActivitySnapshot? {
+        let url = URL(fileURLWithPath: Self.activityFilePath)
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(ActivitySnapshot.self, from: data)
+    }
+
+    private func renderActivity(_ snapshot: ActivitySnapshot?) {
+        guard let snapshot else {
+            activityStepLabel.stringValue = "Leerlauf"
+            activeToolLabel.stringValue = "Tool: -"
+            activityTextView.string = "Noch keine Aktivität"
+            return
+        }
+
+        let currentStep = snapshot.CurrentStep?.trimmingCharacters(in: .whitespacesAndNewlines)
+        activityStepLabel.stringValue = (currentStep?.isEmpty == false ? currentStep! : "Leerlauf")
+
+        if let activeTool = snapshot.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
+            activeToolLabel.stringValue = "Tool: \(activeTool)"
+        } else {
+            activeToolLabel.stringValue = "Tool: -"
+        }
+
+        let recentLines = snapshot.Entries.suffix(8).reversed().map { entry in
+            let timePrefix: String
+            if let timestamp = entry.TimestampUtc, timestamp.count >= 16 {
+                let start = timestamp.index(timestamp.startIndex, offsetBy: 11)
+                let end = timestamp.index(start, offsetBy: 5, limitedBy: timestamp.endIndex) ?? timestamp.endIndex
+                timePrefix = String(timestamp[start..<end])
+            } else {
+                timePrefix = "--:--"
+            }
+
+            return "[\(timePrefix)] \(entry.Message)"
+        }
+
+        activityTextView.string = recentLines.isEmpty ? "Noch keine Aktivität" : recentLines.joined(separator: "\n")
+    }
+
     private static func truncatedStatusText(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > maximumStatusLength else {
@@ -1226,7 +1360,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private func updateOverlayLayout(animated: Bool) {
         let contentTextHeight = calculatedContentTextHeight()
         let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
-        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 170))
+        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 250))
         currentPanelHeight = desiredPanelHeight
 
         view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
@@ -1236,7 +1370,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let contentWidth = backgroundView.bounds.width
         let topRowY = contentHeight - Self.topInset - 30
         let textY = topRowY - 12 - textHeight
-        let statusY = textY - 30
+        let statusY = textY - 28
+        let activityHeaderY = statusY - 24
+        let activityStepY = activityHeaderY - 18
+        let toolY = activityStepY - 16
+        let activityLogY = toolY - Self.activityLogHeight - 6
         let bottomRowY = Self.bottomInset
 
         voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: 170, height: 30)
@@ -1249,7 +1387,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         textView.textContainer?.containerSize = NSSize(width: textScrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.frame = NSRect(origin: .zero, size: NSSize(width: textScrollView.contentSize.width, height: max(textHeight, contentTextHeight)))
 
-        statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: 320, height: 22)
+        statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: contentWidth - (Self.sideInset * 2) - 24, height: 22)
+        activitySectionLabel.frame = NSRect(x: Self.sideInset, y: activityHeaderY, width: 120, height: 16)
+        activityStepLabel.frame = NSRect(x: Self.sideInset, y: activityStepY, width: contentWidth - (Self.sideInset * 2), height: 18)
+        activeToolLabel.frame = NSRect(x: Self.sideInset, y: toolY, width: contentWidth - (Self.sideInset * 2), height: 16)
+        activityScrollView.frame = NSRect(x: Self.sideInset, y: activityLogY, width: contentWidth - (Self.sideInset * 2), height: Self.activityLogHeight)
+        activityTextView.frame = NSRect(origin: .zero, size: NSSize(width: activityScrollView.contentSize.width, height: Self.activityLogHeight))
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
         usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
@@ -1479,6 +1622,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var inputWindow: NSPanel?
     private weak var viewController: StatusBarViewController?
     private var isBusy = false
+    private var hidInputWindowForAutomation = false
 
     init(serverURL: URL) {
         self.serverURL = serverURL
@@ -1555,6 +1699,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setBusy(_ busy: Bool) {
+        if busy {
+            if inputWindow?.isVisible == true {
+                hidInputWindowForAutomation = true
+                inputWindow?.orderOut(nil)
+                diagnosticsLogger.log("Input window hidden while automation is running")
+            }
+        } else {
+            hidInputWindowForAutomation = false
+        }
+
         isBusy = busy
         updateStatusItemTitle()
     }
@@ -1564,7 +1718,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        button.title = "AIDesk"
+        button.title = isBusy ? "AIDesk •" : "AIDesk"
     }
 }
 

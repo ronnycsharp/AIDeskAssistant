@@ -73,6 +73,89 @@ internal static class DesktopToolDefinitions
         ),
 
     new(
+            "get_frontmost_ui_elements",
+            "Returns a compact Accessibility-based summary of the currently frontmost macOS application and its visible UI elements. Use this to understand app structure before clicking or typing."
+        ),
+
+    new(
+            "get_frontmost_application",
+            "Returns the display name of the currently frontmost desktop application. Use this to verify focus before typing or clicking.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {}
+            }
+            """)
+        ),
+
+    new(
+            "list_windows",
+            "Lists visible top-level windows with app name, title, bounds, and frontmost/minimized state. Use this to reason about which window should be focused or whether dialogs are still present.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {}
+            }
+            """)
+        ),
+
+    new(
+            "focus_window",
+            "Focuses a matching window by application name and/or title substring. Prefer this when a specific document or dialog must be brought to the foreground, not just the app in general.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "application_name": {
+                  "type": "string",
+                  "description": "Optional application name filter, e.g. 'Microsoft Word'."
+                },
+                "title_contains": {
+                  "type": "string",
+                  "description": "Optional window title substring, e.g. 'Document2' or 'Save'."
+                }
+              }
+            }
+            """)
+        ),
+
+    new(
+            "wait_for_window",
+            "Polls until a matching window appears, disappears, or becomes frontmost. Use this instead of blind waits when opening dialogs, waiting for documents, or checking that a modal closed.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "application_name": {
+                  "type": "string",
+                  "description": "Optional application name filter."
+                },
+                "title_contains": {
+                  "type": "string",
+                  "description": "Optional window title substring filter."
+                },
+                "frontmost": {
+                  "type": "boolean",
+                  "description": "When true, require the window to be the frontmost one."
+                },
+                "absent": {
+                  "type": "boolean",
+                  "description": "When true, wait until no matching window remains."
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "description": "Maximum wait time in milliseconds."
+                },
+                "poll_interval_ms": {
+                  "type": "integer",
+                  "description": "Polling interval in milliseconds."
+                }
+              }
+            }
+            """)
+        ),
+
+    new(
             "get_cursor_position",
             "Returns the current X/Y position of the mouse cursor in screen coordinates."
         ),
@@ -352,6 +435,143 @@ internal static class DesktopToolDefinitions
                   "description": "Optional expected frontmost application name, e.g. 'Microsoft Word'"
                 }
               }
+            }
+            """)
+        ),
+
+          new(
+            "find_ui_element",
+            "Finds matching Accessibility UI elements in the frontmost macOS window by title, role, and/or value. Use this to localize buttons, fields, rows, checkboxes, or other controls before clicking or validating state.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Optional title substring to match."
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Optional Accessibility role filter, e.g. 'AXButton' or 'AXTextField'."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Optional value substring to match."
+                }
+              }
+            }
+            """)
+        ),
+
+          new(
+            "click_ui_element",
+            "Clicks a matching Accessibility UI element in the frontmost macOS window. Prefer this over coordinate clicking when a button, checkbox, row, or menu-like control can be identified structurally.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Optional title substring to match."
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Optional Accessibility role filter."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Optional value substring to match."
+                },
+                "match_index": {
+                  "type": "integer",
+                  "description": "Zero-based match index to click when multiple elements match."
+                }
+              }
+            }
+            """)
+        ),
+
+          new(
+            "wait_for_ui_element",
+            "Polls until a matching Accessibility UI element appears or disappears in the frontmost macOS window. Use this instead of blind waits for buttons, dialogs, rows, fields, or save confirmations.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "description": "Optional title substring to match."
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Optional Accessibility role filter."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Optional value substring to match."
+                },
+                "absent": {
+                  "type": "boolean",
+                  "description": "When true, wait until the matching UI element is no longer present."
+                },
+                "timeout_ms": {
+                  "type": "integer",
+                  "description": "Maximum wait time in milliseconds."
+                },
+                "poll_interval_ms": {
+                  "type": "integer",
+                  "description": "Polling interval in milliseconds."
+                }
+              }
+            }
+            """)
+        ),
+
+          new(
+            "get_focused_ui_element",
+            "Returns the currently focused Accessibility UI element in the frontmost macOS application/window. Use this to verify where typing or key presses will land.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {}
+            }
+            """)
+        ),
+
+          new(
+            "assert_state",
+            "Checks a specific desktop state and returns pass/fail with details. Use this to verify frontmost app, window presence, UI element presence, or focused UI element before declaring a task complete.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": ["frontmost_application", "window_present", "ui_element_present", "focused_ui_element"],
+                  "description": "Which state to assert."
+                },
+                "application_name": {
+                  "type": "string",
+                  "description": "Expected application name or filter, depending on the state."
+                },
+                "title_contains": {
+                  "type": "string",
+                  "description": "Expected window title substring or UI element title substring."
+                },
+                "role": {
+                  "type": "string",
+                  "description": "Optional Accessibility role filter for UI element assertions."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Optional UI element value filter."
+                },
+                "expected": {
+                  "type": "boolean",
+                  "description": "Expected truth value. Defaults to true."
+                }
+              },
+              "required": ["state"]
             }
             """)
         ),

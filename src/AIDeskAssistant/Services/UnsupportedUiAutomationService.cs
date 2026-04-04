@@ -23,4 +23,13 @@ internal sealed class UnsupportedUiAutomationService : IUiAutomationService
 
     public string FocusFrontmostWindowContent(string? applicationName)
         => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
+
+    public IReadOnlyList<UiElementInfo> FindFrontmostUiElements(string? title = null, string? role = null, string? value = null)
+        => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
+
+    public UiElementInfo? GetFocusedUiElement()
+        => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
+
+    public string ClickFrontmostUiElement(string? title = null, string? role = null, string? value = null, int matchIndex = 0)
+        => throw new PlatformNotSupportedException($"Accessibility UI automation is not available on {_platformName}.");
 }

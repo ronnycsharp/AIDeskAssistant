@@ -1,4 +1,6 @@
 using System.Runtime.Versioning;
+using System.Text.Json;
+using AIDeskAssistant.Models;
 using AIDeskAssistant.Services;
 
 namespace AIDeskAssistant.Platform.MacOS;
@@ -840,6 +842,421 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
         print("Focused frontmost window content in '\(actualAppName)'. role=\(chosenRole) point=(\(Int(targetPoint.x)), \(Int(targetPoint.y))) focused=\(focused) metadata=\(metadata)")
         """;
 
+    private const string FindFrontmostUiElementsScript =
+        """
+        import AppKit
+        import ApplicationServices
+        import Foundation
+
+        struct ElementInfo: Codable {
+            let role: String
+            let title: String
+            let value: String
+            let x: Int?
+            let y: Int?
+            let width: Int?
+            let height: Int?
+            let isFocused: Bool
+            let isEnabled: Bool
+        }
+
+        func fail(_ message: String) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            exit(1)
+        }
+
+        func normalized(_ value: String?) -> String {
+            (value ?? "")
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func matches(_ value: String?, filter: String) -> Bool {
+            if filter.isEmpty { return true }
+            return normalized(value).contains(normalized(filter))
+        }
+
+        func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(element, name, &value)
+            return error == .success ? value : nil
+        }
+
+        func stringAttribute(_ element: AXUIElement, _ name: CFString) -> String? {
+            attribute(element, name) as? String
+        }
+
+        func boolAttribute(_ element: AXUIElement, _ name: CFString) -> Bool? {
+            attribute(element, name) as? Bool
+        }
+
+        func elementAttribute(_ element: AXUIElement, _ name: CFString) -> AXUIElement? {
+            guard let value = attribute(element, name) else { return nil }
+            return unsafeBitCast(value, to: AXUIElement.self)
+        }
+
+        func elementArrayAttribute(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
+            guard let values = attribute(element, name) as? [AnyObject] else { return [] }
+            return values.map { unsafeBitCast($0, to: AXUIElement.self) }
+        }
+
+        func children(of element: AXUIElement) -> [AXUIElement] {
+            elementArrayAttribute(element, kAXChildrenAttribute as CFString)
+        }
+
+        func descendants(of root: AXUIElement, depth: Int = 0) -> [AXUIElement] {
+            if depth > 16 { return [] }
+            let directChildren = children(of: root)
+            return directChildren + directChildren.flatMap { descendants(of: $0, depth: depth + 1) }
+        }
+
+        func pointAttribute(_ element: AXUIElement, _ name: CFString) -> CGPoint? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var point = CGPoint.zero
+            return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+        }
+
+        func sizeAttribute(_ element: AXUIElement, _ name: CFString) -> CGSize? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var size = CGSize.zero
+            return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+        }
+
+        func frame(of element: AXUIElement) -> CGRect? {
+            guard let position = pointAttribute(element, kAXPositionAttribute as CFString),
+                  let size = sizeAttribute(element, kAXSizeAttribute as CFString) else {
+                return nil
+            }
+
+            return CGRect(origin: position, size: size)
+        }
+
+        guard AXIsProcessTrusted() else {
+            fail("Accessibility permission is required for AXUIElement inspection.")
+        }
+
+        let titleFilter = CommandLine.arguments.dropFirst().first ?? ""
+        let roleFilter = CommandLine.arguments.dropFirst(2).first ?? ""
+        let valueFilter = CommandLine.arguments.dropFirst(3).first ?? ""
+
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            fail("Could not determine the frontmost application.")
+        }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let window = elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
+            ?? elementAttribute(appElement, kAXMainWindowAttribute as CFString)
+            ?? elementArrayAttribute(appElement, kAXWindowsAttribute as CFString).first
+
+        let candidates = window.map { [$0] + descendants(of: $0) } ?? []
+        let matches = candidates.compactMap { element -> ElementInfo? in
+            let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? ""
+            let title = stringAttribute(element, kAXTitleAttribute as CFString) ?? ""
+            let value = stringAttribute(element, kAXValueAttribute as CFString) ?? ""
+            guard matches(role, filter: roleFilter), matches(title, filter: titleFilter), matches(value, filter: valueFilter) else {
+                return nil
+            }
+
+            let elementFrame = frame(of: element)
+            return ElementInfo(
+                role: role,
+                title: title,
+                value: value,
+                x: elementFrame.map { Int($0.origin.x.rounded()) },
+                y: elementFrame.map { Int($0.origin.y.rounded()) },
+                width: elementFrame.map { Int($0.size.width.rounded()) },
+                height: elementFrame.map { Int($0.size.height.rounded()) },
+                isFocused: boolAttribute(element, kAXFocusedAttribute as CFString) ?? false,
+                isEnabled: boolAttribute(element, kAXEnabledAttribute as CFString) ?? true)
+        }
+        .sorted {
+            if ($0.y ?? Int.max) == ($1.y ?? Int.max) {
+                return ($0.x ?? Int.max) < ($1.x ?? Int.max)
+            }
+
+            return ($0.y ?? Int.max) < ($1.y ?? Int.max)
+        }
+
+        let data = try JSONEncoder().encode(Array(matches.prefix(40)))
+        print(String(data: data, encoding: .utf8) ?? "[]")
+        """;
+
+    private const string GetFocusedUiElementScript =
+        """
+        import AppKit
+        import ApplicationServices
+        import Foundation
+
+        struct ElementInfo: Codable {
+            let role: String
+            let title: String
+            let value: String
+            let x: Int?
+            let y: Int?
+            let width: Int?
+            let height: Int?
+            let isFocused: Bool
+            let isEnabled: Bool
+        }
+
+        func fail(_ message: String) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            exit(1)
+        }
+
+        func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(element, name, &value)
+            return error == .success ? value : nil
+        }
+
+        func stringAttribute(_ element: AXUIElement, _ name: CFString) -> String? {
+            attribute(element, name) as? String
+        }
+
+        func boolAttribute(_ element: AXUIElement, _ name: CFString) -> Bool? {
+            attribute(element, name) as? Bool
+        }
+
+        func pointAttribute(_ element: AXUIElement, _ name: CFString) -> CGPoint? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var point = CGPoint.zero
+            return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+        }
+
+        func sizeAttribute(_ element: AXUIElement, _ name: CFString) -> CGSize? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var size = CGSize.zero
+            return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+        }
+
+        func frame(of element: AXUIElement) -> CGRect? {
+            guard let position = pointAttribute(element, kAXPositionAttribute as CFString),
+                  let size = sizeAttribute(element, kAXSizeAttribute as CFString) else {
+                return nil
+            }
+
+            return CGRect(origin: position, size: size)
+        }
+
+        guard AXIsProcessTrusted() else {
+            fail("Accessibility permission is required for AXUIElement inspection.")
+        }
+
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            fail("Could not determine the frontmost application.")
+        }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        guard let focusedValue = attribute(appElement, kAXFocusedUIElementAttribute as CFString) else {
+            print("")
+            exit(0)
+        }
+
+        let focusedElement = unsafeBitCast(focusedValue, to: AXUIElement.self)
+        let elementFrame = frame(of: focusedElement)
+        let info = ElementInfo(
+            role: stringAttribute(focusedElement, kAXRoleAttribute as CFString) ?? "",
+            title: stringAttribute(focusedElement, kAXTitleAttribute as CFString) ?? "",
+            value: stringAttribute(focusedElement, kAXValueAttribute as CFString) ?? "",
+            x: elementFrame.map { Int($0.origin.x.rounded()) },
+            y: elementFrame.map { Int($0.origin.y.rounded()) },
+            width: elementFrame.map { Int($0.size.width.rounded()) },
+            height: elementFrame.map { Int($0.size.height.rounded()) },
+            isFocused: boolAttribute(focusedElement, kAXFocusedAttribute as CFString) ?? true,
+            isEnabled: boolAttribute(focusedElement, kAXEnabledAttribute as CFString) ?? true)
+
+        let data = try JSONEncoder().encode(info)
+        print(String(data: data, encoding: .utf8) ?? "")
+        """;
+
+    private const string ClickFrontmostUiElementScript =
+        """
+        import AppKit
+        import ApplicationServices
+        import CoreGraphics
+        import Foundation
+
+        func fail(_ message: String) -> Never {
+            FileHandle.standardError.write(Data((message + "\n").utf8))
+            exit(1)
+        }
+
+        func normalized(_ value: String?) -> String {
+            (value ?? "")
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        func matches(_ value: String?, filter: String) -> Bool {
+            if filter.isEmpty { return true }
+            return normalized(value).contains(normalized(filter))
+        }
+
+        func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
+            var value: CFTypeRef?
+            let error = AXUIElementCopyAttributeValue(element, name, &value)
+            return error == .success ? value : nil
+        }
+
+        func stringAttribute(_ element: AXUIElement, _ name: CFString) -> String? {
+            attribute(element, name) as? String
+        }
+
+        func elementAttribute(_ element: AXUIElement, _ name: CFString) -> AXUIElement? {
+            guard let value = attribute(element, name) else { return nil }
+            return unsafeBitCast(value, to: AXUIElement.self)
+        }
+
+        func elementArrayAttribute(_ element: AXUIElement, _ name: CFString) -> [AXUIElement] {
+            guard let values = attribute(element, name) as? [AnyObject] else { return [] }
+            return values.map { unsafeBitCast($0, to: AXUIElement.self) }
+        }
+
+        func children(of element: AXUIElement) -> [AXUIElement] {
+            elementArrayAttribute(element, kAXChildrenAttribute as CFString)
+        }
+
+        func descendants(of root: AXUIElement, depth: Int = 0) -> [AXUIElement] {
+            if depth > 16 { return [] }
+            let directChildren = children(of: root)
+            return directChildren + directChildren.flatMap { descendants(of: $0, depth: depth + 1) }
+        }
+
+        func pointAttribute(_ element: AXUIElement, _ name: CFString) -> CGPoint? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var point = CGPoint.zero
+            return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
+        }
+
+        func sizeAttribute(_ element: AXUIElement, _ name: CFString) -> CGSize? {
+            guard let raw = attribute(element, name) else { return nil }
+            let axValue = raw as! AXValue
+            var size = CGSize.zero
+            return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
+        }
+
+        func frame(of element: AXUIElement) -> CGRect? {
+            guard let position = pointAttribute(element, kAXPositionAttribute as CFString),
+                  let size = sizeAttribute(element, kAXSizeAttribute as CFString) else {
+                return nil
+            }
+
+            return CGRect(origin: position, size: size)
+        }
+
+        func parent(of element: AXUIElement) -> AXUIElement? {
+            elementAttribute(element, kAXParentAttribute as CFString)
+        }
+
+        func actions(of element: AXUIElement) -> [String] {
+            var names: CFArray?
+            let error = AXUIElementCopyActionNames(element, &names)
+            return error == .success ? (names as? [String] ?? []) : []
+        }
+
+        @discardableResult
+        func press(_ element: AXUIElement) -> Bool {
+            AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+        }
+
+        @discardableResult
+        func focus(_ element: AXUIElement) -> Bool {
+            AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
+        }
+
+        func pressableAncestor(startingAt element: AXUIElement) -> AXUIElement? {
+            var current: AXUIElement? = element
+            var depth = 0
+            while let currentElement = current, depth < 12 {
+                if actions(of: currentElement).contains(kAXPressAction as String) {
+                    return currentElement
+                }
+                current = parent(of: currentElement)
+                depth += 1
+            }
+            return nil
+        }
+
+        func click(at point: CGPoint) -> Bool {
+            guard let source = CGEventSource(stateID: .hidSystemState),
+                  let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left),
+                  let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left),
+                  let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left) else {
+                return false
+            }
+
+            move.post(tap: .cghidEventTap)
+            usleep(120_000)
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            return true
+        }
+
+        guard AXIsProcessTrusted() else {
+            fail("Accessibility permission is required for AXUIElement automation.")
+        }
+
+        let titleFilter = CommandLine.arguments.dropFirst().first ?? ""
+        let roleFilter = CommandLine.arguments.dropFirst(2).first ?? ""
+        let valueFilter = CommandLine.arguments.dropFirst(3).first ?? ""
+        let matchIndex = Int(CommandLine.arguments.dropFirst(4).first ?? "0") ?? 0
+
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            fail("Could not determine the frontmost application.")
+        }
+
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let window = elementAttribute(appElement, kAXFocusedWindowAttribute as CFString)
+            ?? elementAttribute(appElement, kAXMainWindowAttribute as CFString)
+            ?? elementArrayAttribute(appElement, kAXWindowsAttribute as CFString).first
+        guard let targetWindow = window else {
+            fail("Could not access the frontmost window.")
+        }
+
+        let matches = ([targetWindow] + descendants(of: targetWindow)).filter { element in
+            let role = stringAttribute(element, kAXRoleAttribute as CFString)
+            let title = stringAttribute(element, kAXTitleAttribute as CFString)
+            let value = stringAttribute(element, kAXValueAttribute as CFString)
+            return matches(role, filter: roleFilter) && matches(title, filter: titleFilter) && matches(value, filter: valueFilter)
+        }
+        .sorted {
+            let leftFrame = frame(of: $0) ?? .null
+            let rightFrame = frame(of: $1) ?? .null
+            if leftFrame.minY == rightFrame.minY {
+                return leftFrame.minX < rightFrame.minX
+            }
+            return leftFrame.minY < rightFrame.minY
+        }
+
+        guard matchIndex >= 0, matchIndex < matches.count else {
+            fail("No matching UI element found.")
+        }
+
+        let element = matches[matchIndex]
+        let target = pressableAncestor(startingAt: element) ?? element
+        let elementFrame = frame(of: element)
+        let clickPoint = elementFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
+        let clicked = press(target) || focus(element) || clickPoint.map(click(at:)) == true
+        guard clicked else {
+            fail("Could not activate the matching UI element.")
+        }
+
+        let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? ""
+        let title = stringAttribute(element, kAXTitleAttribute as CFString) ?? ""
+        let value = stringAttribute(element, kAXValueAttribute as CFString) ?? ""
+        if let elementFrame {
+            print("Clicked UI element: role=\(role), title=\(title), value=\(value), x=\(Int(elementFrame.origin.x.rounded())), y=\(Int(elementFrame.origin.y.rounded())), width=\(Int(elementFrame.size.width.rounded())), height=\(Int(elementFrame.size.height.rounded()))")
+        } else {
+            print("Clicked UI element: role=\(role), title=\(title), value=\(value)")
+        }
+        """;
+
     public void ClickAppleMenuItem(IReadOnlyList<string> titles)
         => RunSwiftScript(AppleMenuScript, titles);
 
@@ -853,6 +1270,15 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
         => RunSwiftScriptAndCaptureOutput(FocusFrontmostWindowContentScript, string.IsNullOrWhiteSpace(applicationName)
             ? Array.Empty<string>()
             : [applicationName]);
+
+    public IReadOnlyList<UiElementInfo> FindFrontmostUiElements(string? title = null, string? role = null, string? value = null)
+        => ParseUiElementList(RunSwiftScriptAndCaptureOutput(FindFrontmostUiElementsScript, [title ?? string.Empty, role ?? string.Empty, value ?? string.Empty]));
+
+    public UiElementInfo? GetFocusedUiElement()
+        => ParseSingleUiElement(RunSwiftScriptAndCaptureOutput(GetFocusedUiElementScript, []));
+
+    public string ClickFrontmostUiElement(string? title = null, string? role = null, string? value = null, int matchIndex = 0)
+        => RunSwiftScriptAndCaptureOutput(ClickFrontmostUiElementScript, [title ?? string.Empty, role ?? string.Empty, value ?? string.Empty, matchIndex.ToString()]);
 
     private static void RunSwiftScript(string script, IReadOnlyList<string> arguments)
     {
@@ -902,5 +1328,45 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             if (File.Exists(scriptPath))
                 File.Delete(scriptPath);
         }
+    }
+
+    private static IReadOnlyList<UiElementInfo> ParseUiElementList(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return Array.Empty<UiElementInfo>();
+
+        List<UiElementDto>? dtos = JsonSerializer.Deserialize<List<UiElementDto>>(json);
+        return dtos?.Select(ToUiElementInfo).ToArray() ?? Array.Empty<UiElementInfo>();
+    }
+
+    private static UiElementInfo? ParseSingleUiElement(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+            return null;
+
+        UiElementDto? dto = JsonSerializer.Deserialize<UiElementDto>(json);
+        return dto is null ? null : ToUiElementInfo(dto);
+    }
+
+    private static UiElementInfo ToUiElementInfo(UiElementDto dto)
+    {
+        WindowBounds? bounds = dto.X.HasValue && dto.Y.HasValue && dto.Width.HasValue && dto.Height.HasValue
+            ? new WindowBounds(dto.X.Value, dto.Y.Value, dto.Width.Value, dto.Height.Value)
+            : null;
+
+        return new UiElementInfo(dto.Role ?? string.Empty, dto.Title ?? string.Empty, dto.Value ?? string.Empty, bounds, dto.IsFocused, dto.IsEnabled);
+    }
+
+    private sealed class UiElementDto
+    {
+        public string? Role { get; set; }
+        public string? Title { get; set; }
+        public string? Value { get; set; }
+        public int? X { get; set; }
+        public int? Y { get; set; }
+        public int? Width { get; set; }
+        public int? Height { get; set; }
+        public bool IsFocused { get; set; }
+        public bool IsEnabled { get; set; }
     }
 }

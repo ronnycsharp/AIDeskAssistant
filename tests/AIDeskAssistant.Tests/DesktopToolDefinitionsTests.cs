@@ -14,6 +14,11 @@ public sealed class DesktopToolDefinitionsTests
 
         Assert.Contains("take_screenshot",    names);
         Assert.Contains("get_screen_info",    names);
+        Assert.Contains("get_frontmost_ui_elements", names);
+        Assert.Contains("get_frontmost_application", names);
+        Assert.Contains("list_windows", names);
+        Assert.Contains("focus_window", names);
+        Assert.Contains("wait_for_window", names);
         Assert.Contains("get_cursor_position",names);
         Assert.Contains("move_mouse",         names);
         Assert.Contains("click",              names);
@@ -29,6 +34,11 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("click_apple_menu_item", names);
         Assert.Contains("click_system_settings_sidebar_item", names);
         Assert.Contains("focus_frontmost_window_content", names);
+        Assert.Contains("find_ui_element", names);
+        Assert.Contains("click_ui_element", names);
+        Assert.Contains("wait_for_ui_element", names);
+        Assert.Contains("get_focused_ui_element", names);
+        Assert.Contains("assert_state", names);
         Assert.Contains("get_active_window_bounds", names);
         Assert.Contains("move_active_window", names);
         Assert.Contains("resize_active_window", names);
@@ -125,5 +135,19 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("intended_click_x", parameters);
         Assert.Contains("intended_click_y", parameters);
         Assert.Contains("intended_click_label", parameters);
+    }
+
+    [Fact]
+    public void NewWindowAndUiToolDefinitions_AreExposed()
+    {
+        string allDescriptions = string.Join("\n", DesktopToolDefinitions.FunctionDefinitions.Select(definition => $"{definition.Name}: {definition.Description}"));
+
+        Assert.Contains("list_windows", allDescriptions);
+        Assert.Contains("focus_window", allDescriptions);
+        Assert.Contains("wait_for_window", allDescriptions);
+        Assert.Contains("find_ui_element", allDescriptions);
+        Assert.Contains("click_ui_element", allDescriptions);
+        Assert.Contains("wait_for_ui_element", allDescriptions);
+        Assert.Contains("assert_state", allDescriptions);
     }
 }

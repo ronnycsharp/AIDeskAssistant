@@ -9,7 +9,8 @@ namespace AIDeskAssistant.Services;
 
 internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 {
-    private static readonly string[] BuiltInVoiceIds = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"];
+    private const string AssistantRole = "assistant";
+    private static readonly string[] BuiltInVoiceIds = new[] { "alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse" };
     private const double ScreenshotHistorySimilarityThreshold = 0.995;
 
     private readonly string _model;
@@ -45,6 +46,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         _voice = NormalizeVoiceId(configuredVoice);
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
         _debugLogger?.LogHistoryEntry("system", AIService.BuildSystemPrompt());
+        MenuBarActivityState.Reset("Bereit", "AIDesk ist bereit.");
     }
 
     public string CurrentVoice => _voice;
@@ -93,6 +95,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         if (string.IsNullOrWhiteSpace(text))
             throw new ArgumentException("Text input is required.", nameof(text));
 
+        MenuBarActivityState.UpdateStep("Bereite Textanfrage vor", eventMessage: "Textanfrage wird vorbereitet.");
         await EnsureSessionAsync(ct);
         await _turnLock.WaitAsync(ct);
 
@@ -107,6 +110,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             _debugLogger?.LogUiContext(uiContext);
             _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
             _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
+            MenuBarActivityState.UpdateStep("Textanfrage an Modell gesendet", eventMessage: "Textanfrage wurde an das Modell gesendet.");
             await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
             await StartResponseAsync(pendingTurn, turnCts.Token);
             return await pendingTurn.Completion.Task.WaitAsync(turnCts.Token);
@@ -119,11 +123,17 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         }
     }
 
-    public async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamTextAsync(string text, [EnumeratorCancellation] CancellationToken ct = default)
+    public IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamTextAsync(string text, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))
             throw new ArgumentException("Text input is required.", nameof(text));
 
+        return StreamTextCoreAsync(text, ct);
+    }
+
+    private async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamTextCoreAsync(string text, [EnumeratorCancellation] CancellationToken ct)
+    {
+        MenuBarActivityState.UpdateStep("Bereite Textstream vor", eventMessage: "Textstream wird vorbereitet.");
         await EnsureSessionAsync(ct);
         await _turnLock.WaitAsync(ct);
 
@@ -138,6 +148,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             _debugLogger?.LogUiContext(uiContext);
             _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
             _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
+            MenuBarActivityState.UpdateStep("Textstream an Modell gesendet", eventMessage: "Textstream wurde an das Modell gesendet.");
             await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
             await StartResponseAsync(pendingTurn, turnCts.Token);
 
@@ -180,11 +191,16 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         }
     }
 
-    public async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamWaveAudioAsync(byte[] waveBytes, [EnumeratorCancellation] CancellationToken ct = default)
+    public IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamWaveAudioAsync(byte[] waveBytes, CancellationToken ct = default)
     {
         if (!WaveAudioUtility.TryExtractPcm16FromWave(waveBytes, _sampleRate, out byte[] pcmBytes, out string error))
             throw new InvalidOperationException(error);
 
+        return StreamWaveAudioCoreAsync(waveBytes, pcmBytes, ct);
+    }
+
+    private async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamWaveAudioCoreAsync(byte[] waveBytes, byte[] pcmBytes, [EnumeratorCancellation] CancellationToken ct)
+    {
         await EnsureSessionAsync(ct);
         await _turnLock.WaitAsync(ct);
 
@@ -243,6 +259,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     public async Task<string> StartLiveAudioInputAsync(CancellationToken ct = default)
     {
+        MenuBarActivityState.UpdateStep("Starte Live-Audio", eventMessage: "Live-Audioaufnahme wird gestartet.");
         await EnsureSessionAsync(ct);
 
         LiveAudioInputSession? existingLiveAudioInputSession = _liveAudioInputSession;
@@ -261,6 +278,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
             string sessionId = Guid.NewGuid().ToString("N");
             _liveAudioInputSession = new LiveAudioInputSession(sessionId, pendingTurn, turnCts);
+            MenuBarActivityState.UpdateStep("Live-Audio aktiv", eventMessage: "Live-Audioaufnahme ist aktiv.");
             return sessionId;
         }
         catch
@@ -294,6 +312,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     public async IAsyncEnumerable<RealtimeAssistantStreamEvent> CommitLiveAudioInputAsync(string sessionId, [EnumeratorCancellation] CancellationToken ct = default)
     {
         LiveAudioInputSession liveAudioInputSession = GetRequiredLiveAudioInputSession(sessionId);
+        MenuBarActivityState.UpdateStep("Sende Live-Audio", eventMessage: "Live-Audio wird an das Modell gesendet.");
         await liveAudioInputSession.AudioOperationLock.WaitAsync(liveAudioInputSession.TurnCancellationSource.Token);
 
         try
@@ -328,6 +347,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         if (liveAudioInputSession is null || !string.Equals(liveAudioInputSession.SessionId, sessionId, StringComparison.Ordinal))
             return false;
 
+        MenuBarActivityState.UpdateStep("Breche Live-Audio ab", eventMessage: "Live-Audioaufnahme wird abgebrochen.", eventKind: "warning");
         await CancelLiveAudioInputSessionAsync(liveAudioInputSession, ct);
         return true;
     }
@@ -394,6 +414,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         if (_session is not null)
             return;
 
+        MenuBarActivityState.UpdateStep("Initialisiere Realtime-Sitzung", eventMessage: "Realtime-Sitzung wird initialisiert.");
         await _sessionLock.WaitAsync(ct);
         try
         {
@@ -407,6 +428,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             _session = session;
             _sessionReceiveLoopCts = sessionReceiveLoopCts;
             _receiveLoopTask = Task.Run(() => ReceiveLoopAsync(session, sessionReceiveLoopCts.Token), sessionReceiveLoopCts.Token);
+            MenuBarActivityState.UpdateStep("Bereit", eventMessage: "Realtime-Sitzung ist bereit.");
         }
         finally
         {
@@ -440,6 +462,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     private async Task StartResponseAsync(PendingTurn pendingTurn, CancellationToken ct)
     {
+        MenuBarActivityState.UpdateStep("Warte auf Modellantwort", eventMessage: "Antwortgenerierung wurde gestartet.");
         for (int attempt = 0; attempt < 2; attempt++)
         {
             try
@@ -510,6 +533,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             }
             catch (ObjectDisposedException)
             {
+                // The linked CTS was already disposed during concurrent shutdown.
             }
         }
 
@@ -543,6 +567,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             switch (update)
             {
                 case RealtimeServerUpdateResponseOutputTextDelta textDelta when pendingTurn is not null:
+                    MenuBarActivityState.UpdateStep("Empfange Textantwort");
                     pendingTurn.AppendText(textDelta.Delta);
                     pendingTurn.PublishTextDelta(textDelta.Delta);
                     break;
@@ -552,6 +577,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
                     break;
 
                 case RealtimeServerUpdateResponseOutputAudioDelta audioDelta when pendingTurn is not null:
+                    MenuBarActivityState.UpdateStep("Empfange Audioantwort");
                     byte[] audioBytes = audioDelta.Delta.ToArray();
                     pendingTurn.AppendAudio(audioBytes);
                     pendingTurn.PublishAudioDelta(audioBytes);
@@ -562,12 +588,14 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
                     break;
 
                 case RealtimeServerUpdateResponseDone responseDone when pendingTurn is not null:
+                    MenuBarActivityState.UpdateStep("Antwort abgeschlossen", eventMessage: "Die Modellantwort ist abgeschlossen.");
                     pendingTurn.AddUsage(CreateUsage(responseDone.Response.Usage));
                     if (pendingTurn.DecrementOutstandingResponses() == 0)
                         pendingTurn.TrySetResult();
                     break;
 
                 case RealtimeServerUpdateError errorUpdate when pendingTurn is not null:
+                    MenuBarActivityState.UpdateStep("Realtime-Fehler", eventMessage: errorUpdate.Error?.Message ?? "Realtime-Sitzung fehlgeschlagen.", eventKind: "error");
                     pendingTurn.TrySetException(new InvalidOperationException(errorUpdate.Error?.Message ?? "Realtime session error."));
                     break;
             }
@@ -579,7 +607,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         string argumentsJson = functionCall.FunctionArguments.ToString();
         string toolResult;
         _debugLogger?.LogToolCall($"→ Tool: {functionCall.FunctionName}({argumentsJson})");
-        _debugLogger?.LogHistoryEntry("assistant", $"Requested tool call: {functionCall.FunctionName}({argumentsJson})");
+        _debugLogger?.LogHistoryEntry(AssistantRole, $"Requested tool call: {functionCall.FunctionName}({argumentsJson})");
 
         try
         {
@@ -707,7 +735,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         return options;
     }
 
-    private RealtimeResponseOptions CreateResponseOptions()
+    private static RealtimeResponseOptions CreateResponseOptions()
     {
         RealtimeResponseOptions options = new();
 
@@ -848,7 +876,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             byte[]? audio = _audio.Length > 0 ? WaveAudioUtility.CreateWaveFile(_audio.ToArray(), _sampleRate) : null;
             Completion.TrySetResult(new RealtimeAssistantTurnResult(text, audio, _usage));
             _debugLogger?.LogAssistantResponse(text);
-            _debugLogger?.LogHistoryEntry("assistant", text);
+            _debugLogger?.LogHistoryEntry(AssistantRole, text);
             _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Completed, FinalText: text, Usage: _usage));
             _events.Writer.TryComplete();
         }
@@ -856,7 +884,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         public void TrySetException(Exception exception)
         {
             Completion.TrySetException(exception);
-            _debugLogger?.LogHistoryEntry("assistant", $"Error: {exception.Message}");
+            _debugLogger?.LogHistoryEntry(AssistantRole, $"Error: {exception.Message}");
             _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Error, ErrorMessage: exception.Message));
             _events.Writer.TryComplete();
         }
@@ -864,7 +892,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         public void TrySetCanceled()
         {
             Completion.TrySetCanceled();
-            _debugLogger?.LogHistoryEntry("assistant", "Cancelled");
+            _debugLogger?.LogHistoryEntry(AssistantRole, "Cancelled");
             _events.Writer.TryComplete();
         }
     }

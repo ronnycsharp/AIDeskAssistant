@@ -73,34 +73,72 @@ internal sealed class DesktopToolExecutor
     public string Execute(string toolName, string argsJson)
     {
         var args = DesktopToolDefinitions.ParseArgs(argsJson);
+        MenuBarActivityState.ToolStarted(toolName, SummarizeArguments(argsJson));
 
-        return toolName switch
+        try
         {
-            "take_screenshot" => TakeScreenshot(args),
-            "get_screen_info" => GetScreenInfo(),
-            "get_frontmost_ui_elements" => GetFrontmostUiElements(),
-            "get_cursor_position" => GetCursorPosition(),
-            "move_mouse" => MoveMouse(args),
-            "drag" => Drag(args),
-            "click" => Click(args),
-            "double_click" => DoubleClick(args),
-            "scroll" => Scroll(args),
-            "type_text" => TypeText(args),
-            "press_key" => PressKey(args),
-            "open_application" => OpenApplication(args),
-            "focus_application" => FocusApplication(args),
-            "open_url" => OpenUrl(args),
-            "run_command" => RunCommand(args),
-            "click_dock_application" => ClickDockApplication(args),
-            "click_apple_menu_item" => ClickAppleMenuItem(args),
-            "click_system_settings_sidebar_item" => ClickSystemSettingsSidebarItem(args),
-            "focus_frontmost_window_content" => FocusFrontmostWindowContent(args),
-            "get_active_window_bounds" => GetActiveWindowBounds(),
-            "move_active_window" => MoveActiveWindow(args),
-            "resize_active_window" => ResizeActiveWindow(args),
-            "wait" => Wait(args),
-            _ => $"Unknown tool: {toolName}",
-        };
+            string result = toolName switch
+            {
+                "take_screenshot" => TakeScreenshot(args),
+                "get_screen_info" => GetScreenInfo(),
+                "get_frontmost_ui_elements" => GetFrontmostUiElements(),
+                "get_frontmost_application" => GetFrontmostApplication(),
+                "list_windows" => ListWindows(),
+                "get_cursor_position" => GetCursorPosition(),
+                "move_mouse" => MoveMouse(args),
+                "drag" => Drag(args),
+                "click" => Click(args),
+                "double_click" => DoubleClick(args),
+                "scroll" => Scroll(args),
+                "type_text" => TypeText(args),
+                "press_key" => PressKey(args),
+                "open_application" => OpenApplication(args),
+                "focus_application" => FocusApplication(args),
+                "open_url" => OpenUrl(args),
+                "run_command" => RunCommand(args),
+                "click_dock_application" => ClickDockApplication(args),
+                "click_apple_menu_item" => ClickAppleMenuItem(args),
+                "click_system_settings_sidebar_item" => ClickSystemSettingsSidebarItem(args),
+                "focus_window" => FocusWindow(args),
+                "wait_for_window" => WaitForWindow(args),
+                "focus_frontmost_window_content" => FocusFrontmostWindowContent(args),
+                "find_ui_element" => FindUiElement(args),
+                "click_ui_element" => ClickUiElement(args),
+                "wait_for_ui_element" => WaitForUiElement(args),
+                "get_focused_ui_element" => GetFocusedUiElement(),
+                "assert_state" => AssertState(args),
+                "get_active_window_bounds" => GetActiveWindowBounds(),
+                "move_active_window" => MoveActiveWindow(args),
+                "resize_active_window" => ResizeActiveWindow(args),
+                "wait" => Wait(args),
+                _ => $"Unknown tool: {toolName}",
+            };
+
+            MenuBarActivityState.ToolFinished(toolName, SummarizeToolResult(result));
+            return result;
+        }
+        catch (Exception ex)
+        {
+            MenuBarActivityState.ToolFailed(toolName, ex.Message);
+            throw;
+        }
+    }
+
+    private static string? SummarizeArguments(string argsJson)
+    {
+        if (string.IsNullOrWhiteSpace(argsJson) || argsJson == "{}")
+            return null;
+
+        string normalized = argsJson.ReplaceLineEndings(" ").Trim();
+        return normalized.Length <= 120 ? normalized : normalized[..120] + "...";
+    }
+
+    private static string SummarizeToolResult(string result)
+    {
+        int base64Index = result.IndexOf("Base64:", StringComparison.Ordinal);
+        string summary = base64Index >= 0 ? result[..base64Index].TrimEnd() : result;
+        summary = summary.ReplaceLineEndings(" ").Trim();
+        return summary.Length <= 140 ? summary : summary[..140] + "...";
     }
 
     private string TakeScreenshot(Dictionary<string, JsonElement> args)
@@ -326,6 +364,35 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return $"Frontmost UI element summary unavailable: {ex.Message}";
+        }
+    }
+
+    private string GetFrontmostApplication()
+    {
+        try
+        {
+            return $"Frontmost application: {_window.GetFrontmostApplicationName()}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to get frontmost application: {ex.Message}";
+        }
+    }
+
+    private string ListWindows()
+    {
+        try
+        {
+            IReadOnlyList<WindowInfo> windows = _window.ListWindows();
+            if (windows.Count == 0)
+                return "No windows found.";
+
+            return string.Join(Environment.NewLine, windows.Select((window, index) =>
+                $"[{index}] App={FormatWindowTitle(window.ApplicationName)}, Title={FormatWindowTitle(window.Title)}, X={window.Bounds.X}, Y={window.Bounds.Y}, Width={window.Bounds.Width}, Height={window.Bounds.Height}, Frontmost={window.IsFrontmost}, Minimized={window.IsMinimized}"));
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to list windows: {ex.Message}";
         }
     }
 
@@ -641,6 +708,66 @@ internal sealed class DesktopToolExecutor
         }
     }
 
+    private string FocusWindow(Dictionary<string, JsonElement> args)
+    {
+        string applicationName = DesktopToolDefinitions.GetString(args, "application_name").Trim();
+        string titleContains = DesktopToolDefinitions.GetString(args, "title_contains").Trim();
+
+        if (string.IsNullOrWhiteSpace(applicationName) && string.IsNullOrWhiteSpace(titleContains))
+            return "application_name or title_contains is required";
+
+        try
+        {
+            bool focused = _window.FocusWindow(
+                string.IsNullOrWhiteSpace(applicationName) ? null : applicationName,
+                string.IsNullOrWhiteSpace(titleContains) ? null : titleContains);
+
+            return focused
+                ? $"Focused window matching App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}"
+                : $"No matching window found for App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to focus window: {ex.Message}";
+        }
+    }
+
+    private string WaitForWindow(Dictionary<string, JsonElement> args)
+    {
+        string applicationName = DesktopToolDefinitions.GetString(args, "application_name").Trim();
+        string titleContains = DesktopToolDefinitions.GetString(args, "title_contains").Trim();
+        bool requireFrontmost = DesktopToolDefinitions.GetBool(args, "frontmost");
+        bool absent = DesktopToolDefinitions.GetBool(args, "absent");
+        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, TimeoutMsArg, 8_000), 100, 60_000);
+        int pollIntervalMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "poll_interval_ms", 250), 50, 5_000);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds <= timeoutMs)
+        {
+            try
+            {
+                IReadOnlyList<WindowInfo> windows = _window.ListWindows();
+                bool matchExists = windows.Any(window => MatchesWindow(window, applicationName, titleContains, requireFrontmost));
+                if ((absent && !matchExists) || (!absent && matchExists))
+                {
+                    return absent
+                        ? $"Confirmed matching window is absent: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}"
+                        : $"Matched window became available: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"Failed while waiting for window: {ex.Message}";
+            }
+
+            Thread.Sleep(pollIntervalMs);
+        }
+
+        return absent
+            ? $"Timed out waiting for window to disappear: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}"
+            : $"Timed out waiting for window: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}";
+    }
+
     private string FocusFrontmostWindowContent(Dictionary<string, JsonElement> args)
     {
         string applicationName = DesktopToolDefinitions.GetString(args, "application_name");
@@ -655,6 +782,134 @@ internal sealed class DesktopToolExecutor
                 return $"{fallbackResult} AX focus error: {ex.Message}";
 
             return $"Failed to focus frontmost window content: {ex.Message}";
+        }
+    }
+
+    private string FindUiElement(Dictionary<string, JsonElement> args)
+    {
+        string title = DesktopToolDefinitions.GetString(args, "title").Trim();
+        string role = DesktopToolDefinitions.GetString(args, "role").Trim();
+        string value = DesktopToolDefinitions.GetString(args, "value").Trim();
+
+        try
+        {
+            IReadOnlyList<UiElementInfo> matches = _uiAutomation.FindFrontmostUiElements(
+                string.IsNullOrWhiteSpace(title) ? null : title,
+                string.IsNullOrWhiteSpace(role) ? null : role,
+                string.IsNullOrWhiteSpace(value) ? null : value);
+
+            if (matches.Count == 0)
+                return $"No matching UI elements found for Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}";
+
+            return string.Join(Environment.NewLine, matches.Select((element, index) => $"[{index}] {FormatUiElement(element)}"));
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to find UI elements: {ex.Message}";
+        }
+    }
+
+    private string ClickUiElement(Dictionary<string, JsonElement> args)
+    {
+        string title = DesktopToolDefinitions.GetString(args, "title").Trim();
+        string role = DesktopToolDefinitions.GetString(args, "role").Trim();
+        string value = DesktopToolDefinitions.GetString(args, "value").Trim();
+        int matchIndex = Math.Max(0, DesktopToolDefinitions.GetInt(args, "match_index", 0));
+
+        try
+        {
+            return _uiAutomation.ClickFrontmostUiElement(
+                string.IsNullOrWhiteSpace(title) ? null : title,
+                string.IsNullOrWhiteSpace(role) ? null : role,
+                string.IsNullOrWhiteSpace(value) ? null : value,
+                matchIndex);
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to click UI element: {ex.Message}";
+        }
+    }
+
+    private string WaitForUiElement(Dictionary<string, JsonElement> args)
+    {
+        string title = DesktopToolDefinitions.GetString(args, "title").Trim();
+        string role = DesktopToolDefinitions.GetString(args, "role").Trim();
+        string value = DesktopToolDefinitions.GetString(args, "value").Trim();
+        bool absent = DesktopToolDefinitions.GetBool(args, "absent");
+        int timeoutMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, TimeoutMsArg, 8_000), 100, 60_000);
+        int pollIntervalMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "poll_interval_ms", 250), 50, 5_000);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        while (stopwatch.ElapsedMilliseconds <= timeoutMs)
+        {
+            try
+            {
+                bool found = _uiAutomation.FindFrontmostUiElements(
+                    string.IsNullOrWhiteSpace(title) ? null : title,
+                    string.IsNullOrWhiteSpace(role) ? null : role,
+                    string.IsNullOrWhiteSpace(value) ? null : value).Count > 0;
+
+                if ((absent && !found) || (!absent && found))
+                {
+                    return absent
+                        ? $"Confirmed matching UI element is absent: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}"
+                        : $"Matched UI element became available: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}";
+                }
+            }
+            catch (Exception ex)
+            {
+                return $"Failed while waiting for UI element: {ex.Message}";
+            }
+
+            Thread.Sleep(pollIntervalMs);
+        }
+
+        return absent
+            ? $"Timed out waiting for UI element to disappear: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}"
+            : $"Timed out waiting for UI element: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}";
+    }
+
+    private string GetFocusedUiElement()
+    {
+        try
+        {
+            UiElementInfo? element = _uiAutomation.GetFocusedUiElement();
+            return element is null ? "No focused UI element found." : $"Focused UI element: {FormatUiElement(element.Value)}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to get focused UI element: {ex.Message}";
+        }
+    }
+
+    private string AssertState(Dictionary<string, JsonElement> args)
+    {
+        string state = DesktopToolDefinitions.GetString(args, "state").Trim().ToLowerInvariant();
+        bool expected = DesktopToolDefinitions.GetBool(args, "expected", true);
+        string applicationName = DesktopToolDefinitions.GetString(args, "application_name").Trim();
+        string titleContains = DesktopToolDefinitions.GetString(args, "title_contains").Trim();
+        string role = DesktopToolDefinitions.GetString(args, "role").Trim();
+        string value = DesktopToolDefinitions.GetString(args, "value").Trim();
+
+        try
+        {
+            (bool actual, string details) = state switch
+            {
+                "frontmost_application" => AssertFrontmostApplication(applicationName),
+                "window_present" => AssertWindowPresent(applicationName, titleContains),
+                "ui_element_present" => AssertUiElementPresent(titleContains, role, value),
+                "focused_ui_element" => AssertFocusedUiElement(titleContains, role, value),
+                _ => throw new InvalidOperationException($"Unknown assert_state target: {state}")
+            };
+
+            bool passed = actual == expected;
+            return passed
+                ? $"Assertion passed: state={state}, expected={expected}, actual={actual}. {details}"
+                : $"Assertion failed: state={state}, expected={expected}, actual={actual}. {details}";
+        }
+        catch (Exception ex)
+        {
+            return $"Failed to assert state '{state}': {ex.Message}";
         }
     }
 
@@ -755,6 +1010,95 @@ internal sealed class DesktopToolExecutor
 
         titles.AddRange(alternateTitles.Where(static candidate => !string.IsNullOrWhiteSpace(candidate)));
         return titles;
+    }
+
+    private static bool MatchesWindow(WindowInfo window, string applicationName, string titleContains, bool requireFrontmost)
+    {
+        if (!string.IsNullOrWhiteSpace(applicationName)
+            && !window.ApplicationName.Contains(applicationName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(titleContains)
+            && !window.Title.Contains(titleContains, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return !requireFrontmost || window.IsFrontmost;
+    }
+
+    private static bool MatchesUiElement(UiElementInfo element, string title, string role, string value)
+    {
+        if (!string.IsNullOrWhiteSpace(title)
+            && !element.Title.Contains(title, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(role)
+            && !element.Role.Contains(role, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(value)
+            && !element.Value.Contains(value, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string FormatUiElement(UiElementInfo element)
+    {
+        string bounds = element.Bounds is WindowBounds windowBounds
+            ? $", X={windowBounds.X}, Y={windowBounds.Y}, Width={windowBounds.Width}, Height={windowBounds.Height}"
+            : string.Empty;
+        return $"Role={FormatWindowTitle(element.Role)}, Title={FormatWindowTitle(element.Title)}, Value={FormatWindowTitle(element.Value)}, Focused={element.IsFocused}, Enabled={element.IsEnabled}{bounds}";
+    }
+
+    private (bool Actual, string Details) AssertFrontmostApplication(string applicationName)
+    {
+        string frontmostApplication = _window.GetFrontmostApplicationName();
+        bool actual = string.IsNullOrWhiteSpace(applicationName)
+            ? !string.IsNullOrWhiteSpace(frontmostApplication)
+            : frontmostApplication.Contains(applicationName, StringComparison.OrdinalIgnoreCase);
+        return (actual, $"Frontmost application is {FormatWindowTitle(frontmostApplication)}.");
+    }
+
+    private (bool Actual, string Details) AssertWindowPresent(string applicationName, string titleContains)
+    {
+        WindowInfo? match = _window.ListWindows()
+            .Where(window => MatchesWindow(window, applicationName, titleContains, requireFrontmost: false))
+            .Select(static window => (WindowInfo?)window)
+            .FirstOrDefault();
+        return (match is not null, match is not null
+            ? $"Matched window: App={FormatWindowTitle(match.Value.ApplicationName)}, Title={FormatWindowTitle(match.Value.Title)}."
+            : $"No window matched App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}.");
+    }
+
+    private (bool Actual, string Details) AssertUiElementPresent(string title, string role, string value)
+    {
+        IReadOnlyList<UiElementInfo> matches = _uiAutomation.FindFrontmostUiElements(
+            string.IsNullOrWhiteSpace(title) ? null : title,
+            string.IsNullOrWhiteSpace(role) ? null : role,
+            string.IsNullOrWhiteSpace(value) ? null : value);
+        return (matches.Count > 0, matches.Count > 0
+            ? $"Matched UI element: {FormatUiElement(matches[0])}"
+            : $"No UI element matched Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}.");
+    }
+
+    private (bool Actual, string Details) AssertFocusedUiElement(string title, string role, string value)
+    {
+        UiElementInfo? focused = _uiAutomation.GetFocusedUiElement();
+        if (focused is null)
+            return (false, "No focused UI element found.");
+
+        bool actual = MatchesUiElement(focused.Value, title, role, value);
+        return (actual, $"Focused UI element: {FormatUiElement(focused.Value)}");
     }
 
     internal static string ResolveApplicationName(string requestedName)

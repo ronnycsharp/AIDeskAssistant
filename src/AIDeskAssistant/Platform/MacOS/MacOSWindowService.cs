@@ -133,6 +133,113 @@ internal sealed class MacOSWindowService : IWindowService
         return new WindowHitTestResult(parts[0], parts[1], new WindowBounds(windowX, windowY, windowWidth, windowHeight));
     }
 
+    public string GetFrontmostApplicationName()
+        => RunOsascript(
+            """
+            tell application "System Events"
+                return name of (first application process whose frontmost is true)
+            end tell
+            """);
+
+    public IReadOnlyList<WindowInfo> ListWindows()
+    {
+        string output = RunOsascript(
+            """
+            tell application "System Events"
+                set outputLines to {}
+                set AppleScript's text item delimiters to linefeed
+                repeat with proc in application processes
+                    set procName to name of proc as text
+                    set procIsFrontmost to frontmost of proc
+                    repeat with currentWindow in windows of proc
+                        try
+                            set isMinimized to false
+                            try
+                                set isMinimized to value of attribute "AXMinimized" of currentWindow
+                            end try
+
+                            set p to position of currentWindow
+                            set s to size of currentWindow
+                            set windowTitle to ""
+                            try
+                                set windowTitle to name of currentWindow as text
+                            end try
+
+                            set end of outputLines to procName & "||" & windowTitle & "||" & (item 1 of p as text) & "||" & (item 2 of p as text) & "||" & (item 1 of s as text) & "||" & (item 2 of s as text) & "||" & (procIsFrontmost as text) & "||" & (isMinimized as text)
+                        end try
+                    end repeat
+                end repeat
+
+                return outputLines as text
+            end tell
+            """);
+
+        if (string.IsNullOrWhiteSpace(output))
+            return Array.Empty<WindowInfo>();
+
+        string[] lines = output.Split(['\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var windows = new List<WindowInfo>();
+        foreach (string line in lines)
+        {
+            string[] parts = line.Split("||", StringSplitOptions.None);
+            if (parts.Length != 8
+                || !int.TryParse(parts[2], out int x)
+                || !int.TryParse(parts[3], out int y)
+                || !int.TryParse(parts[4], out int width)
+                || !int.TryParse(parts[5], out int height)
+                || !bool.TryParse(parts[6], out bool isFrontmost)
+                || !bool.TryParse(parts[7], out bool isMinimized))
+            {
+                continue;
+            }
+
+            windows.Add(new WindowInfo(parts[0], parts[1], new WindowBounds(x, y, width, height), isFrontmost, isMinimized));
+        }
+
+        return windows;
+    }
+
+    public bool FocusWindow(string? applicationName, string? titleSubstring)
+    {
+        string escapedApplicationName = EscapeAppleScriptString(applicationName);
+        string escapedTitleSubstring = EscapeAppleScriptString(titleSubstring);
+        string output = RunOsascript(
+            $$"""
+            set requestedApp to "{{escapedApplicationName}}"
+            set requestedTitle to "{{escapedTitleSubstring}}"
+
+            tell application "System Events"
+                ignoring case
+                    repeat with proc in application processes
+                        set procName to name of proc as text
+                        if requestedApp is "" or procName contains requestedApp then
+                            repeat with currentWindow in windows of proc
+                                set windowTitle to ""
+                                try
+                                    set windowTitle to name of currentWindow as text
+                                end try
+
+                                if requestedTitle is "" or windowTitle contains requestedTitle then
+                                    tell application procName to activate
+                                    set frontmost of proc to true
+                                    try
+                                        perform action "AXRaise" of currentWindow
+                                    end try
+                                    return "focused"
+                                end if
+                            end repeat
+                        end if
+                    end repeat
+                end ignoring
+            end tell
+
+            return ""
+            """
+        );
+
+        return string.Equals(output, "focused", StringComparison.OrdinalIgnoreCase);
+    }
+
     public void MoveActiveWindow(int x, int y)
     {
         RunOsascript(
@@ -192,4 +299,9 @@ internal sealed class MacOSWindowService : IWindowService
 
         return stdout;
     }
+
+    private static string EscapeAppleScriptString(string? value)
+        => string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
 }
