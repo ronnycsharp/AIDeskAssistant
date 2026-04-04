@@ -314,6 +314,7 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
         private func buildLogHTML(activitySnapshot: ActivitySnapshot?, toolSnapshot: ToolLogSnapshot?) -> String {
                 let events = (activitySnapshot?.Entries ?? []).suffix(8).reversed()
                 let entries = (toolSnapshot?.Entries ?? []).reversed()
+            let workflowMarkup = buildWorkflowMarkup(for: Array(entries))
                 let eventMarkup: String
 
                 if events.isEmpty {
@@ -359,10 +360,35 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
                                                 <div class=\"entry-meta\">Start: \(started) · \(Self.escapeHTML(durationLine)) · \(Self.escapeHTML(screenshotSummary))</div>
                                             </div>
                                         </div>
+
+                                                    for (const workflowNode of document.querySelectorAll('[data-workflow-target]')) {
+                                                        workflowNode.addEventListener('click', function () {
+                                                            const entryId = workflowNode.getAttribute('data-workflow-target');
+                                                            const details = document.querySelector('details[data-entry-id="' + entryId + '"]');
+                                                            if (!details) {
+                                                                return;
+                                                            }
+
+                                                            details.open = true;
+                                                            details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+                                                            for (const node of document.querySelectorAll('.workflow-node')) {
+                                                                node.classList.remove('active');
+                                                            }
+
+                                                            workflowNode.classList.add('active');
+                                                        });
+                                                    }
                                     </summary>
                                     <div class=\"entry-body\">
                                         <div class=\"section-label\">Request</div>
                                         <pre>\(request)</pre>
+                                            <section class="section">
+                                                <div class="section-header">Workflow</div>
+                                                <div class="section-body workflow-shell">
+                                                    \(workflowMarkup)
+                                                </div>
+                                            </section>
                                         <div class=\"section-label\">Result</div>
                                         <pre>\(result)</pre>
                                         \(screenshotMarkup)
@@ -420,6 +446,110 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
                         }
                         .section-body {
                             padding: 12px;
+                        }
+                        .workflow-shell {
+                            padding: 14px 12px 16px;
+                        }
+                        .workflow-scroll {
+                            overflow-x: auto;
+                            overflow-y: hidden;
+                            padding-bottom: 4px;
+                        }
+                        .workflow-track {
+                            display: inline-flex;
+                            align-items: center;
+                            gap: 0;
+                            min-width: 100%;
+                        }
+                        .workflow-anchor,
+                        .workflow-node {
+                            position: relative;
+                            display: flex;
+                            flex-direction: column;
+                            gap: 6px;
+                            min-width: 190px;
+                            max-width: 190px;
+                            padding: 14px 14px 12px;
+                            border-radius: 16px;
+                            border: 1px solid var(--border);
+                            background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+                            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+                        }
+                        .workflow-anchor {
+                            min-width: 140px;
+                            max-width: 140px;
+                            background: linear-gradient(180deg, rgba(117,199,236,0.14), rgba(117,199,236,0.06));
+                        }
+                        .workflow-node {
+                            cursor: pointer;
+                            text-align: left;
+                            color: inherit;
+                        }
+                        button.workflow-node {
+                            appearance: none;
+                            -webkit-appearance: none;
+                            font: inherit;
+                        }
+                        .workflow-node.active {
+                            border-color: rgba(117,199,236,0.45);
+                            box-shadow: 0 0 0 1px rgba(117,199,236,0.24), 0 10px 30px rgba(0,0,0,0.18);
+                        }
+                        .workflow-node.running {
+                            background: linear-gradient(180deg, rgba(242,197,114,0.16), rgba(255,255,255,0.03));
+                        }
+                        .workflow-node.completed {
+                            background: linear-gradient(180deg, rgba(143,209,158,0.14), rgba(255,255,255,0.03));
+                        }
+                        .workflow-node.failed {
+                            background: linear-gradient(180deg, rgba(240,138,135,0.16), rgba(255,255,255,0.03));
+                        }
+                        .workflow-connector {
+                            position: relative;
+                            width: 42px;
+                            height: 2px;
+                            flex: 0 0 42px;
+                            background: linear-gradient(90deg, rgba(117,199,236,0.55), rgba(117,199,236,0.16));
+                            margin: 0 8px;
+                        }
+                        .workflow-connector::after {
+                            content: '';
+                            position: absolute;
+                            right: -1px;
+                            top: 50%;
+                            width: 8px;
+                            height: 8px;
+                            border-top: 2px solid rgba(117,199,236,0.55);
+                            border-right: 2px solid rgba(117,199,236,0.55);
+                            transform: translateY(-50%) rotate(45deg);
+                        }
+                        .workflow-step {
+                            font-size: 11px;
+                            letter-spacing: 0.08em;
+                            text-transform: uppercase;
+                            color: var(--accent);
+                        }
+                        .workflow-title {
+                            font-size: 15px;
+                            font-weight: 700;
+                            line-height: 1.25;
+                        }
+                        .workflow-subtitle {
+                            font-size: 12px;
+                            color: var(--muted);
+                        }
+                        .workflow-mini-meta {
+                            display: flex;
+                            flex-wrap: wrap;
+                            gap: 6px;
+                            margin-top: 2px;
+                        }
+                        .workflow-pill {
+                            padding: 2px 7px;
+                            border-radius: 999px;
+                            font-size: 11px;
+                            border: 1px solid rgba(255,255,255,0.07);
+                            color: var(--muted);
+                            background: rgba(0,0,0,0.14);
                         }
                         .event-row {
                             display: flex;
@@ -588,6 +718,58 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
                 """
         }
 
+            private func buildWorkflowMarkup(for entries: [ToolLogEntry]) -> String {
+                guard entries.isEmpty == false else {
+                    return "<div class=\"empty\">Sobald Tools laufen, erscheint hier ein interaktiver Ablauf mit klickbaren Schritten.</div>"
+                }
+
+                var segments: [String] = []
+                segments.append("""
+                <div class=\"workflow-anchor\">
+                    <div class=\"workflow-step\">Start</div>
+                    <div class=\"workflow-title\">Anfrage aktiv</div>
+                    <div class=\"workflow-subtitle\">Der Host zeichnet jeden Tool-Aufruf als einzelnen Schritt auf.</div>
+                </div>
+                """)
+
+                for (index, entry) in entries.enumerated() {
+                    let entryId = Self.escapeHTML(entry.ToolCallId)
+                    let step = String(index + 1)
+                    let title = Self.escapeHTML(entry.ToolName)
+                    let statusText = Self.escapeHTML(Self.statusLabel(for: entry.Status))
+                    let statusClass = Self.escapeHTML(entry.Status.lowercased())
+                    let startTime = Self.escapeHTML(Self.shortTime(entry.StartedUtc))
+                    let screenshotCount = entry.Screenshots.count
+                    let screenshotLabel = screenshotCount == 1 ? "1 Screenshot" : "\(screenshotCount) Screenshots"
+                    let resultPreview = Self.escapeHTML(Self.workflowPreview(for: entry.Result))
+
+                    segments.append("<div class=\"workflow-connector\"></div>")
+                    segments.append("""
+                    <button class=\"workflow-node \(statusClass)\" type=\"button\" data-workflow-target=\"\(entryId)\">
+                        <div class=\"workflow-step\">Schritt \(step)</div>
+                        <div class=\"workflow-title\">\(title)</div>
+                        <div class=\"workflow-subtitle\">\(resultPreview)</div>
+                        <div class=\"workflow-mini-meta\">
+                        <span class=\"workflow-pill\">\(statusText)</span>
+                        <span class=\"workflow-pill\">\(startTime)</span>
+                        <span class=\"workflow-pill\">\(Self.escapeHTML(screenshotLabel))</span>
+                        </div>
+                    </button>
+                    """)
+                }
+
+                segments.append("<div class=\"workflow-connector\"></div>")
+                segments.append("""
+                <div class=\"workflow-anchor\">
+                    <div class=\"workflow-step\">Ende</div>
+                    <div class=\"workflow-title\">Detailansicht</div>
+                    <div class=\"workflow-subtitle\">Klick auf einen Schritt öffnet unten Request, Resultat und Screenshots.</div>
+                </div>
+                """)
+
+                return "<div class=\"workflow-scroll\"><div class=\"workflow-track\">\(segments.joined())</div></div>"
+            }
+
         private func buildScreenshotMarkup(for entry: ToolLogEntry) -> String {
                 guard entry.Screenshots.isEmpty == false else {
                         return ""
@@ -686,6 +868,21 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
                         return "fertig"
                 }
         }
+
+                private static func workflowPreview(for result: String) -> String {
+                    let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard trimmed.isEmpty == false else {
+                        return "Noch kein Ergebnis vorhanden."
+                    }
+
+                    let singleLine = trimmed.replacingOccurrences(of: "\n", with: " ")
+                    if singleLine.count <= 96 {
+                        return singleLine
+                    }
+
+                    let index = singleLine.index(singleLine.startIndex, offsetBy: 96)
+                    return String(singleLine[..<index]) + "..."
+                }
 
         private static func urlEncodedPathComponent(_ value: String) -> String {
                 value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
