@@ -31,7 +31,7 @@ internal sealed class WindowsMouseService : IMouseService
     private struct Point { public int X; public int Y; }
 
     private const int ClickDelayMs       = 30;
-    private const int DoubleClickDelayMs = 50;
+    private const int DoubleClickDelayMs = 120;
 
     public void MoveTo(int x, int y)
     {

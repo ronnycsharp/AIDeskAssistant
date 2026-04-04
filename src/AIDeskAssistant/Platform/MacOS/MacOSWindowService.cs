@@ -1,4 +1,6 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
+using System.Text.RegularExpressions;
 using AIDeskAssistant.Models;
 using AIDeskAssistant.Services;
 
@@ -134,12 +136,21 @@ internal sealed class MacOSWindowService : IWindowService
     }
 
     public string GetFrontmostApplicationName()
-        => RunOsascript(
-            """
-            tell application "System Events"
-                return name of (first application process whose frontmost is true)
-            end tell
-            """);
+    {
+        try
+        {
+            return RunOsascript(
+                """
+                tell application "System Events"
+                    return name of (first application process whose frontmost is true)
+                end tell
+                """);
+        }
+        catch when (TryGetFrontmostApplicationNameWithoutAccessibility(out string? frontmostApplicationName))
+        {
+            return frontmostApplicationName;
+        }
+    }
 
     public IReadOnlyList<WindowInfo> ListWindows()
     {
@@ -296,6 +307,73 @@ internal sealed class MacOSWindowService : IWindowService
 
         if (process.ExitCode != 0)
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "AppleScript failed." : stderr);
+
+        return stdout;
+    }
+
+    private static bool TryGetFrontmostApplicationNameWithoutAccessibility([NotNullWhen(true)] out string? applicationName)
+    {
+        applicationName = null;
+
+        try
+        {
+            string frontOutput = RunProcess("lsappinfo", ["front"]);
+            string asn = frontOutput.Trim();
+            if (string.IsNullOrWhiteSpace(asn))
+                return false;
+
+            string infoOutput = RunProcess("lsappinfo", ["info", asn]);
+            Match quotedNameMatch = Regex.Match(infoOutput, "^\"(?<name>.+?)\"\\s+ASN:", RegexOptions.Multiline);
+            if (quotedNameMatch.Success)
+            {
+                applicationName = quotedNameMatch.Groups["name"].Value.Trim();
+                return !string.IsNullOrWhiteSpace(applicationName);
+            }
+
+            Match bundlePathMatch = Regex.Match(infoOutput, "bundle path=\"(?<path>.+?)\"", RegexOptions.Multiline);
+            if (!bundlePathMatch.Success)
+                return false;
+
+            string bundlePath = bundlePathMatch.Groups["path"].Value.Trim();
+            string bundleName = Path.GetFileNameWithoutExtension(bundlePath);
+            if (string.IsNullOrWhiteSpace(bundleName))
+                return false;
+
+            applicationName = bundleName;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string RunProcess(string fileName, IReadOnlyList<string> arguments)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(fileName)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        foreach (string argument in arguments)
+            psi.ArgumentList.Add(argument);
+
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException($"Failed to start {fileName}.");
+
+        if (!process.WaitForExit(ScriptTimeoutMs))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException($"Timed out while running {fileName}.");
+        }
+
+        string stdout = process.StandardOutput.ReadToEnd().Trim();
+        string stderr = process.StandardError.ReadToEnd().Trim();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? $"{fileName} failed." : stderr);
 
         return stdout;
     }

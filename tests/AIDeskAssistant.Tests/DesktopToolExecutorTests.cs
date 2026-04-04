@@ -119,14 +119,28 @@ internal sealed class FakeWindowService : IWindowService
     public string? LastFocusTitleSubstring;
     public bool FocusWindowResult = true;
     public int FocusWindowCallCount;
+    public string? ListWindowsExceptionMessage;
+    public string? GetFrontmostApplicationExceptionMessage;
 
     public WindowBounds GetActiveWindowBounds() => Bounds;
 
     public WindowHitTestResult? GetWindowAtPoint(int x, int y) => WindowAtPoint;
 
-    public string GetFrontmostApplicationName() => FrontmostApplicationName;
+    public string GetFrontmostApplicationName()
+    {
+        if (!string.IsNullOrWhiteSpace(GetFrontmostApplicationExceptionMessage))
+            throw new InvalidOperationException(GetFrontmostApplicationExceptionMessage);
 
-    public IReadOnlyList<WindowInfo> ListWindows() => Windows;
+        return FrontmostApplicationName;
+    }
+
+    public IReadOnlyList<WindowInfo> ListWindows()
+    {
+        if (!string.IsNullOrWhiteSpace(ListWindowsExceptionMessage))
+            throw new InvalidOperationException(ListWindowsExceptionMessage);
+
+        return Windows;
+    }
 
     public bool FocusWindow(string? applicationName, string? titleSubstring)
     {
@@ -416,6 +430,24 @@ public sealed class DesktopToolExecutorTests
         Assert.Equal("Typed 5 character(s)", result);
     }
 
+    [Fact]
+    public void Execute_TypeText_NormalizesEscapedNewlinesForLongMultilineText()
+    {
+        string result = _sut.Execute("type_text", "{\"text\":\"Ein Blatt\\\\nEin Baum\\\\nEin Wind\"}");
+
+        Assert.Equal("Ein Blatt\nEin Baum\nEin Wind", _keyboard.LastTypedText);
+        Assert.Equal("Typed 27 character(s)", result);
+    }
+
+    [Fact]
+    public void Execute_TypeText_PreservesLikelyLiteralEscapesForCodeLikeText()
+    {
+        string result = _sut.Execute("type_text", "{\"text\":\"Console.WriteLine(\\\"a\\\\nb\\\");\"}");
+
+        Assert.Equal("Console.WriteLine(\"a\\nb\");", _keyboard.LastTypedText);
+        Assert.Equal("Typed 26 character(s)", result);
+    }
+
     [Theory]
     [InlineData("HOME")]
     [InlineData("right right right")]
@@ -570,6 +602,40 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("wait_for_window", "{\"application_name\":\"Microsoft Word\",\"frontmost\":true,\"timeout_ms\":100,\"poll_interval_ms\":50}");
 
         Assert.Contains("Matched window became available", result);
+    }
+
+    [Fact]
+    public void Execute_WaitForWindow_UsesFrontmostFallbackWhenAccessibilityEnumerationFails()
+    {
+        _window.ListWindowsExceptionMessage = "osascript hat keine Berechtigung fuer den Hilfszugriff. (-25211)";
+
+        string result = _sut.Execute("wait_for_window", "{\"application_name\":\"Word\",\"frontmost\":true,\"timeout_ms\":100,\"poll_interval_ms\":50}");
+
+        if (!OperatingSystem.IsMacOS())
+        {
+            Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+            return;
+        }
+
+        Assert.Contains("Matched window became available", result);
+        Assert.Contains("Fallback used frontmost application Microsoft Word", result);
+    }
+
+    [Fact]
+    public void Execute_ListWindows_UsesFrontmostFallbackMessageWhenAccessibilityEnumerationFails()
+    {
+        _window.ListWindowsExceptionMessage = "System Events got an error: osascript hat keine Berechtigung fuer den Hilfszugriff. (-25211)";
+
+        string result = _sut.Execute("list_windows", "{}");
+
+        if (!OperatingSystem.IsMacOS())
+        {
+            Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+            return;
+        }
+
+        Assert.Contains("Window listing unavailable because macOS Accessibility permission is missing", result);
+        Assert.Contains("Frontmost application: Microsoft Word", result);
     }
 
     [Fact]

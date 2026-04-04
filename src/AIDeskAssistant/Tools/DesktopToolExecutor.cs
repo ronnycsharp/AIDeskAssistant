@@ -26,6 +26,14 @@ internal sealed class DesktopToolExecutor
     private const string FullScreenScreenshotTarget = "full_screen";
     private const string ActiveWindowScreenshotTarget = "active_window";
     private const string MouseDetailBase64Marker = "Mouse detail base64:";
+    private static readonly string[] MacOSAccessibilityPermissionErrorMarkers =
+    [
+        "-25211",
+        "Hilfszugriff",
+        "assistive access",
+        "accessibility",
+        "system events got an error",
+    ];
     private static readonly HashSet<string> SpecialInputTextTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "up",
@@ -703,6 +711,10 @@ internal sealed class DesktopToolExecutor
             return string.Join(Environment.NewLine, windows.Select((window, index) =>
                 $"[{index}] App={FormatWindowTitle(window.ApplicationName)}, Title={FormatWindowTitle(window.Title)}, X={window.Bounds.X}, Y={window.Bounds.Y}, Width={window.Bounds.Width}, Height={window.Bounds.Height}, Frontmost={window.IsFrontmost}, Minimized={window.IsMinimized}"));
         }
+        catch (Exception ex) when (TryDescribeWindowEnumerationFallback(ex, out string? fallbackMessage))
+        {
+            return fallbackMessage;
+        }
         catch (Exception ex)
         {
             return Err($"Failed to list windows: {ex.Message}");
@@ -782,8 +794,48 @@ internal sealed class DesktopToolExecutor
         if (LooksLikeSpecialInputText(text))
             return Err("Blocked type_text because the payload looks like special key or caret-navigation input. Use press_key for arrow keys, enter, return, tab, escape, backspace, delete, home, end, page up, or page down instead.");
 
-        _keyboard.TypeText(text);
-        return $"Typed {text.Length} character(s)";
+        string normalizedText = NormalizeEscapedWhitespaceForTyping(text);
+        _keyboard.TypeText(normalizedText);
+        return $"Typed {normalizedText.Length} character(s)";
+    }
+
+    private static string NormalizeEscapedWhitespaceForTyping(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !ContainsEscapedWhitespace(text))
+            return text;
+
+        if (LooksLikeLiteralEscapedText(text))
+            return text;
+
+        int escapedWhitespaceCount = Regex.Matches(text, @"(?<!\\)\\(?:r\\n|n|r|t)").Count;
+        if (escapedWhitespaceCount == 1 && text.Length < 80)
+            return text;
+
+        return text
+            .Replace("\\r\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\r", "\n", StringComparison.Ordinal)
+            .Replace("\\t", "\t", StringComparison.Ordinal);
+    }
+
+    private static bool ContainsEscapedWhitespace(string text) =>
+        Regex.IsMatch(text, @"(?<!\\)\\(?:r\\n|n|r|t)");
+
+    private static bool LooksLikeLiteralEscapedText(string text)
+    {
+        if (text.Contains("```", StringComparison.Ordinal)
+            || text.Contains("=>", StringComparison.Ordinal)
+            || text.Contains("::", StringComparison.Ordinal)
+            || text.Contains("</", StringComparison.Ordinal)
+            || text.Contains("/>", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (Regex.IsMatch(text, @"(?<!\\)\\[0abefvuxdDsSwW]"))
+            return true;
+
+        return Regex.IsMatch(text, @"\b(class|function|def|return|const|let|var|public|private|protected|SELECT|INSERT|UPDATE|DELETE)\b", RegexOptions.IgnoreCase);
     }
 
     private static bool LooksLikeSpecialInputText(string text)
@@ -1054,6 +1106,21 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
+            if (IsMacOSAccessibilityPermissionError(ex)
+                && !string.IsNullOrWhiteSpace(applicationName)
+                && string.IsNullOrWhiteSpace(titleContains))
+            {
+                try
+                {
+                    string verificationMessage = EnsureMacOSApplicationForeground(applicationName);
+                    return $"Focused application fallback for {applicationName}. {verificationMessage}";
+                }
+                catch (Exception fallbackEx)
+                {
+                    return Err($"Failed to focus window and application fallback also failed: {fallbackEx.Message}");
+                }
+            }
+
             return Err($"Failed to focus window: {ex.Message}");
         }
     }
@@ -1068,6 +1135,7 @@ internal sealed class DesktopToolExecutor
         int pollIntervalMs = Math.Clamp(DesktopToolDefinitions.GetInt(args, "poll_interval_ms", 250), 50, 5_000);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        string? fallbackDetails = null;
         while (stopwatch.ElapsedMilliseconds <= timeoutMs)
         {
             try
@@ -1083,6 +1151,19 @@ internal sealed class DesktopToolExecutor
             }
             catch (Exception ex)
             {
+                if (TryMatchWindowWithoutEnumeration(ex, applicationName, titleContains, requireFrontmost, absent, out string? fallbackResult, out string? details))
+                {
+                    if (fallbackResult is not null)
+                        return fallbackResult;
+                }
+
+                if (details is not null)
+                {
+                    fallbackDetails = details;
+                    Thread.Sleep(pollIntervalMs);
+                    continue;
+                }
+
                 return Err($"Failed while waiting for window: {ex.Message}");
             }
 
@@ -1090,8 +1171,8 @@ internal sealed class DesktopToolExecutor
         }
 
         return absent
-            ? Err($"Timed out waiting for window to disappear: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}")
-            : Err($"Timed out waiting for window: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}");
+            ? Err($"Timed out waiting for window to disappear: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}{FormatFallbackSuffix(fallbackDetails)}")
+            : Err($"Timed out waiting for window: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}{FormatFallbackSuffix(fallbackDetails)}");
     }
 
     private string FocusFrontmostWindowContent(Dictionary<string, JsonElement> args)
@@ -1388,6 +1469,87 @@ internal sealed class DesktopToolExecutor
             : string.Empty;
         return $"Role={FormatWindowTitle(element.Role)}, Title={FormatWindowTitle(element.Title)}, Value={FormatWindowTitle(element.Value)}, Focused={element.IsFocused}, Enabled={element.IsEnabled}{bounds}";
     }
+
+    private bool TryDescribeWindowEnumerationFallback(Exception ex, [NotNullWhen(true)] out string? fallbackMessage)
+    {
+        fallbackMessage = null;
+        if (!IsMacOSAccessibilityPermissionError(ex))
+            return false;
+
+        try
+        {
+            string frontmostApplication = _window.GetFrontmostApplicationName();
+            fallbackMessage = $"Window listing unavailable because macOS Accessibility permission is missing for window enumeration. Frontmost application: {FormatWindowTitle(frontmostApplication)}. Use application-level focus or wait tools as a fallback until Accessibility access is restored.";
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool TryMatchWindowWithoutEnumeration(
+        Exception ex,
+        string applicationName,
+        string titleContains,
+        bool requireFrontmost,
+        bool absent,
+        out string? fallbackResult,
+        out string? fallbackDetails)
+    {
+        fallbackResult = null;
+        fallbackDetails = null;
+
+        if (!IsMacOSAccessibilityPermissionError(ex))
+            return false;
+
+        if (!TryGetFrontmostWindowFallbackMatch(applicationName, titleContains, requireFrontmost, out bool matchExists, out string details))
+            return false;
+
+        fallbackDetails = details;
+        if ((absent && !matchExists) || (!absent && matchExists))
+        {
+            fallbackResult = absent
+                ? $"Confirmed matching window is absent: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}. {details}"
+                : $"Matched window became available: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}. {details}";
+        }
+
+        return true;
+    }
+
+    private bool TryGetFrontmostWindowFallbackMatch(string applicationName, string titleContains, bool requireFrontmost, out bool matchExists, out string details)
+    {
+        matchExists = false;
+        details = string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(titleContains))
+            return false;
+
+        if (!requireFrontmost && string.IsNullOrWhiteSpace(applicationName))
+            return false;
+
+        string frontmostApplication = _window.GetFrontmostApplicationName();
+        matchExists = string.IsNullOrWhiteSpace(applicationName)
+            ? !string.IsNullOrWhiteSpace(frontmostApplication)
+            : ApplicationNamesMatch(frontmostApplication, applicationName);
+
+        details = $"Fallback used frontmost application {FormatWindowTitle(frontmostApplication)} because macOS window enumeration is currently unavailable without Accessibility permission.";
+        return true;
+    }
+
+    private static bool IsMacOSAccessibilityPermissionError(Exception ex)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return false;
+
+        return MacOSAccessibilityPermissionErrorMarkers.Any(marker =>
+            ex.Message.Contains(marker, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FormatFallbackSuffix(string? fallbackDetails)
+        => string.IsNullOrWhiteSpace(fallbackDetails)
+            ? string.Empty
+            : $". {fallbackDetails}";
 
     private (bool Actual, string Details) AssertFrontmostApplication(string applicationName)
     {

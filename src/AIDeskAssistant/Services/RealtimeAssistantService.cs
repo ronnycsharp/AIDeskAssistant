@@ -11,6 +11,8 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 {
     private const string AssistantRole = "assistant";
     private const string InitialLiveStatusMessage = "Ich prüfe jetzt live den aktuellen Zustand und arbeite das Problem Schritt für Schritt ab.";
+    private const int MinimumLiveAudioCommitBytes = 4_800;
+    private const string LiveAudioTooShortMessage = "Die Live-Audioaufnahme war zu kurz. Bitte etwas länger sprechen.";
     private static readonly string[] BuiltInVoiceIds = new[] { "alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse" };
     private const double ScreenshotHistorySimilarityThreshold = 0.995;
 
@@ -315,6 +317,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     {
         LiveAudioInputSession liveAudioInputSession = GetRequiredLiveAudioInputSession(sessionId);
         MenuBarActivityState.UpdateStep("Sende Live-Audio", eventMessage: "Live-Audio wird an das Modell gesendet.");
+        bool rejectedForTooLittleAudio = false;
         await liveAudioInputSession.AudioOperationLock.WaitAsync(liveAudioInputSession.TurnCancellationSource.Token);
 
         try
@@ -322,12 +325,48 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             if (liveAudioInputSession.ResponseStarted)
                 throw new InvalidOperationException("The live audio input session has already been committed.");
 
+            if (liveAudioInputSession.AppendedAudioBytes < MinimumLiveAudioCommitBytes)
+            {
+                rejectedForTooLittleAudio = true;
+                liveAudioInputSession.ResponseStarted = true;
+                try
+                {
+                    await ClearInputAudioBufferAsync(liveAudioInputSession.TurnCancellationSource.Token);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Safe to ignore when the input audio buffer was already empty.
+                }
+
+                liveAudioInputSession.PendingTurn.TrySetException(new InvalidOperationException(LiveAudioTooShortMessage));
+            }
+
+            if (rejectedForTooLittleAudio)
+                goto AfterCommitLock;
+
             liveAudioInputSession.ResponseStarted = true;
             await _session!.CommitPendingAudioAsync(liveAudioInputSession.TurnCancellationSource.Token);
         }
         finally
         {
             liveAudioInputSession.AudioOperationLock.Release();
+        }
+
+AfterCommitLock:
+
+        if (rejectedForTooLittleAudio)
+        {
+            try
+            {
+                await foreach (RealtimeAssistantStreamEvent streamEvent in liveAudioInputSession.PendingTurn.ReadEventsAsync(liveAudioInputSession.TurnCancellationSource.Token))
+                    yield return streamEvent;
+            }
+            finally
+            {
+                CleanupLiveAudioInputSession(sessionId);
+            }
+
+            yield break;
         }
 
         try

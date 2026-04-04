@@ -52,7 +52,7 @@ internal sealed class MacOSMouseService : IMouseService
     private struct CGPoint { public double X; public double Y; }
 
     private const int ClickDelayMs       = 30;
-    private const int DoubleClickDelayMs = 50;
+    private const int DoubleClickDelayMs = 120;
 
     public void MoveTo(int x, int y)
     {
@@ -111,9 +111,11 @@ internal sealed class MacOSMouseService : IMouseService
 
     public void DoubleClick(int x, int y)
     {
-        ClickAt(x, y);
+        MoveTo(x, y);
+        Thread.Sleep(ClickDelayMs);
+        Click();
         Thread.Sleep(DoubleClickDelayMs);
-        ClickAt(x, y);
+        Click();
     }
 
     public void Scroll(int delta)

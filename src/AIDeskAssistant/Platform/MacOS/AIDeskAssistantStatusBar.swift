@@ -926,6 +926,7 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
 }
 
 final class StatusBarViewController: NSViewController, NSTextViewDelegate {
+    private static let minimumLiveAudioCommitBytes = 4_800
     private static let panelWidth: CGFloat = 460
     private static let minimumPanelHeight: CGFloat = 216
     private static let maximumPanelHeight: CGFloat = 316
@@ -1294,6 +1295,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         guard let sessionId = liveAudioSessionId else {
             diagnosticsLogger.log("No live audio session to commit")
             setStatus("Keine laufende Mikrofonaufnahme")
+            return
+        }
+
+        if uploadedByteCount < Self.minimumLiveAudioCommitBytes {
+            diagnosticsLogger.log("Skipping live audio commit because only \(uploadedByteCount) bytes were uploaded")
+            stopRecordingWithoutSending(sessionId: sessionId, reason: "Aufnahme zu kurz, bitte etwas länger sprechen.")
             return
         }
 

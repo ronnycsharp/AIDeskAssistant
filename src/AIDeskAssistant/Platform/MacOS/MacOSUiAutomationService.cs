@@ -1219,7 +1219,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             fail("Could not access the frontmost window.")
         }
 
-        let matches = ([targetWindow] + descendants(of: targetWindow)).filter { element in
+        let matchingElements = ([targetWindow] + descendants(of: targetWindow)).filter { element in
             let role = stringAttribute(element, kAXRoleAttribute as CFString)
             let title = stringAttribute(element, kAXTitleAttribute as CFString)
             let value = stringAttribute(element, kAXValueAttribute as CFString)
@@ -1234,11 +1234,11 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             return leftFrame.minY < rightFrame.minY
         }
 
-        guard matchIndex >= 0, matchIndex < matches.count else {
+        guard matchIndex >= 0, matchIndex < matchingElements.count else {
             fail("No matching UI element found.")
         }
 
-        let element = matches[matchIndex]
+        let element = matchingElements[matchIndex]
         let target = pressableAncestor(startingAt: element) ?? element
         let elementFrame = frame(of: element)
         let clickPoint = elementFrame.map { CGPoint(x: $0.midX, y: $0.midY) }
