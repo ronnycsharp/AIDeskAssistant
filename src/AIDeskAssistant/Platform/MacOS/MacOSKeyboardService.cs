@@ -118,42 +118,51 @@ internal sealed class MacOSKeyboardService : IKeyboardService
 
     public void PressKey(string keyCombo)
     {
-        var parts     = keyCombo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        ParsedKeyCombo parsedKeyCombo = ParseKeyCombo(keyCombo);
+        if (parsedKeyCombo.MainKey is null)
+            return;
+
+        if (VKCodes.TryGetValue(parsedKeyCombo.MainKey, out ushort virtualKey))
+        {
+            PostKey(virtualKey, parsedKeyCombo.ModifierFlags);
+            return;
+        }
+
+        if (parsedKeyCombo.Modifiers.Count == 0)
+            return;
+
+        string modStr = string.Join(", ", parsedKeyCombo.Modifiers.Select(m => m.ToLowerInvariant() switch
+        {
+            "cmd" or "command" => "command down",
+            "ctrl" or "control" => "control down",
+            "alt" or "option" => "option down",
+            "shift" => "shift down",
+            _ => m
+        }));
+        var script = $"tell application \"System Events\" to keystroke \"{parsedKeyCombo.MainKey}\" using {{{modStr}}}";
+        RunOsascript(script);
+    }
+
+    internal static ParsedKeyCombo ParseKeyCombo(string keyCombo)
+    {
+        var parts = keyCombo.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         var modifiers = new List<string>();
         string? mainKey = null;
+        ulong modifierFlags = 0;
 
-        foreach (var part in parts)
+        foreach (string part in parts)
         {
-            if (ModifierFlags.ContainsKey(part))
+            if (ModifierFlags.TryGetValue(part, out ulong flag))
+            {
                 modifiers.Add(part);
-            else
-                mainKey ??= part;
-        }
-
-        if (mainKey is null) return;
-
-        if (modifiers.Count == 0)
-        {
-            // Simple key press via CGEvent.
-            if (VKCodes.TryGetValue(mainKey, out ushort vk))
-            {
-                PostKey(vk, 0);
+                modifierFlags |= flag;
+                continue;
             }
+
+            mainKey ??= part;
         }
-        else
-        {
-            // Use osascript for modifier combinations (most reliable).
-            string modStr = string.Join(", ", modifiers.Select(m => m.ToLowerInvariant() switch
-            {
-                "cmd" or "command" => "command down",
-                "ctrl" or "control" => "control down",
-                "alt" or "option" => "option down",
-                "shift" => "shift down",
-                _ => m
-            }));
-            var script = $"tell application \"System Events\" to keystroke \"{mainKey}\" using {{{modStr}}}";
-            RunOsascript(script);
-        }
+
+        return new ParsedKeyCombo(mainKey, modifiers, modifierFlags);
     }
 
     private static void PostKey(ushort vk, ulong flags)
@@ -201,3 +210,5 @@ internal sealed class MacOSKeyboardService : IKeyboardService
         return $"tell application \"System Events\" to keystroke \"{escaped}\"";
     }
 }
+
+internal sealed record ParsedKeyCombo(string? MainKey, IReadOnlyList<string> Modifiers, ulong ModifierFlags);

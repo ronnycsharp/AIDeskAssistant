@@ -339,15 +339,20 @@ internal sealed class AIService
     {
         attachment = null;
         const string base64Marker = "Base64:";
+        const string mouseDetailMediaTypeMarker = "Mouse detail media type:";
         const string mouseDetailBase64Marker = "Mouse detail base64:";
         int base64Index = result.IndexOf(base64Marker, StringComparison.Ordinal);
         if (base64Index < 0)
             return false;
 
         string summary = result[..base64Index].Trim();
+        int mouseDetailMediaTypeIndex = result.IndexOf(mouseDetailMediaTypeMarker, base64Index + base64Marker.Length, StringComparison.Ordinal);
         int mouseDetailBase64Index = result.IndexOf(mouseDetailBase64Marker, base64Index + base64Marker.Length, StringComparison.Ordinal);
-        string base64 = mouseDetailBase64Index >= 0
-            ? result[(base64Index + base64Marker.Length)..mouseDetailBase64Index].Trim()
+        int mainPayloadEndIndex = mouseDetailMediaTypeIndex >= 0
+            ? mouseDetailMediaTypeIndex
+            : mouseDetailBase64Index;
+        string base64 = mainPayloadEndIndex >= 0
+            ? result[(base64Index + base64Marker.Length)..mainPayloadEndIndex].Trim()
             : result[(base64Index + base64Marker.Length)..].Trim();
         Match mediaTypeMatch = Regex.Match(summary, @"Media type:\s*(\S+)", RegexOptions.CultureInvariant);
         string mediaType = mediaTypeMatch.Success ? mediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
@@ -366,7 +371,10 @@ internal sealed class AIService
         if (mouseDetailBase64Index >= 0)
         {
             string detailBase64 = result[(mouseDetailBase64Index + mouseDetailBase64Marker.Length)..].Trim();
-            Match detailMediaTypeMatch = Regex.Match(summary, @"Mouse detail media type:\s*(\S+)", RegexOptions.CultureInvariant);
+            string detailMetadataSource = mouseDetailMediaTypeIndex >= 0 && mouseDetailBase64Index > mouseDetailMediaTypeIndex
+                ? result[mouseDetailMediaTypeIndex..mouseDetailBase64Index]
+                : result;
+            Match detailMediaTypeMatch = Regex.Match(detailMetadataSource, @"Mouse detail media type:\s*(\S+)", RegexOptions.CultureInvariant);
             string detailMediaType = detailMediaTypeMatch.Success ? detailMediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
 
             try

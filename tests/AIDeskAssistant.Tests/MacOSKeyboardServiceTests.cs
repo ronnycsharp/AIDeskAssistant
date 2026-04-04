@@ -32,4 +32,24 @@ public sealed class MacOSKeyboardServiceTests
 
         Assert.Equal([MacOSTypingAction.Text("Hallo Welt")], actions);
     }
+
+    [Fact]
+    public void ParseKeyCombo_RecognizesShiftArrowNavigation()
+    {
+        ParsedKeyCombo parsed = MacOSKeyboardService.ParseKeyCombo("shift+right");
+
+        Assert.Equal("right", parsed.MainKey);
+        Assert.Equal(["shift"], parsed.Modifiers);
+        Assert.Equal(0x020000UL, parsed.ModifierFlags);
+    }
+
+    [Fact]
+    public void ParseKeyCombo_RecognizesCommandShortcut()
+    {
+        ParsedKeyCombo parsed = MacOSKeyboardService.ParseKeyCombo("cmd+n");
+
+        Assert.Equal("n", parsed.MainKey);
+        Assert.Equal(["cmd"], parsed.Modifiers);
+        Assert.Equal(0x100000UL, parsed.ModifierFlags);
+    }
 }

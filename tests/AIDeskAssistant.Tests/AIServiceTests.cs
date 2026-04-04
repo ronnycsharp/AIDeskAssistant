@@ -73,7 +73,7 @@ public sealed class AIServiceTests
     [Fact]
     public void TryParseScreenshotAttachment_ExtractsMouseDetailImage()
     {
-        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Mouse detail media type: image/png. Base64: AQID Mouse detail base64: BAUG";
+        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID Mouse detail media type: image/png. Mouse detail base64: BAUG";
 
         bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
 
