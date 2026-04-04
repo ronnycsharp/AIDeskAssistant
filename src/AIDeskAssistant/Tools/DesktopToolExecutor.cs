@@ -119,14 +119,53 @@ internal sealed class DesktopToolExecutor
             ? ScreenshotAnnotationData.CreateSuggestedContentArea(captureBounds)
             : null;
         var (cursorX, cursorY) = _mouse.GetPosition();
-        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea);
+        ScreenshotClickTarget? intendedClickTarget = TryGetIntendedClickTarget(args);
+        WindowHitTestResult? windowUnderCursor = TryGetWindowUnderCursor(cursorX, cursorY);
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget);
 
         byte[] screenshot = _screenshot.TakeScreenshot(options);
         byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, annotation);
         ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
         ScreenshotCursorDetail? mouseDetail = ScreenshotCursorDetailExtractor.Create(annotatedScreenshot, annotation);
         ScreenshotPayload? mouseDetailPayload = mouseDetail is null ? null : _screenshotOptimizer.Optimize(mouseDetail.Bytes);
-        return BuildScreenshotToolResult(payload, mouseDetailPayload, mouseDetail?.Bounds, target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea);
+        var context = new ScreenshotResultContext(target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, windowUnderCursor);
+        return BuildScreenshotToolResult(payload, mouseDetailPayload, mouseDetail?.Bounds, context);
+    }
+
+    private static ScreenshotClickTarget? TryGetIntendedClickTarget(Dictionary<string, JsonElement> args)
+    {
+        if (!TryGetOptionalInt(args, "intended_click_x", out int x)
+            || !TryGetOptionalInt(args, "intended_click_y", out int y))
+        {
+            return null;
+        }
+
+        string label = DesktopToolDefinitions.GetString(args, "intended_click_label").Trim();
+        return new ScreenshotClickTarget(x, y, string.IsNullOrWhiteSpace(label) ? null : label);
+    }
+
+    private WindowHitTestResult? TryGetWindowUnderCursor(int cursorX, int cursorY)
+    {
+        try
+        {
+            return _window.GetWindowAtPoint(cursorX, cursorY);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryGetOptionalInt(Dictionary<string, JsonElement> args, string key, out int value)
+    {
+        if (args.TryGetValue(key, out JsonElement element) && element.ValueKind == JsonValueKind.Number)
+        {
+            value = element.GetInt32();
+            return true;
+        }
+
+        value = default;
+        return false;
     }
 
     private bool TryResolveScreenshotCaptureOptions(
@@ -181,25 +220,29 @@ internal sealed class DesktopToolExecutor
         return new WindowBounds(x, y, width, height);
     }
 
-    private static string BuildScreenshotToolResult(ScreenshotPayload payload, ScreenshotPayload? mouseDetailPayload, WindowBounds? mouseDetailBounds, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY, WindowBounds? suggestedContentArea)
+    private static string BuildScreenshotToolResult(ScreenshotPayload payload, ScreenshotPayload? mouseDetailPayload, WindowBounds? mouseDetailBounds, ScreenshotResultContext context)
     {
-        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea);
+        var annotation = new ScreenshotAnnotationData(context.CaptureBounds, context.CursorX, context.CursorY, context.SuggestedContentArea, context.IntendedClickTarget);
         var parts = new List<string>
         {
             "Screenshot taken.",
-            $"Target: {target}.",
+            $"Target: {context.Target}.",
         };
 
-        if (!string.IsNullOrWhiteSpace(purpose))
-            parts.Add($"Purpose: {purpose}.");
+        if (!string.IsNullOrWhiteSpace(context.Purpose))
+            parts.Add($"Purpose: {context.Purpose}.");
 
-        parts.Add($"Capture bounds: X={captureBounds.X}, Y={captureBounds.Y}, Width={captureBounds.Width}, Height={captureBounds.Height}.");
+        parts.Add($"Capture bounds: X={context.CaptureBounds.X}, Y={context.CaptureBounds.Y}, Width={context.CaptureBounds.Width}, Height={context.CaptureBounds.Height}.");
         parts.Add($"Corner pixels: TL=({annotation.TopLeft.X},{annotation.TopLeft.Y}), TR=({annotation.TopRight.X},{annotation.TopRight.Y}), BL=({annotation.BottomLeft.X},{annotation.BottomLeft.Y}), BR=({annotation.BottomRight.X},{annotation.BottomRight.Y}).");
-        parts.Add($"Cursor: X={cursorX}, Y={cursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
+        parts.Add($"Cursor: X={context.CursorX}, Y={context.CursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
+        if (context.WindowUnderCursor is WindowHitTestResult window)
+            parts.Add($"Window under cursor: App={window.ApplicationName}, Title={FormatWindowTitle(window.Title)}, X={window.Bounds.X}, Y={window.Bounds.Y}, Width={window.Bounds.Width}, Height={window.Bounds.Height}.");
         if (annotation.HasSuggestedContentArea && annotation.SuggestedContentArea is WindowBounds contentArea)
             parts.Add($"Likely content area: X={contentArea.X}, Y={contentArea.Y}, Width={contentArea.Width}, Height={contentArea.Height}. Prefer clicks and typing inside this region unless the screenshot shows a more specific control elsewhere.");
+        if (context.IntendedClickTarget is ScreenshotClickTarget clickTarget)
+            parts.Add($"Intended click target: X={clickTarget.X}, Y={clickTarget.Y}, InsideCapture={annotation.IntendedClickIsInsideCapture}, Label={FormatWindowTitle(clickTarget.Label)}. Use the highlighted target marker to validate the click before you press click or double_click.");
         if (mouseDetailBounds is WindowBounds detailBounds)
-            parts.Add($"Mouse detail bounds: X={detailBounds.X}, Y={detailBounds.Y}, Width={detailBounds.Width}, Height={detailBounds.Height}. Use the additional mouse detail image to validate exact cursor placement before clicking or double-clicking.");
+            parts.Add($"Mouse detail bounds: X={detailBounds.X}, Y={detailBounds.Y}, Width={detailBounds.Width}, Height={detailBounds.Height}. The additional mouse detail image includes a 100 px coordinate raster with x/y labels to validate exact cursor placement before clicking or double-clicking.");
         parts.Add($"Edge ruler: major ticks every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor ticks every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
 
         parts.Add($"Original: {payload.OriginalByteCount} bytes.");
@@ -217,6 +260,19 @@ internal sealed class DesktopToolExecutor
 
         return string.Join(" ", parts);
     }
+
+    private static string FormatWindowTitle(string? value)
+        => string.IsNullOrWhiteSpace(value) ? "<untitled>" : value;
+
+    private readonly record struct ScreenshotResultContext(
+        string Target,
+        string Purpose,
+        WindowBounds CaptureBounds,
+        int CursorX,
+        int CursorY,
+        WindowBounds? SuggestedContentArea,
+        ScreenshotClickTarget? IntendedClickTarget,
+        WindowHitTestResult? WindowUnderCursor);
 
     private static int GetScreenshotRulerMajorStep(int width, int height)
     {

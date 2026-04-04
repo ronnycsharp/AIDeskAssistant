@@ -12,6 +12,7 @@ namespace AIDeskAssistant.Services;
 internal sealed class AIService
 {
     private const string DefaultModel       = "gpt-4o";
+    private const string DefaultImageMediaType = "image/png";
     private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
     private const string SimilarScreenshotNote = "Screenshot image omitted from history because it is visually almost unchanged compared with the previous retained screenshot.";
     private const string RealtimeScreenshotOmittedNote = "Screenshot image bytes omitted from realtime tool output to keep the payload bounded.";
@@ -41,12 +42,15 @@ internal sealed class AIService
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         The current request may include a compact Accessibility UI summary for the frontmost macOS app, including visible roles, titles, and frames. Treat that summary as high-value structure about what is currently on screen and use it together with the screenshot.
         When a screenshot includes an additional mouse detail image around the cursor, use that close-up to validate the exact cursor position and nearby click target before choosing click or double_click coordinates.
+        If you are about to click, you may call take_screenshot with intended_click_x, intended_click_y, and intended_click_label so the screenshot shows an explicit click-target marker before the click.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
         For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
         For Microsoft Word and Microsoft Excel on macOS, do not keep sending 'cmd+n' in a loop. If one blank document or workbook is already open, use the frontmost one. Only retry 'cmd+n' when a follow-up screenshot clearly shows that no editable blank document or workbook was opened.
         For Microsoft Word on macOS, do not declare success after typing unless a follow-up screenshot shows visible document text or the status bar word count is no longer 0. If the document still looks blank, keep troubleshooting.
         For Microsoft Word save tasks on macOS, do not stop after pressing Save. Wait, take another screenshot, confirm the dialog is gone, and verify the document returned to the editing window before declaring success.
+        For cursor placement in Microsoft Word, editors, and other text areas, prefer a precise mouse click at the visible insertion point when the target text is on screen. Use long arrow-key sequences only when the user explicitly requires keyboard-only positioning.
+        If keyboard-only cursor placement is explicitly required, first move to a stable anchor such as the start or end of the relevant line or paragraph, take a screenshot to verify the caret moved as expected, and only then extend a selection. Do not declare success unless the follow-up screenshot clearly shows the caret or selection on the requested target text.
         When the user asks to save a document to a specific folder such as the Desktop, verify the file exists using a concrete absolute path before you stop.
         The run_command tool does not execute a shell. Do not use shell syntax such as ~, $HOME, $(whoami), pipes, redirection, globbing, or quoted one-liners inside its arguments. If you need the home directory, first call run_command with printenv HOME and then use the returned absolute path literally in a second command.
         When entering text into editors or forms, use type_text only for literal text content. Use press_key for special keys like enter, return, tab, escape, backspace, delete, arrows, or shortcuts. Never type words like 'enter', 'tab', 'escape', 'backspace', or 'delete' into the document unless the user explicitly asked for those literal words.
@@ -214,7 +218,7 @@ internal sealed class AIService
             differenceBytes = ScreenshotHistoryComparer.CreateDifferenceVisualization(_latestRetainedScreenshotAttachment.Bytes, attachment.Bytes);
             if (differenceBytes is not null)
             {
-                _debugLogger?.LogScreenshotDifference(toolCallId, differenceBytes, "image/png", $"Visual diff against previous retained screenshot. Similarity: {(similarity.HasValue ? similarity.Value.ToString("P2") : "n/a")}");
+                _debugLogger?.LogScreenshotDifference(toolCallId, differenceBytes, DefaultImageMediaType, $"Visual diff against previous retained screenshot. Similarity: {(similarity.HasValue ? similarity.Value.ToString("P2") : "n/a")}");
             }
         }
 
@@ -331,7 +335,7 @@ internal sealed class AIService
         foreach (ScreenshotSupplementalImage supplementalImage in attachment.SupplementalImages)
             content.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(supplementalImage.Bytes), supplementalImage.MediaType, ChatImageDetailLevel.High));
 
-        content.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(differenceBytes), "image/png", ChatImageDetailLevel.Low));
+        content.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(differenceBytes), DefaultImageMediaType, ChatImageDetailLevel.Low));
         return new ToolChatMessage(toolCallId, content.ToArray());
     }
 
@@ -355,7 +359,7 @@ internal sealed class AIService
             ? result[(base64Index + base64Marker.Length)..mainPayloadEndIndex].Trim()
             : result[(base64Index + base64Marker.Length)..].Trim();
         Match mediaTypeMatch = Regex.Match(summary, @"Media type:\s*(\S+)", RegexOptions.CultureInvariant);
-        string mediaType = mediaTypeMatch.Success ? mediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
+        string mediaType = mediaTypeMatch.Success ? mediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : DefaultImageMediaType;
 
         byte[] bytes;
         try
@@ -375,20 +379,28 @@ internal sealed class AIService
                 ? result[mouseDetailMediaTypeIndex..mouseDetailBase64Index]
                 : result;
             Match detailMediaTypeMatch = Regex.Match(detailMetadataSource, @"Mouse detail media type:\s*(\S+)", RegexOptions.CultureInvariant);
-            string detailMediaType = detailMediaTypeMatch.Success ? detailMediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
+            string detailMediaType = detailMediaTypeMatch.Success ? detailMediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : DefaultImageMediaType;
 
-            try
-            {
-                byte[] detailBytes = Convert.FromBase64String(detailBase64);
+            if (TryDecodeBase64(detailBase64, out byte[]? detailBytes) && detailBytes is not null)
                 supplementalImages.Add(new ScreenshotSupplementalImage("mouse-detail", detailBytes, detailMediaType));
-            }
-            catch (FormatException)
-            {
-            }
         }
 
         attachment = new ScreenshotModelAttachment(summary, bytes, mediaType, supplementalImages);
         return true;
+    }
+
+    private static bool TryDecodeBase64(string value, out byte[]? bytes)
+    {
+        try
+        {
+            bytes = Convert.FromBase64String(value);
+            return true;
+        }
+        catch (FormatException)
+        {
+            bytes = null;
+            return false;
+        }
     }
 
     internal static string AppendScreenshotAnalysis(string result, string analysis)

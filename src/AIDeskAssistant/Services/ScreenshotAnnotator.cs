@@ -7,6 +7,7 @@ internal static class ScreenshotAnnotator
 {
     private static readonly SKColor CornerColor = new(0, 170, 140, 255);
     private static readonly SKColor CursorColor = new(255, 106, 0, 255);
+    private static readonly SKColor IntendedClickColor = new(255, 208, 0, 255);
     private static readonly SKColor ContentAreaColor = new(0, 122, 255, 255);
     private static readonly SKColor RulerTickColor = new(255, 255, 255, 120);
     private static readonly SKColor RulerGuideColor = new(255, 255, 255, 28);
@@ -34,6 +35,7 @@ internal static class ScreenshotAnnotator
             var metrics = new ImageMetrics(sourceBitmap.Width, sourceBitmap.Height, fontSize);
             DrawEdgeRuler(canvas, metrics, annotation);
             DrawSuggestedContentArea(canvas, metrics, annotation);
+            DrawIntendedClickTarget(canvas, metrics, annotation);
             DrawCornerAnnotations(canvas, metrics, annotation);
             DrawCursorAnnotation(canvas, metrics, annotation);
 
@@ -155,10 +157,8 @@ internal static class ScreenshotAnnotator
         var rect = new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
         rect = NormalizeRect(rect);
 
-        using var fillPaint = new SKPaint { Color = ContentAreaColor.WithAlpha(26), IsAntialias = true, Style = SKPaintStyle.Fill };
         using var strokePaint = new SKPaint { Color = ContentAreaColor.WithAlpha(220), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, PathEffect = SKPathEffect.CreateDash(new float[] { 14f, 10f }, 0f) };
 
-        canvas.DrawRect(rect, fillPaint);
         canvas.DrawRect(rect, strokePaint);
 
         string label = $"Likely content area ({contentArea.X},{contentArea.Y})-{(contentArea.X + Math.Max(0, contentArea.Width - 1))},{(contentArea.Y + Math.Max(0, contentArea.Height - 1))}";
@@ -170,6 +170,52 @@ internal static class ScreenshotAnnotator
             ContentAreaColor,
             metrics.Width,
             metrics.Height);
+    }
+
+    private static void DrawIntendedClickTarget(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
+    {
+        if (!annotation.HasIntendedClickTarget || annotation.IntendedClickTarget is not ScreenshotClickTarget clickTarget)
+            return;
+
+        string labelText = string.IsNullOrWhiteSpace(clickTarget.Label)
+            ? $"Intended click ({clickTarget.X},{clickTarget.Y})"
+            : $"{clickTarget.Label} ({clickTarget.X},{clickTarget.Y})";
+
+        if (!annotation.IntendedClickIsInsideCapture)
+        {
+            DrawDetachedBadge(
+                canvas,
+                metrics.FontSize,
+                $"{labelText} outside capture",
+                new SKRect(18, 58, Math.Max(220, metrics.Width - 18), 98),
+                IntendedClickColor,
+                metrics.Width,
+                metrics.Height);
+            return;
+        }
+
+        SKPoint targetPoint = MapGlobalPointToImage(annotation, clickTarget.X, clickTarget.Y, metrics.Width, metrics.Height);
+        float outerRadius = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 22f, 18f, 36f);
+        float innerRadius = Math.Max(6f, outerRadius * 0.42f);
+        float guideLength = outerRadius * 0.9f;
+        float guideGap = Math.Max(5f, outerRadius * 0.35f);
+        using var fillPaint = new SKPaint { Color = IntendedClickColor.WithAlpha(44), IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var strokePaint = new SKPaint { Color = IntendedClickColor, IsAntialias = true, StrokeWidth = Math.Max(3f, outerRadius / 7f), Style = SKPaintStyle.Stroke };
+        using var guidePaint = new SKPaint { Color = IntendedClickColor.WithAlpha(235), IsAntialias = true, StrokeWidth = Math.Max(3f, outerRadius / 8f), Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+
+        canvas.DrawCircle(targetPoint, outerRadius, fillPaint);
+        canvas.DrawCircle(targetPoint, outerRadius, strokePaint);
+        canvas.DrawCircle(targetPoint, innerRadius, strokePaint);
+        canvas.DrawLine(targetPoint.X - outerRadius - guideLength, targetPoint.Y, targetPoint.X - guideGap, targetPoint.Y, guidePaint);
+        canvas.DrawLine(targetPoint.X + guideGap, targetPoint.Y, targetPoint.X + outerRadius + guideLength, targetPoint.Y, guidePaint);
+        canvas.DrawLine(targetPoint.X, targetPoint.Y - outerRadius - guideLength, targetPoint.X, targetPoint.Y - guideGap, guidePaint);
+        canvas.DrawLine(targetPoint.X, targetPoint.Y + guideGap, targetPoint.X, targetPoint.Y + outerRadius + guideLength, guidePaint);
+
+        SKPoint labelOrigin = new(
+            Math.Min(metrics.Width - 18, targetPoint.X + outerRadius + 18),
+            Math.Min(metrics.Height - 18, targetPoint.Y + outerRadius + 12));
+
+        DrawLabelWithAnchor(canvas, metrics, labelText, labelOrigin, targetPoint, CornerAnchor.TopLeft, IntendedClickColor);
     }
 
     private static void DrawCursorAnnotation(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)

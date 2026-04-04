@@ -6,13 +6,11 @@ internal readonly record struct ScreenshotAnnotationData(
     WindowBounds CaptureBounds,
     int CursorX,
     int CursorY,
-    WindowBounds? SuggestedContentArea = null)
+    WindowBounds? SuggestedContentArea = null,
+    ScreenshotClickTarget? IntendedClickTarget = null)
 {
     public bool CursorIsInsideCapture =>
-        CursorX >= CaptureBounds.X
-        && CursorX < CaptureBounds.X + CaptureBounds.Width
-        && CursorY >= CaptureBounds.Y
-        && CursorY < CaptureBounds.Y + CaptureBounds.Height;
+        ContainsPoint(CursorX, CursorY);
 
     public (int X, int Y) TopLeft => (CaptureBounds.X, CaptureBounds.Y);
 
@@ -25,6 +23,18 @@ internal readonly record struct ScreenshotAnnotationData(
         CaptureBounds.Y + Math.Max(0, CaptureBounds.Height - 1));
 
     public bool HasSuggestedContentArea => SuggestedContentArea is { Width: > 0, Height: > 0 };
+
+    public bool HasIntendedClickTarget => IntendedClickTarget is not null;
+
+    public bool IntendedClickIsInsideCapture =>
+        IntendedClickTarget is { } target
+        && ContainsPoint(target.X, target.Y);
+
+    public bool ContainsPoint(int x, int y)
+        => x >= CaptureBounds.X
+        && x < CaptureBounds.X + CaptureBounds.Width
+        && y >= CaptureBounds.Y
+        && y < CaptureBounds.Y + CaptureBounds.Height;
 
     public static WindowBounds CreateSuggestedContentArea(WindowBounds captureBounds)
     {
@@ -42,3 +52,5 @@ internal readonly record struct ScreenshotAnnotationData(
             height);
     }
 }
+
+internal readonly record struct ScreenshotClickTarget(int X, int Y, string? Label = null);

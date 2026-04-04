@@ -12,7 +12,7 @@ internal static class DesktopToolDefinitions
     {
     new(
             "take_screenshot",
-            "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate.",
+          "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate. If you are about to click, you can also provide intended click coordinates so the screenshot renders a visible click-target marker before the click.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -29,6 +29,18 @@ internal static class DesktopToolDefinitions
                 "padding": {
                   "type": "integer",
                   "description": "Optional extra pixels around the active window capture (0-200). Ignored for full_screen."
+                },
+                "intended_click_x": {
+                  "type": "integer",
+                  "description": "Optional X coordinate of the click you are about to perform. When provided together with intended_click_y, the screenshot highlights the intended click target."
+                },
+                "intended_click_y": {
+                  "type": "integer",
+                  "description": "Optional Y coordinate of the click you are about to perform. When provided together with intended_click_x, the screenshot highlights the intended click target."
+                },
+                "intended_click_label": {
+                  "type": "string",
+                  "description": "Optional short label for the intended click target, e.g. 'Word document body' or 'Save button'."
                 }
               }
             }

@@ -122,5 +122,8 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("purpose", definition.Description);
         Assert.Contains("purpose", parameters);
         Assert.Contains("padding", parameters);
+        Assert.Contains("intended_click_x", parameters);
+        Assert.Contains("intended_click_y", parameters);
+        Assert.Contains("intended_click_label", parameters);
     }
 }

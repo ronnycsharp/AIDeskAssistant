@@ -79,10 +79,13 @@ internal sealed class FakeTerminalService : ITerminalService
 internal sealed class FakeWindowService : IWindowService
 {
     public WindowBounds Bounds = new(10, 20, 800, 600);
+    public WindowHitTestResult? WindowAtPoint = new("Microsoft Word", "Document1", new WindowBounds(0, 0, 840, 640));
     public (int X, int Y) LastMoveTarget;
     public (int Width, int Height) LastResizeTarget;
 
     public WindowBounds GetActiveWindowBounds() => Bounds;
+
+    public WindowHitTestResult? GetWindowAtPoint(int x, int y) => WindowAtPoint;
 
     public void MoveActiveWindow(int x, int y) => LastMoveTarget = (x, y);
 
@@ -138,12 +141,14 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("take_screenshot", "{}");
 
         Assert.Contains("Base64:", result);
+        Assert.Contains("Window under cursor: App=Microsoft Word, Title=Document1, X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Mouse detail bounds:", result);
         Assert.Contains("Mouse detail media type:", result);
         Assert.Contains("Mouse detail base64:", result);
         Assert.Contains("Capture bounds: X=0, Y=0, Width=1920, Height=1080.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(1919,0), BL=(0,1079), BR=(1919,1079).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
+        Assert.Contains("Mouse detail bounds: X=490, Y=330, Width=300, Height=300.", result);
         Assert.Contains("Edge ruler: major ticks every", result);
         Assert.Contains("minor ticks every", result);
         Assert.Contains("Original:", result);
@@ -154,7 +159,7 @@ public sealed class DesktopToolExecutorTests
     [Fact]
     public void Execute_TakeScreenshotActiveWindow_UsesWindowBoundsAndPurpose()
     {
-        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20}");
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20,\"intended_click_x\":420,\"intended_click_y\":360,\"intended_click_label\":\"Word document body\"}");
 
         Assert.Equal(new WindowBounds(0, 0, 840, 640), _screenshot.LastOptions.Bounds);
         Assert.Contains("Target: active_window.", result);
@@ -162,8 +167,10 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Capture bounds: X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(839,0), BL=(0,639), BR=(839,639).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
+        Assert.Contains("Window under cursor: App=Microsoft Word, Title=Document1, X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Likely content area: X=34, Y=90, Width=772, Height=518.", result);
-        Assert.Contains("Use the additional mouse detail image to validate exact cursor placement", result);
+        Assert.Contains("Intended click target: X=420, Y=360, InsideCapture=True, Label=Word document body.", result);
+        Assert.Contains("includes a 100 px coordinate raster with x/y labels", result);
         Assert.Contains("Edge ruler: major ticks every 50 px with minor ticks every 25 px.", result);
     }
 
