@@ -1,5 +1,6 @@
 import Cocoa
 import AVFoundation
+import WebKit
 
 struct AssistantResponse: Decodable {
     let text: String?
@@ -58,6 +59,32 @@ struct ActivityEntry: Decodable {
     let ToolName: String?
 }
 
+struct ToolLogSnapshot: Decodable {
+    let LastUpdatedUtc: String?
+    let Entries: [ToolLogEntry]
+}
+
+struct ToolLogEntry: Decodable {
+    let ToolCallId: String
+    let ToolName: String
+    let ArgumentsJson: String
+    let Status: String
+    let Result: String
+    let StartedUtc: String?
+    let CompletedUtc: String?
+    let Screenshots: [ToolScreenshotArtifact]
+}
+
+struct ToolScreenshotArtifact: Decodable {
+    let Kind: String
+    let ImageFileName: String
+    let MetaFileName: String?
+    let Summary: String
+    let MediaType: String?
+    let RetentionStatus: String?
+    let Similarity: String?
+}
+
 private struct AudioLevelMetrics {
     let peak: Double
     let rms: Double
@@ -108,19 +135,7 @@ final class OverlayPanel: NSPanel {
     }
 }
 
-final class StatusBarViewController: NSViewController, NSTextViewDelegate {
-    private static let panelWidth: CGFloat = 460
-    private static let minimumPanelHeight: CGFloat = 320
-    private static let maximumPanelHeight: CGFloat = 430
-    private static let backgroundInset: CGFloat = 10
-    private static let sideInset: CGFloat = 28
-    private static let textHorizontalInset: CGFloat = 20
-    private static let topInset: CGFloat = 34
-    private static let bottomInset: CGFloat = 12
-    private static let defaultTextHeight: CGFloat = 36
-    private static let maximumTextHeight: CGFloat = 108
-    private static let maximumStatusLength = 240
-    private static let activityLogHeight: CGFloat = 92
+final class ActivityLogViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
     private static let activityFilePath: String = {
         if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_ACTIVITY_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return path
@@ -132,9 +147,607 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             .path
     }()
 
+    private static let toolLogFilePath: String = {
+        if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_TOOL_LOG_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return path
+        }
+
+        if let sessionDirectory = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_DEBUG_SESSION_DIR"], !sessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: sessionDirectory, isDirectory: true)
+                .appendingPathComponent("menu-bar-tool-details.json")
+                .path
+        }
+
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AIDeskAssistant", isDirectory: true)
+            .appendingPathComponent("menu-bar-tool-details.json")
+            .path
+    }()
+
+    private let headerLabel = NSTextField(labelWithString: "AIDesk Tool Log")
+    private let stepLabel = NSTextField(labelWithString: "Leerlauf")
+    private let toolLabel = NSTextField(labelWithString: "Tool: -")
+    private let updatedLabel = NSTextField(labelWithString: "Zuletzt aktualisiert: -")
+    private let logScrollView = NSScrollView(frame: .zero)
+    private lazy var logWebView: WKWebView = {
+        let contentController = WKUserContentController()
+        contentController.add(self, name: "toggleEntry")
+
+        let configuration = WKWebViewConfiguration()
+        configuration.userContentController = contentController
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = self
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.isInspectable = true
+        return webView
+    }()
+    private var pollTimer: Timer?
+    private var lastRenderedHTML = ""
+    private var expandedEntryIds = Set<String>()
+
+    deinit {
+        logWebView.configuration.userContentController.removeScriptMessageHandler(forName: "toggleEntry")
+    }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 760, height: 460))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.11, blue: 0.14, alpha: 0.98).cgColor
+
+        headerLabel.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
+        headerLabel.textColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 1.0)
+
+        stepLabel.font = NSFont.systemFont(ofSize: 15, weight: .semibold)
+        stepLabel.textColor = NSColor(calibratedRed: 0.58, green: 0.82, blue: 0.96, alpha: 1.0)
+
+        toolLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        toolLabel.textColor = NSColor(calibratedRed: 0.78, green: 0.83, blue: 0.88, alpha: 1.0)
+
+        updatedLabel.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        updatedLabel.textColor = NSColor(calibratedRed: 0.64, green: 0.69, blue: 0.75, alpha: 1.0)
+
+        logScrollView.borderType = .noBorder
+        logScrollView.drawsBackground = false
+        logScrollView.hasVerticalScroller = true
+        logScrollView.autohidesScrollers = true
+        logScrollView.documentView = logWebView
+
+        view.addSubview(headerLabel)
+        view.addSubview(stepLabel)
+        view.addSubview(toolLabel)
+        view.addSubview(updatedLabel)
+        view.addSubview(logScrollView)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        startPolling()
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        pollTimer?.invalidate()
+        pollTimer = nil
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let bounds = view.bounds
+        headerLabel.frame = NSRect(x: 20, y: bounds.height - 42, width: bounds.width - 40, height: 28)
+        stepLabel.frame = NSRect(x: 20, y: bounds.height - 72, width: bounds.width - 40, height: 20)
+        toolLabel.frame = NSRect(x: 20, y: bounds.height - 94, width: bounds.width - 40, height: 18)
+        updatedLabel.frame = NSRect(x: 20, y: bounds.height - 116, width: bounds.width - 40, height: 18)
+        logScrollView.frame = NSRect(x: 20, y: 20, width: bounds.width - 40, height: bounds.height - 150)
+        logWebView.frame = NSRect(origin: .zero, size: logScrollView.contentSize)
+    }
+
+    private func startPolling() {
+        pollTimer?.invalidate()
+        refreshSnapshot()
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.refreshSnapshot()
+        }
+    }
+
+    private func refreshSnapshot() {
+        let snapshot = loadActivitySnapshot()
+        let toolSnapshot = loadToolLogSnapshot()
+        render(activitySnapshot: snapshot, toolSnapshot: toolSnapshot)
+    }
+
+    private func loadActivitySnapshot() -> ActivitySnapshot? {
+        let url = URL(fileURLWithPath: Self.activityFilePath)
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(ActivitySnapshot.self, from: data)
+    }
+
+        private func loadToolLogSnapshot() -> ToolLogSnapshot? {
+                let url = URL(fileURLWithPath: Self.toolLogFilePath)
+                guard let data = try? Data(contentsOf: url) else {
+                        return nil
+                }
+
+                return try? JSONDecoder().decode(ToolLogSnapshot.self, from: data)
+        }
+
+        private func render(activitySnapshot: ActivitySnapshot?, toolSnapshot: ToolLogSnapshot?) {
+                guard let activitySnapshot else {
+            stepLabel.stringValue = "Leerlauf"
+            toolLabel.stringValue = "Tool: -"
+            updatedLabel.stringValue = "Zuletzt aktualisiert: -"
+                        renderHTML(buildLogHTML(activitySnapshot: nil, toolSnapshot: toolSnapshot))
+            return
+        }
+
+                let currentStep = activitySnapshot.CurrentStep?.trimmingCharacters(in: .whitespacesAndNewlines)
+        stepLabel.stringValue = currentStep?.isEmpty == false ? currentStep! : "Leerlauf"
+
+                if let activeTool = activitySnapshot.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
+            toolLabel.stringValue = "Tool: \(activeTool)"
+        } else {
+            toolLabel.stringValue = "Tool: -"
+        }
+
+                if let lastUpdated = toolSnapshot?.LastUpdatedUtc ?? activitySnapshot.LastUpdatedUtc, !lastUpdated.isEmpty {
+                        updatedLabel.stringValue = "Zuletzt aktualisiert: \(Self.formatDisplayTimestamp(lastUpdated))"
+        } else {
+            updatedLabel.stringValue = "Zuletzt aktualisiert: -"
+        }
+
+                renderHTML(buildLogHTML(activitySnapshot: activitySnapshot, toolSnapshot: toolSnapshot))
+        }
+
+        private func renderHTML(_ html: String) {
+                guard html != lastRenderedHTML else {
+                        return
+                }
+
+                lastRenderedHTML = html
+                let baseURL = URL(fileURLWithPath: Self.toolLogFilePath).deletingLastPathComponent()
+                logWebView.loadHTMLString(html, baseURL: baseURL)
+        }
+
+        private func buildLogHTML(activitySnapshot: ActivitySnapshot?, toolSnapshot: ToolLogSnapshot?) -> String {
+                let events = (activitySnapshot?.Entries ?? []).suffix(8).reversed()
+                let entries = (toolSnapshot?.Entries ?? []).reversed()
+                let eventMarkup: String
+
+                if events.isEmpty {
+                        eventMarkup = "<div class=\"empty\">Noch keine Aktivität aufgezeichnet.</div>"
+                } else {
+                        eventMarkup = events.map { entry in
+                                let time = Self.shortTime(entry.TimestampUtc)
+                                let kind = Self.escapeHTML(entry.Kind ?? "info")
+                                let tool = Self.escapeHTML(entry.ToolName ?? "")
+                                let message = Self.escapeHTML(entry.Message)
+                                let toolMarkup = tool.isEmpty ? "" : "<span class=\"event-tool\">\(tool)</span>"
+                                return "<div class=\"event-row\"><span class=\"event-time\">\(time)</span><span class=\"event-kind\">\(kind)</span>\(toolMarkup)<span class=\"event-message\">\(message)</span></div>"
+                        }.joined()
+                }
+
+                let entryMarkup: String
+                if entries.isEmpty {
+                        entryMarkup = "<div class=\"empty\">Noch keine Tool-Aufrufe vorhanden.</div>"
+                } else {
+                        entryMarkup = entries.map { entry in
+                                let entryId = Self.escapeHTML(entry.ToolCallId)
+                                let openAttribute = expandedEntryIds.contains(entry.ToolCallId) ? " open" : ""
+                                let title = Self.escapeHTML(entry.ToolName)
+                                let status = Self.escapeHTML(Self.statusLabel(for: entry.Status))
+                                let statusClass = Self.escapeHTML(entry.Status.lowercased())
+                                let started = Self.escapeHTML(Self.formatDisplayTimestamp(entry.StartedUtc))
+                                let completed = Self.escapeHTML(Self.formatDisplayTimestamp(entry.CompletedUtc))
+                                let durationLine = entry.CompletedUtc == nil ? "Laufend" : "Abgeschlossen: \(completed)"
+                                let request = Self.escapeHTML(entry.ArgumentsJson.isEmpty ? "{}" : entry.ArgumentsJson)
+                                let result = Self.escapeHTML(entry.Result.isEmpty ? "Noch kein Ergebnis." : entry.Result)
+                                let screenshotMarkup = buildScreenshotMarkup(for: entry)
+                                let screenshotSummary = entry.Screenshots.isEmpty ? "Keine Screenshots" : "\(entry.Screenshots.count) Screenshot(s)"
+
+                                return """
+                                <details class=\"entry-card\" data-entry-id=\"\(entryId)\"\(openAttribute)>
+                                    <summary>
+                                        <div class=\"entry-heading\">
+                                            <div>
+                                                <div class=\"entry-title-row\">
+                                                    <span class=\"entry-title\">\(title)</span>
+                                                    <span class=\"status-badge \(statusClass)\">\(status)</span>
+                                                </div>
+                                                <div class=\"entry-meta\">Start: \(started) · \(Self.escapeHTML(durationLine)) · \(Self.escapeHTML(screenshotSummary))</div>
+                                            </div>
+                                        </div>
+                                    </summary>
+                                    <div class=\"entry-body\">
+                                        <div class=\"section-label\">Request</div>
+                                        <pre>\(request)</pre>
+                                        <div class=\"section-label\">Result</div>
+                                        <pre>\(result)</pre>
+                                        \(screenshotMarkup)
+                                    </div>
+                                </details>
+                                """
+                        }.joined(separator: "\n")
+                }
+
+                return """
+                <!doctype html>
+                <html>
+                <head>
+                    <meta charset=\"utf-8\" />
+                    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+                    <style>
+                        :root {
+                            color-scheme: dark;
+                            --bg: #171b22;
+                            --panel: #1e2430;
+                            --panel-2: #252c39;
+                            --border: rgba(255,255,255,0.08);
+                            --text: #eef2f7;
+                            --muted: #9aabbe;
+                            --accent: #75c7ec;
+                            --success: #8fd19e;
+                            --warning: #f2c572;
+                            --danger: #f08a87;
+                        }
+                        html, body {
+                            margin: 0;
+                            padding: 0;
+                            background: transparent;
+                            color: var(--text);
+                            font: 13px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+                        }
+                        body {
+                            padding: 8px 4px 24px;
+                        }
+                        .section {
+                            margin-bottom: 16px;
+                            border: 1px solid var(--border);
+                            background: rgba(255,255,255,0.03);
+                            border-radius: 14px;
+                            overflow: hidden;
+                        }
+                        .section-header {
+                            padding: 12px 14px;
+                            font-size: 12px;
+                            letter-spacing: 0.08em;
+                            text-transform: uppercase;
+                            color: var(--muted);
+                            background: rgba(255,255,255,0.03);
+                            border-bottom: 1px solid var(--border);
+                        }
+                        .section-body {
+                            padding: 12px;
+                        }
+                        .event-row {
+                            display: flex;
+                            gap: 10px;
+                            align-items: baseline;
+                            padding: 6px 0;
+                            border-bottom: 1px solid rgba(255,255,255,0.04);
+                        }
+                        .event-row:last-child {
+                            border-bottom: none;
+                        }
+                        .event-time {
+                            color: var(--muted);
+                            font-family: ui-monospace, SFMono-Regular, monospace;
+                        }
+                        .event-kind {
+                            color: var(--accent);
+                            font-family: ui-monospace, SFMono-Regular, monospace;
+                        }
+                        .event-tool {
+                            color: #cbd6e2;
+                            font-family: ui-monospace, SFMono-Regular, monospace;
+                        }
+                        .event-message {
+                            flex: 1;
+                        }
+                        .entry-card {
+                            border: 1px solid var(--border);
+                            border-radius: 14px;
+                            background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+                            margin-bottom: 12px;
+                            overflow: hidden;
+                        }
+                        .entry-card summary {
+                            list-style: none;
+                            cursor: pointer;
+                            padding: 14px 16px;
+                        }
+                        .entry-card summary::-webkit-details-marker {
+                            display: none;
+                        }
+                        .entry-title-row {
+                            display: flex;
+                            gap: 10px;
+                            align-items: center;
+                            flex-wrap: wrap;
+                        }
+                        .entry-title {
+                            font-size: 15px;
+                            font-weight: 700;
+                        }
+                        .entry-meta {
+                            margin-top: 4px;
+                            color: var(--muted);
+                            font-size: 12px;
+                        }
+                        .status-badge {
+                            padding: 2px 8px;
+                            border-radius: 999px;
+                            font-size: 11px;
+                            letter-spacing: 0.04em;
+                            text-transform: uppercase;
+                            border: 1px solid var(--border);
+                        }
+                        .status-badge.running {
+                            color: var(--warning);
+                            background: rgba(242,197,114,0.12);
+                        }
+                        .status-badge.completed {
+                            color: var(--success);
+                            background: rgba(143,209,158,0.12);
+                        }
+                        .status-badge.failed {
+                            color: var(--danger);
+                            background: rgba(240,138,135,0.12);
+                        }
+                        .entry-body {
+                            padding: 0 16px 16px;
+                        }
+                        .section-label {
+                            margin: 10px 0 6px;
+                            color: var(--accent);
+                            font-size: 12px;
+                            letter-spacing: 0.08em;
+                            text-transform: uppercase;
+                        }
+                        pre {
+                            margin: 0;
+                            padding: 12px;
+                            border-radius: 10px;
+                            background: var(--bg);
+                            border: 1px solid var(--border);
+                            white-space: pre-wrap;
+                            word-break: break-word;
+                            font: 12px/1.5 ui-monospace, SFMono-Regular, monospace;
+                            color: #dbe6f2;
+                        }
+                        .screenshot-grid {
+                            display: grid;
+                            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+                            gap: 12px;
+                            margin-top: 8px;
+                        }
+                        .shot-card {
+                            border: 1px solid var(--border);
+                            border-radius: 12px;
+                            overflow: hidden;
+                            background: rgba(255,255,255,0.03);
+                        }
+                        .shot-card img {
+                            display: block;
+                            width: 100%;
+                            height: auto;
+                            background: #0f131a;
+                        }
+                        .shot-body {
+                            padding: 10px 12px 12px;
+                        }
+                        .shot-kind {
+                            font-size: 11px;
+                            letter-spacing: 0.08em;
+                            text-transform: uppercase;
+                            color: var(--accent);
+                        }
+                        .shot-summary {
+                            margin-top: 6px;
+                            font-size: 12px;
+                            color: #dbe6f2;
+                        }
+                        .shot-meta {
+                            margin-top: 6px;
+                            color: var(--muted);
+                            font-size: 11px;
+                        }
+                        a {
+                            color: var(--accent);
+                            text-decoration: none;
+                        }
+                        .empty {
+                            padding: 12px;
+                            color: var(--muted);
+                        }
+                    </style>
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function () {
+                            for (const details of document.querySelectorAll('details[data-entry-id]')) {
+                                details.addEventListener('toggle', function () {
+                                    const entryId = details.getAttribute('data-entry-id');
+                                    window.webkit.messageHandlers.toggleEntry.postMessage({ id: entryId, open: details.open });
+                                });
+                            }
+                        });
+                    </script>
+                </head>
+                <body>
+                    <section class=\"section\">
+                        <div class=\"section-header\">Aktuelle Ereignisse</div>
+                        <div class=\"section-body\">\(eventMarkup)</div>
+                    </section>
+                    <section class=\"section\">
+                        <div class=\"section-header\">Tool-Aufrufe</div>
+                        <div class=\"section-body\">\(entryMarkup)</div>
+                    </section>
+                </body>
+                </html>
+                """
+        }
+
+        private func buildScreenshotMarkup(for entry: ToolLogEntry) -> String {
+                guard entry.Screenshots.isEmpty == false else {
+                        return ""
+                }
+
+                let screenshots = entry.Screenshots.map { artifact in
+                        let imagePath = Self.escapeHTML(Self.urlEncodedPathComponent(artifact.ImageFileName))
+                        let kind = Self.escapeHTML(artifact.Kind)
+                        let summary = Self.escapeHTML(artifact.Summary)
+                        let mediaType = Self.escapeHTML(artifact.MediaType ?? "")
+                        let retention = Self.escapeHTML(artifact.RetentionStatus ?? "")
+                        let similarity = Self.escapeHTML(artifact.Similarity ?? "")
+                        let metaLink: String
+                        if let metaFileName = artifact.MetaFileName, !metaFileName.isEmpty {
+                                let metaPath = Self.escapeHTML(Self.urlEncodedPathComponent(metaFileName))
+                                metaLink = " · <a href=\"\(metaPath)\">Meta öffnen</a>"
+                        } else {
+                                metaLink = ""
+                        }
+
+                        var metaParts: [String] = []
+                        if !mediaType.isEmpty {
+                                metaParts.append(mediaType)
+                        }
+                        if !retention.isEmpty {
+                                metaParts.append(retention)
+                        }
+                        if !similarity.isEmpty {
+                                metaParts.append("Ähnlichkeit \(similarity)")
+                        }
+
+                        let metaLine = metaParts.isEmpty ? "" : "<div class=\"shot-meta\">\(metaParts.joined(separator: " · "))</div>"
+
+                        return """
+                        <div class=\"shot-card\">
+                            <a href=\"\(imagePath)\"><img src=\"\(imagePath)\" alt=\"\(kind)\" /></a>
+                            <div class=\"shot-body\">
+                                <div class=\"shot-kind\">\(kind)</div>
+                                <div class=\"shot-summary\">\(summary)</div>
+                                \(metaLine)
+                                <div class=\"shot-meta\"><a href=\"\(imagePath)\">Screenshot öffnen</a>\(metaLink)</div>
+                            </div>
+                        </div>
+                        """
+                }.joined(separator: "\n")
+
+                return "<div class=\"section-label\">Screenshots</div><div class=\"screenshot-grid\">\(screenshots)</div>"
+        }
+
+        private static func shortTime(_ value: String?) -> String {
+                guard let value else {
+                        return "--:--:--"
+                }
+
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = formatter.date(from: value) {
+                        let outputFormatter = DateFormatter()
+                        outputFormatter.dateFormat = "HH:mm:ss"
+                        return outputFormatter.string(from: date)
+                }
+
+                if value.count >= 19 {
+                        let start = value.index(value.startIndex, offsetBy: 11)
+                        let end = value.index(start, offsetBy: 8, limitedBy: value.endIndex) ?? value.endIndex
+                        return String(value[start..<end])
+                }
+
+                return value
+        }
+
+        private static func formatDisplayTimestamp(_ value: String?) -> String {
+                guard let value, !value.isEmpty else {
+                        return "-"
+                }
+
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = formatter.date(from: value) {
+                        let outputFormatter = DateFormatter()
+                        outputFormatter.dateStyle = .short
+                        outputFormatter.timeStyle = .medium
+                        return outputFormatter.string(from: date)
+                }
+
+                return value
+        }
+
+        private static func statusLabel(for status: String) -> String {
+                switch status.lowercased() {
+                case "running":
+                        return "laufend"
+                case "failed":
+                        return "fehler"
+                default:
+                        return "fertig"
+                }
+        }
+
+        private static func urlEncodedPathComponent(_ value: String) -> String {
+                value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+        }
+
+        private static func escapeHTML(_ value: String) -> String {
+                var escaped = value
+                escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
+                escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
+                escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
+                escaped = escaped.replacingOccurrences(of: "\"", with: "&quot;")
+                return escaped
+        }
+
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+                guard message.name == "toggleEntry",
+                            let body = message.body as? [String: Any],
+                            let entryId = body["id"] as? String,
+                            let open = body["open"] as? Bool else {
+                        return
+                }
+
+                if open {
+                        expandedEntryIds.insert(entryId)
+                } else {
+                        expandedEntryIds.remove(entryId)
+                }
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+                if navigationAction.navigationType == .linkActivated,
+                     let url = navigationAction.request.url,
+                     url.isFileURL {
+                        NSWorkspace.shared.open(url)
+                        decisionHandler(.cancel)
+                        return
+                }
+
+                decisionHandler(.allow)
+    }
+}
+
+final class StatusBarViewController: NSViewController, NSTextViewDelegate {
+    private static let panelWidth: CGFloat = 460
+    private static let minimumPanelHeight: CGFloat = 224
+    private static let maximumPanelHeight: CGFloat = 316
+    private static let backgroundInset: CGFloat = 10
+    private static let sideInset: CGFloat = 28
+    private static let textHorizontalInset: CGFloat = 20
+    private static let topInset: CGFloat = 34
+    private static let bottomInset: CGFloat = 12
+    private static let defaultTextHeight: CGFloat = 36
+    private static let maximumTextHeight: CGFloat = 108
+    private static let maximumStatusLength = 240
+    private static let primaryTextColor = NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.17, alpha: 0.96)
+    private static let secondaryTextColor = NSColor(calibratedRed: 0.25, green: 0.29, blue: 0.35, alpha: 0.92)
+    private static let accentTextColor = NSColor(calibratedRed: 0.09, green: 0.38, blue: 0.60, alpha: 0.98)
+
     private let serverURL: URL
     private let dismissPopover: () -> Void
     private let setActivity: (Bool) -> Void
+    private let toggleLogWindow: () -> Void
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
     private let backgroundView = NSVisualEffectView(frame: .zero)
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -142,11 +755,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
-    private let activitySectionLabel = NSTextField(labelWithString: "Aktivität")
-    private let activityStepLabel = NSTextField(labelWithString: "Leerlauf")
-    private let activeToolLabel = NSTextField(labelWithString: "Tool: -")
-    private let activityScrollView = NSScrollView(frame: .zero)
-    private let activityTextView = NSTextView(frame: .zero)
+    private let logButton = NSButton(frame: .zero)
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
@@ -193,12 +802,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var shouldAutoResumeRecordingAfterPlayback = false
     private var isAutoFollowUpRecording = false
     private var autoResumeAfterPlaybackTask: Task<Void, Never>?
-    private var activityPollTimer: Timer?
 
-    init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
+    init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, toggleLogWindow: @escaping () -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
         self.serverURL = serverURL
         self.dismissPopover = dismissPopover
         self.setActivity = setActivity
+        self.toggleLogWindow = toggleLogWindow
         self.diagnosticsLogger = diagnosticsLogger
         let environment = ProcessInfo.processInfo.environment
         self.silenceCommitInterval = StatusBarViewController.readPositiveDouble(environment["AIDESK_MENU_BAR_SILENCE_COMMIT_SECONDS"], fallback: 0.9)
@@ -222,20 +831,20 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
         backgroundView.frame = view.bounds.insetBy(dx: Self.backgroundInset, dy: Self.backgroundInset)
         backgroundView.autoresizingMask = [.width, .height]
-        backgroundView.material = .hudWindow
+        backgroundView.material = .popover
         backgroundView.blendingMode = .withinWindow
         backgroundView.state = .active
         backgroundView.wantsLayer = true
         backgroundView.layer?.cornerRadius = 24
         backgroundView.layer?.masksToBounds = true
         backgroundView.layer?.borderWidth = 1
-        backgroundView.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        backgroundView.layer?.borderColor = NSColor.black.withAlphaComponent(0.10).cgColor
         view.addSubview(backgroundView)
 
         voicePopup.target = self
         voicePopup.action = #selector(changeVoice(_:))
         voicePopup.bezelStyle = .rounded
-        voicePopup.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        voicePopup.contentTintColor = Self.primaryTextColor
 
         textScrollView.borderType = .noBorder
         textScrollView.drawsBackground = false
@@ -259,55 +868,32 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainerInset = NSSize(width: 0, height: 7)
         textView.font = NSFont.systemFont(ofSize: 21, weight: .regular)
-        textView.textColor = .white
+        textView.textColor = Self.primaryTextColor
         textView.backgroundColor = .clear
-        textView.insertionPointColor = .white
+        textView.insertionPointColor = Self.primaryTextColor
         textView.delegate = self
         textScrollView.documentView = textView
 
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 1
         statusLabel.font = NSFont.systemFont(ofSize: 14, weight: .medium)
-        statusLabel.textColor = NSColor.white.withAlphaComponent(0.92)
+        statusLabel.textColor = Self.accentTextColor
         statusLabel.isHidden = true
 
         usageLabel.lineBreakMode = .byWordWrapping
         usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        usageLabel.textColor = NSColor.white.withAlphaComponent(0.82)
+        usageLabel.textColor = Self.secondaryTextColor
         usageLabel.alignment = .left
         usageLabel.cell?.truncatesLastVisibleLine = true
 
-        activitySectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        activitySectionLabel.textColor = NSColor.white.withAlphaComponent(0.70)
-
-        activityStepLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        activityStepLabel.textColor = NSColor.white.withAlphaComponent(0.95)
-        activityStepLabel.lineBreakMode = .byTruncatingTail
-
-        activeToolLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        activeToolLabel.textColor = NSColor.white.withAlphaComponent(0.78)
-        activeToolLabel.lineBreakMode = .byTruncatingTail
-
-        activityScrollView.borderType = .noBorder
-        activityScrollView.drawsBackground = false
-        activityScrollView.hasVerticalScroller = true
-        activityScrollView.hasHorizontalScroller = false
-        activityScrollView.autohidesScrollers = true
-
-        activityTextView.isEditable = false
-        activityTextView.isSelectable = true
-        activityTextView.isRichText = false
-        activityTextView.importsGraphics = false
-        activityTextView.isVerticallyResizable = true
-        activityTextView.isHorizontallyResizable = false
-        activityTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        activityTextView.textColor = NSColor.white.withAlphaComponent(0.86)
-        activityTextView.backgroundColor = NSColor.white.withAlphaComponent(0.04)
-        activityTextView.textContainerInset = NSSize(width: 6, height: 6)
-        activityTextView.textContainer?.widthTracksTextView = true
-        activityTextView.string = "Noch keine Aktivität"
-        activityScrollView.documentView = activityTextView
+        logButton.target = self
+        logButton.action = #selector(toggleLogWindowAction)
+        logButton.bezelStyle = .rounded
+        logButton.image = NSImage(systemSymbolName: "list.bullet.rectangle.portrait", accessibilityDescription: "Tool-Log")
+        logButton.imagePosition = .imageOnly
+        logButton.contentTintColor = Self.primaryTextColor
+        logButton.toolTip = "Tool-Log ein- oder ausblenden"
 
         activityIndicator.style = .spinning
         activityIndicator.controlSize = .small
@@ -318,7 +904,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         recordButton.bezelStyle = .rounded
         recordButton.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Aufnehmen")
         recordButton.imagePosition = .imageOnly
-        recordButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        recordButton.contentTintColor = Self.primaryTextColor
         recordButton.toolTip = "Aufnahme starten oder stoppen"
 
         cancelButton.target = self
@@ -327,7 +913,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         cancelButton.bezelStyle = .rounded
         cancelButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "Abbrechen")
         cancelButton.imagePosition = .imageOnly
-        cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        cancelButton.contentTintColor = Self.primaryTextColor
         cancelButton.toolTip = "Laufende Antwort abbrechen"
 
         quitSeparator.boxType = .custom
@@ -341,17 +927,14 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         quitButton.action = #selector(quitApp)
         quitButton.bezelStyle = .rounded
         quitButton.font = NSFont.systemFont(ofSize: 16, weight: .semibold)
-        quitButton.contentTintColor = NSColor.white.withAlphaComponent(0.92)
+        quitButton.contentTintColor = Self.primaryTextColor
         quitButton.toolTip = "AIDesk beenden"
 
         backgroundView.addSubview(voicePopup)
         backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
         backgroundView.addSubview(usageLabel)
-        backgroundView.addSubview(activitySectionLabel)
-        backgroundView.addSubview(activityStepLabel)
-        backgroundView.addSubview(activeToolLabel)
-        backgroundView.addSubview(activityScrollView)
+        backgroundView.addSubview(logButton)
         backgroundView.addSubview(activityIndicator)
         backgroundView.addSubview(recordButton)
         backgroundView.addSubview(cancelButton)
@@ -365,14 +948,9 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     override func viewDidAppear() {
         super.viewDidAppear()
         focusTextField()
-        startActivityPolling()
         Task { [weak self] in
             await self?.loadVoiceSettings()
         }
-    }
-
-    deinit {
-        activityPollTimer?.invalidate()
     }
 
     func focusTextField() {
@@ -418,6 +996,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
     @objc private func sendText(_ sender: Any?) {
         submitCurrentText(dismissAfterSend: true)
+    }
+
+    @objc private func toggleLogWindowAction(_ sender: Any?) {
+        toggleLogWindow()
     }
 
     private func submitCurrentText(dismissAfterSend: Bool) {
@@ -1292,61 +1874,6 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         updateOverlayLayout(animated: true)
     }
 
-    private func startActivityPolling() {
-        activityPollTimer?.invalidate()
-        refreshActivitySnapshot()
-        activityPollTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            self?.refreshActivitySnapshot()
-        }
-    }
-
-    private func refreshActivitySnapshot() {
-        let snapshot = loadActivitySnapshot()
-        renderActivity(snapshot)
-    }
-
-    private func loadActivitySnapshot() -> ActivitySnapshot? {
-        let url = URL(fileURLWithPath: Self.activityFilePath)
-        guard let data = try? Data(contentsOf: url) else {
-            return nil
-        }
-
-        return try? JSONDecoder().decode(ActivitySnapshot.self, from: data)
-    }
-
-    private func renderActivity(_ snapshot: ActivitySnapshot?) {
-        guard let snapshot else {
-            activityStepLabel.stringValue = "Leerlauf"
-            activeToolLabel.stringValue = "Tool: -"
-            activityTextView.string = "Noch keine Aktivität"
-            return
-        }
-
-        let currentStep = snapshot.CurrentStep?.trimmingCharacters(in: .whitespacesAndNewlines)
-        activityStepLabel.stringValue = (currentStep?.isEmpty == false ? currentStep! : "Leerlauf")
-
-        if let activeTool = snapshot.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
-            activeToolLabel.stringValue = "Tool: \(activeTool)"
-        } else {
-            activeToolLabel.stringValue = "Tool: -"
-        }
-
-        let recentLines = snapshot.Entries.suffix(8).reversed().map { entry in
-            let timePrefix: String
-            if let timestamp = entry.TimestampUtc, timestamp.count >= 16 {
-                let start = timestamp.index(timestamp.startIndex, offsetBy: 11)
-                let end = timestamp.index(start, offsetBy: 5, limitedBy: timestamp.endIndex) ?? timestamp.endIndex
-                timePrefix = String(timestamp[start..<end])
-            } else {
-                timePrefix = "--:--"
-            }
-
-            return "[\(timePrefix)] \(entry.Message)"
-        }
-
-        activityTextView.string = recentLines.isEmpty ? "Noch keine Aktivität" : recentLines.joined(separator: "\n")
-    }
-
     private static func truncatedStatusText(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > maximumStatusLength else {
@@ -1360,7 +1887,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private func updateOverlayLayout(animated: Bool) {
         let contentTextHeight = calculatedContentTextHeight()
         let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
-        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 250))
+        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 150))
         currentPanelHeight = desiredPanelHeight
 
         view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
@@ -1371,10 +1898,6 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let topRowY = contentHeight - Self.topInset - 30
         let textY = topRowY - 12 - textHeight
         let statusY = textY - 28
-        let activityHeaderY = statusY - 24
-        let activityStepY = activityHeaderY - 18
-        let toolY = activityStepY - 16
-        let activityLogY = toolY - Self.activityLogHeight - 6
         let bottomRowY = Self.bottomInset
 
         voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: 170, height: 30)
@@ -1382,17 +1905,13 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         quitSeparator.frame = NSRect(x: quitButton.frame.minX - 12, y: topRowY + 4, width: 1, height: 22)
         cancelButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
         recordButton.frame = NSRect(x: cancelButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
+        logButton.frame = NSRect(x: recordButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
 
         textScrollView.frame = NSRect(x: Self.textHorizontalInset, y: textY, width: contentWidth - (Self.textHorizontalInset * 2), height: textHeight)
         textView.textContainer?.containerSize = NSSize(width: textScrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.frame = NSRect(origin: .zero, size: NSSize(width: textScrollView.contentSize.width, height: max(textHeight, contentTextHeight)))
 
         statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: contentWidth - (Self.sideInset * 2) - 24, height: 22)
-        activitySectionLabel.frame = NSRect(x: Self.sideInset, y: activityHeaderY, width: 120, height: 16)
-        activityStepLabel.frame = NSRect(x: Self.sideInset, y: activityStepY, width: contentWidth - (Self.sideInset * 2), height: 18)
-        activeToolLabel.frame = NSRect(x: Self.sideInset, y: toolY, width: contentWidth - (Self.sideInset * 2), height: 16)
-        activityScrollView.frame = NSRect(x: Self.sideInset, y: activityLogY, width: contentWidth - (Self.sideInset * 2), height: Self.activityLogHeight)
-        activityTextView.frame = NSRect(origin: .zero, size: NSSize(width: activityScrollView.contentSize.width, height: Self.activityLogHeight))
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
         usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
@@ -1567,8 +2086,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             systemSymbolName: isRecording ? "stop.circle.fill" : "mic.fill",
             accessibilityDescription: isRecording ? "Aufnahme stoppen" : "Aufnehmen")
         recordButton.contentTintColor = isRecording
-            ? (isAutoFollowUp ? NSColor.systemYellow.withAlphaComponent(0.95) : NSColor.systemRed.withAlphaComponent(0.95))
-            : NSColor.white.withAlphaComponent(0.92)
+            ? (isAutoFollowUp ? NSColor.systemOrange.withAlphaComponent(0.95) : NSColor.systemRed.withAlphaComponent(0.95))
+            : Self.primaryTextColor
         recordButton.toolTip = isRecording
             ? (isAutoFollowUp ? "Automatische Folgeaufnahme aktiv" : "Aufnahme läuft")
             : "Aufnahme starten oder stoppen"
@@ -1620,6 +2139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let diagnosticsLogger = StatusBarDiagnosticsLogger()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var inputWindow: NSPanel?
+    private var logWindow: NSWindow?
     private weak var viewController: StatusBarViewController?
     private var isBusy = false
     private var hidInputWindowForAutomation = false
@@ -1633,9 +2153,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.inputWindow?.orderOut(nil)
         }, setActivity: { [weak self] isBusy in
             self?.setBusy(isBusy)
+        }, toggleLogWindow: { [weak self] in
+            self?.toggleLogWindow(nil)
         }, diagnosticsLogger: diagnosticsLogger)
         self.viewController = viewController
         inputWindow = makeInputWindow(contentViewController: viewController)
+        logWindow = makeLogWindow()
         diagnosticsLogger.log("Application launched with server URL \(serverURL.absoluteString)")
 
         if let button = statusItem.button {
@@ -1666,6 +2189,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc private func toggleLogWindow(_ sender: AnyObject?) {
+        guard let logWindow else {
+            return
+        }
+
+        if logWindow.isVisible {
+            logWindow.orderOut(sender)
+        } else {
+            positionLogWindow(logWindow)
+            NSApp.activate(ignoringOtherApps: true)
+            logWindow.makeKeyAndOrderFront(sender)
+        }
+    }
+
     private func makeInputWindow(contentViewController: NSViewController) -> NSPanel {
         let panel = OverlayPanel(
             contentRect: NSRect(x: 0, y: 0, width: 460, height: 206),
@@ -1689,11 +2226,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return panel
     }
 
+    private func makeLogWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        window.contentViewController = ActivityLogViewController()
+        window.title = "AIDeskAssistantLogWindow"
+        window.titleVisibility = .visible
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.minSize = NSSize(width: 520, height: 300)
+        positionLogWindow(window)
+        return window
+    }
+
     private func positionInputWindow(_ window: NSWindow) {
         let targetScreen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
         let visibleFrame = targetScreen?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let frame = window.frame
         let x = visibleFrame.midX - (frame.width / 2)
+        let y = visibleFrame.minY + 24
+        window.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
+    }
+
+    private func positionLogWindow(_ window: NSWindow) {
+        let targetScreen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
+        let visibleFrame = targetScreen?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
+        let frame = window.frame
+        let x = visibleFrame.maxX - frame.width - 24
         let y = visibleFrame.minY + 24
         window.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }

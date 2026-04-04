@@ -144,6 +144,12 @@ if (menuBarHostRequested)
 
     try
     {
+        if (debugLogger is not null)
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_TOOL_LOG_FILE", debugLogger.ToolActivityFilePath);
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_DEBUG_SESSION_DIR", debugLogger.SessionDirectoryPath);
+        }
+
         Console.ForegroundColor = ConsoleColor.Green;
         Console.WriteLine($"Menu bar mode ready on {server.BaseUri}");
         Console.WriteLine($"Realtime speech + tool model: {realtimeModel}");

@@ -12,6 +12,7 @@ namespace AIDeskAssistant.Platform.MacOS;
 internal sealed class MacOSScreenshotService : IScreenshotService
 {
     internal const string OverlayWindowTitle = "AIDeskAssistantOverlayPanel";
+    internal const string LogWindowTitle = "AIDeskAssistantLogWindow";
     private const string LegacyOverlayWindowTitle = "AIDesk";
     private const string ScreenCaptureKitScriptFileName = "AIDeskAssistantScreenCaptureKit.swift";
 
@@ -164,6 +165,8 @@ internal sealed class MacOSScreenshotService : IScreenshotService
             outputPath,
             "--exclude-title",
             OverlayWindowTitle,
+            "--exclude-title",
+            LogWindowTitle,
             "--exclude-title",
             LegacyOverlayWindowTitle,
         };

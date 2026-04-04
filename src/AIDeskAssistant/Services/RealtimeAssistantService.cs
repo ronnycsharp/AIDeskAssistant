@@ -608,6 +608,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         string toolResult;
         _debugLogger?.LogToolCall($"→ Tool: {functionCall.FunctionName}({argumentsJson})");
         _debugLogger?.LogHistoryEntry(AssistantRole, $"Requested tool call: {functionCall.FunctionName}({argumentsJson})");
+        _debugLogger?.StartToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson);
 
         try
         {
@@ -615,10 +616,12 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             rawToolResult = await EnrichRealtimeToolResultAsync(functionCall.FunctionName, rawToolResult, ct);
             LogRealtimeToolResult(functionCall.CallId, functionCall.FunctionName, rawToolResult);
             toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, rawToolResult);
+            _debugLogger?.CompleteToolExecution(functionCall.CallId, toolResult);
         }
         catch (Exception ex)
         {
             toolResult = $"Tool '{functionCall.FunctionName}' failed: {ex.Message}";
+            _debugLogger?.FailToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson, toolResult);
         }
 
         _debugLogger?.LogToolResult($"← Result: {toolResult}");
