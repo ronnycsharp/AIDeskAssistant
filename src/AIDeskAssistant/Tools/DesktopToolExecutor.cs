@@ -9,6 +9,13 @@ namespace AIDeskAssistant.Tools;
 /// <summary>Executes desktop tool calls dispatched by the OpenAI model.</summary>
 internal sealed class DesktopToolExecutor
 {
+    /// <summary>
+    /// Prefix used on every tool result string that represents a failure.
+    /// The AI model is instructed to treat any result starting with this prefix
+    /// as an error and to NOT continue as if the action succeeded.
+    /// </summary>
+    internal const string ErrorPrefix = "[ERROR] ";
+
     private const string TimeoutMsArg = "timeout_ms";
     private const string WidthArg = "width";
     private const string HeightArg = "height";
@@ -111,7 +118,7 @@ internal sealed class DesktopToolExecutor
                 "move_active_window" => MoveActiveWindow(args),
                 "resize_active_window" => ResizeActiveWindow(args),
                 "wait" => Wait(args),
-                _ => $"Unknown tool: {toolName}",
+                _ => Err($"Unknown tool: {toolName}"),
             };
 
             MenuBarActivityState.ToolFinished(toolName, SummarizeToolResult(result));
@@ -123,6 +130,8 @@ internal sealed class DesktopToolExecutor
             throw;
         }
     }
+
+    private static string Err(string message) => $"{ErrorPrefix}{message}";
 
     private static string? SummarizeArguments(string argsJson)
     {
@@ -241,7 +250,7 @@ internal sealed class DesktopToolExecutor
 
         if (!string.Equals(target, ActiveWindowScreenshotTarget, StringComparison.Ordinal))
         {
-            error = $"Invalid screenshot target: '{target}'. Supported values: '{FullScreenScreenshotTarget}', '{ActiveWindowScreenshotTarget}'.";
+            error = Err($"Invalid screenshot target: '{target}'. Supported values: '{FullScreenScreenshotTarget}', '{ActiveWindowScreenshotTarget}'.");
             return false;
         }
 
@@ -251,7 +260,7 @@ internal sealed class DesktopToolExecutor
             WindowBounds clampedBounds = ClampWindowBounds(activeWindow, padding, _screenshot.GetScreenInfo());
             if (clampedBounds.Width <= 0 || clampedBounds.Height <= 0)
             {
-                error = "Failed to capture active window screenshot: active window bounds are empty.";
+                error = Err("Failed to capture active window screenshot: active window bounds are empty.");
                 return false;
             }
 
@@ -261,7 +270,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            error = $"Failed to capture active window screenshot: {ex.Message}";
+            error = Err($"Failed to capture active window screenshot: {ex.Message}");
             return false;
         }
     }
@@ -363,7 +372,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Frontmost UI element summary unavailable: {ex.Message}";
+            return Err($"Frontmost UI element summary unavailable: {ex.Message}");
         }
     }
 
@@ -375,7 +384,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to get frontmost application: {ex.Message}";
+            return Err($"Failed to get frontmost application: {ex.Message}");
         }
     }
 
@@ -392,7 +401,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to list windows: {ex.Message}";
+            return Err($"Failed to list windows: {ex.Message}");
         }
     }
 
@@ -464,7 +473,7 @@ internal sealed class DesktopToolExecutor
         string text = DesktopToolDefinitions.GetString(args, "text");
 
         if (LooksLikeSpecialInputText(text))
-            return "Blocked type_text because the payload looks like special key or caret-navigation input. Use press_key for arrow keys, enter, return, tab, escape, backspace, delete, home, end, page up, or page down instead.";
+            return Err("Blocked type_text because the payload looks like special key or caret-navigation input. Use press_key for arrow keys, enter, return, tab, escape, backspace, delete, home, end, page up, or page down instead.");
 
         _keyboard.TypeText(text);
         return $"Typed {text.Length} character(s)";
@@ -522,10 +531,10 @@ internal sealed class DesktopToolExecutor
     {
         string name = DesktopToolDefinitions.GetString(args, "name");
         if (string.IsNullOrWhiteSpace(name))
-            return "Application name is required";
+            return Err("Application name is required");
 
         if (name.IndexOfAny(new[] { '/', '\\', ';', '&', '|', '`', '$', '<', '>' }) >= 0)
-            return $"Invalid application name: '{name}'";
+            return Err($"Invalid application name: '{name}'");
 
         try
         {
@@ -563,7 +572,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to open '{name}': {ex.Message}";
+            return Err($"Failed to open '{name}': {ex.Message}");
         }
     }
 
@@ -571,10 +580,10 @@ internal sealed class DesktopToolExecutor
     {
         string name = DesktopToolDefinitions.GetString(args, "name");
         if (string.IsNullOrWhiteSpace(name))
-            return "Application name is required";
+            return Err("Application name is required");
 
         if (name.IndexOfAny(new[] { '/', '\\', ';', '&', '|', '`', '$', '<', '>' }) >= 0)
-            return $"Invalid application name: '{name}'";
+            return Err($"Invalid application name: '{name}'");
 
         try
         {
@@ -586,11 +595,11 @@ internal sealed class DesktopToolExecutor
                 return $"Focused application: {resolvedName}";
             }
 
-            return $"Focusing applications by name is not implemented on this platform. Requested: {resolvedName}";
+            return Err($"Focusing applications by name is not implemented on this platform. Requested: {resolvedName}");
         }
         catch (Exception ex)
         {
-            return $"Failed to focus '{name}': {ex.Message}";
+            return Err($"Failed to focus '{name}': {ex.Message}");
         }
     }
 
@@ -598,10 +607,10 @@ internal sealed class DesktopToolExecutor
     {
         string url = DesktopToolDefinitions.GetString(args, "url");
         if (string.IsNullOrWhiteSpace(url))
-            return "URL is required";
+            return Err("URL is required");
 
         if (!TryGetHttpUri(url, out Uri? parsedUri))
-            return $"Invalid URL: '{url}'";
+            return Err($"Invalid URL: '{url}'");
 
         try
         {
@@ -632,7 +641,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to open URL '{parsedUri.AbsoluteUri}': {ex.Message}";
+            return Err($"Failed to open URL '{parsedUri.AbsoluteUri}': {ex.Message}");
         }
     }
 
@@ -646,14 +655,14 @@ internal sealed class DesktopToolExecutor
         {
             var result = _terminal.ExecuteCommand(command, arguments, timeoutMs);
             string prefix = result.TimedOut
-                ? $"Command '{command}' timed out after {timeoutMs} ms."
+                ? Err($"Command '{command}' timed out after {timeoutMs} ms.")
                 : $"Command '{command}' exited with code {result.ExitCode}.";
 
             return $"{prefix}\nSTDOUT:\n{FormatTerminalOutput(result.StandardOutput)}\nSTDERR:\n{FormatTerminalOutput(result.StandardError)}";
         }
         catch (Exception ex)
         {
-            return $"Failed to run command '{command}': {ex.Message}";
+            return Err($"Failed to run command '{command}': {ex.Message}");
         }
     }
 
@@ -661,7 +670,7 @@ internal sealed class DesktopToolExecutor
     {
         IReadOnlyList<string> titles = GetTitles(args);
         if (titles.Count == 0)
-            return "At least one Dock application title is required";
+            return Err("At least one Dock application title is required");
 
         try
         {
@@ -670,7 +679,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to click Dock application: {ex.Message}";
+            return Err($"Failed to click Dock application: {ex.Message}");
         }
     }
 
@@ -678,7 +687,7 @@ internal sealed class DesktopToolExecutor
     {
         IReadOnlyList<string> titles = GetTitles(args);
         if (titles.Count == 0)
-            return "At least one Apple menu item title is required";
+            return Err("At least one Apple menu item title is required");
 
         try
         {
@@ -687,7 +696,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to click Apple menu item: {ex.Message}";
+            return Err($"Failed to click Apple menu item: {ex.Message}");
         }
     }
 
@@ -695,7 +704,7 @@ internal sealed class DesktopToolExecutor
     {
         IReadOnlyList<string> titles = GetTitles(args);
         if (titles.Count == 0)
-            return "At least one System Settings sidebar title is required";
+            return Err("At least one System Settings sidebar title is required");
 
         try
         {
@@ -704,7 +713,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to click System Settings sidebar item: {ex.Message}";
+            return Err($"Failed to click System Settings sidebar item: {ex.Message}");
         }
     }
 
@@ -714,7 +723,7 @@ internal sealed class DesktopToolExecutor
         string titleContains = DesktopToolDefinitions.GetString(args, "title_contains").Trim();
 
         if (string.IsNullOrWhiteSpace(applicationName) && string.IsNullOrWhiteSpace(titleContains))
-            return "application_name or title_contains is required";
+            return Err("application_name or title_contains is required");
 
         try
         {
@@ -724,11 +733,11 @@ internal sealed class DesktopToolExecutor
 
             return focused
                 ? $"Focused window matching App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}"
-                : $"No matching window found for App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}";
+                : Err($"No matching window found for App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}");
         }
         catch (Exception ex)
         {
-            return $"Failed to focus window: {ex.Message}";
+            return Err($"Failed to focus window: {ex.Message}");
         }
     }
 
@@ -757,15 +766,15 @@ internal sealed class DesktopToolExecutor
             }
             catch (Exception ex)
             {
-                return $"Failed while waiting for window: {ex.Message}";
+                return Err($"Failed while waiting for window: {ex.Message}");
             }
 
             Thread.Sleep(pollIntervalMs);
         }
 
         return absent
-            ? $"Timed out waiting for window to disappear: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}"
-            : $"Timed out waiting for window: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}";
+            ? Err($"Timed out waiting for window to disappear: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}")
+            : Err($"Timed out waiting for window: App={FormatWindowTitle(applicationName)}, Title={FormatWindowTitle(titleContains)}, Frontmost={requireFrontmost}");
     }
 
     private string FocusFrontmostWindowContent(Dictionary<string, JsonElement> args)
@@ -781,7 +790,7 @@ internal sealed class DesktopToolExecutor
             if (TryFocusFrontmostWindowContentFallback(out string? fallbackResult))
                 return $"{fallbackResult} AX focus error: {ex.Message}";
 
-            return $"Failed to focus frontmost window content: {ex.Message}";
+            return Err($"Failed to focus frontmost window content: {ex.Message}");
         }
     }
 
@@ -805,7 +814,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to find UI elements: {ex.Message}";
+            return Err($"Failed to find UI elements: {ex.Message}");
         }
     }
 
@@ -826,7 +835,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to click UI element: {ex.Message}";
+            return Err($"Failed to click UI element: {ex.Message}");
         }
     }
 
@@ -858,15 +867,15 @@ internal sealed class DesktopToolExecutor
             }
             catch (Exception ex)
             {
-                return $"Failed while waiting for UI element: {ex.Message}";
+                return Err($"Failed while waiting for UI element: {ex.Message}");
             }
 
             Thread.Sleep(pollIntervalMs);
         }
 
         return absent
-            ? $"Timed out waiting for UI element to disappear: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}"
-            : $"Timed out waiting for UI element: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}";
+            ? Err($"Timed out waiting for UI element to disappear: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}")
+            : Err($"Timed out waiting for UI element: Title={FormatWindowTitle(title)}, Role={FormatWindowTitle(role)}, Value={FormatWindowTitle(value)}");
     }
 
     private string GetFocusedUiElement()
@@ -878,7 +887,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to get focused UI element: {ex.Message}";
+            return Err($"Failed to get focused UI element: {ex.Message}");
         }
     }
 
@@ -905,11 +914,11 @@ internal sealed class DesktopToolExecutor
             bool passed = actual == expected;
             return passed
                 ? $"Assertion passed: state={state}, expected={expected}, actual={actual}. {details}"
-                : $"Assertion failed: state={state}, expected={expected}, actual={actual}. {details}";
+                : Err($"Assertion failed: state={state}, expected={expected}, actual={actual}. {details}");
         }
         catch (Exception ex)
         {
-            return $"Failed to assert state '{state}': {ex.Message}";
+            return Err($"Failed to assert state '{state}': {ex.Message}");
         }
     }
 
@@ -945,7 +954,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to get active window bounds: {ex.Message}";
+            return Err($"Failed to get active window bounds: {ex.Message}");
         }
     }
 
@@ -961,7 +970,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to move active window: {ex.Message}";
+            return Err($"Failed to move active window: {ex.Message}");
         }
     }
 
@@ -977,7 +986,7 @@ internal sealed class DesktopToolExecutor
         }
         catch (Exception ex)
         {
-            return $"Failed to resize active window: {ex.Message}";
+            return Err($"Failed to resize active window: {ex.Message}");
         }
     }
 

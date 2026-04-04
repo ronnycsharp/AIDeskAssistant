@@ -336,6 +336,7 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("type_text", $"{{\"text\":\"{text}\"}}");
 
         Assert.Equal(string.Empty, _keyboard.LastTypedText);
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
         Assert.Contains("Blocked type_text", result);
         Assert.Contains("Use press_key", result);
     }
@@ -390,7 +391,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("open_application", "{\"name\":\"bad;app\"}");
 
-        Assert.Equal("Invalid application name: 'bad;app'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid application name: 'bad;app'", result);
     }
 
     [Fact]
@@ -398,7 +399,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("focus_application", "{\"name\":\"bad|app\"}");
 
-        Assert.Equal("Invalid application name: 'bad|app'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid application name: 'bad|app'", result);
     }
 
     [Fact]
@@ -406,7 +407,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("open_url", "{\"url\":\"file:///tmp/test\"}");
 
-        Assert.Equal("Invalid URL: 'file:///tmp/test'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid URL: 'file:///tmp/test'", result);
     }
 
     [Fact]
@@ -423,7 +424,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("click_apple_menu_item", "{}");
 
-        Assert.Equal("At least one Apple menu item title is required", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}At least one Apple menu item title is required", result);
     }
 
     [Fact]
@@ -561,7 +562,94 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("does_not_exist", "{}");
 
-        Assert.Equal("Unknown tool: does_not_exist", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Unknown tool: does_not_exist", result);
+    }
+
+    [Fact]
+    public void Execute_FocusWindow_ReturnsErrorWhenNoMatchingWindow()
+    {
+        _window.FocusWindowResult = false;
+
+        string result = _sut.Execute("focus_window", "{\"application_name\":\"NonExistent\"}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("No matching window found", result);
+    }
+
+    [Fact]
+    public void Execute_WaitForWindow_ReturnsErrorOnTimeout()
+    {
+        // Use a window list with no matching "NonExistent" app to force a timeout
+        _window.Windows = [];
+
+        string result = _sut.Execute("wait_for_window", "{\"application_name\":\"NonExistent\",\"timeout_ms\":100,\"poll_interval_ms\":50}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Timed out waiting for window", result);
+    }
+
+    [Fact]
+    public void Execute_WaitForUiElement_ReturnsErrorOnTimeout()
+    {
+        // Return empty matches to force a timeout
+        _uiAutomation.MatchingElements = [];
+
+        string result = _sut.Execute("wait_for_ui_element", "{\"title\":\"NonExistent\",\"timeout_ms\":100,\"poll_interval_ms\":50}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Timed out waiting for UI element", result);
+    }
+
+    [Fact]
+    public void Execute_AssertState_ReturnsErrorWhenAssertionFails()
+    {
+        string result = _sut.Execute("assert_state", "{\"state\":\"frontmost_application\",\"application_name\":\"NonExistent\"}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Assertion failed", result);
+    }
+
+    [Fact]
+    public void Execute_RunCommand_ReturnsErrorOnTimeout()
+    {
+        _terminal.NextResult = (1, string.Empty, string.Empty, true);
+
+        string result = _sut.Execute("run_command", "{\"command\":\"sleep\",\"arguments\":[\"999\"]}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("timed out", result);
+    }
+
+    [Fact]
+    public void Execute_RunCommand_DoesNotPrefixErrorOnNonZeroExitCode()
+    {
+        _terminal.NextResult = (1, string.Empty, "some error", false);
+
+        string result = _sut.Execute("run_command", "{\"command\":\"false\",\"arguments\":[]}");
+
+        Assert.DoesNotContain(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("exited with code 1", result);
+    }
+
+    [Fact]
+    public void Execute_ClickDockApplication_ReturnsErrorWhenNoTitleProvided()
+    {
+        string result = _sut.Execute("click_dock_application", "{}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("title is required", result);
+    }
+
+    [Fact]
+    public void Execute_FocusFrontmostWindowContent_ReturnsErrorWhenBothAXAndFallbackFail()
+    {
+        _uiAutomation.FocusContentExceptionMessage = "AX focus failed";
+        _window.Bounds = new WindowBounds(0, 0, 0, 0); // Force fallback to fail
+
+        string result = _sut.Execute("focus_frontmost_window_content", "{\"application_name\":\"TextEdit\"}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Failed to focus frontmost window content", result);
     }
 
     [Theory]

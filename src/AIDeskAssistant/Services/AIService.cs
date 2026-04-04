@@ -36,6 +36,8 @@ internal sealed class AIService
         - Move and resize the active window
         - Wait between actions
 
+        Tool results that start with '[ERROR]' indicate that the tool call failed and the requested action was NOT performed or did NOT succeed. Do not treat an [ERROR] result as a success. When you receive an [ERROR] result, you must take corrective action: retry the step with a different approach, find an alternative path, or report the specific error to the user if no alternative exists. Never proceed to the next task step as if the previous [ERROR] result was a success.
+
         When the user gives you a task, figure out the necessary steps and execute them one at a time.
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.

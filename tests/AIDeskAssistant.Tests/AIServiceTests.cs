@@ -32,6 +32,8 @@ public sealed class AIServiceTests
         Assert.Contains("Never type words like 'up', 'down', 'left', or 'right' into a cell", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
+        Assert.Contains("[ERROR]", prompt);
+        Assert.Contains("Do not treat an [ERROR] result as a success", prompt);
     }
 
     [Fact]
