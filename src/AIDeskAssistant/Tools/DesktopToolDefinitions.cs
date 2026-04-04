@@ -61,6 +61,31 @@ internal static class DesktopToolDefinitions
                 "intended_element_label": {
                   "type": "string",
                   "description": "Optional short label for the highlighted AX/UI element, e.g. 'Save button' or 'Word toolbar button'."
+                },
+                "mark_source": {
+                  "type": "string",
+                  "enum": ["none", "ax", "ocr", "ax_and_ocr"],
+                  "description": "Optional numbered mark overlay mode. 'ax' marks Accessibility UI elements, 'ocr' marks OCR text boxes, and 'ax_and_ocr' combines both."
+                },
+                "mark_max_count": {
+                  "type": "integer",
+                  "description": "Maximum number of numbered marks to render and expose for follow-up actions (1-40)."
+                },
+                "mark_title": {
+                  "type": "string",
+                  "description": "Optional AX title filter used when mark_source includes 'ax'."
+                },
+                "mark_role": {
+                  "type": "string",
+                  "description": "Optional AX role filter used when mark_source includes 'ax'."
+                },
+                "mark_value": {
+                  "type": "string",
+                  "description": "Optional AX value filter used when mark_source includes 'ax'."
+                },
+                "mark_text_contains": {
+                  "type": "string",
+                  "description": "Optional substring filter used when mark_source includes 'ocr'."
                 }
               }
             }
@@ -107,6 +132,10 @@ internal static class DesktopToolDefinitions
                 "region_height": {
                   "type": "integer",
                   "description": "Optional height of the OCR region in pixels."
+                },
+                "mark_id": {
+                  "type": "integer",
+                  "description": "Optional numbered mark from the latest marked screenshot. When provided, OCR reads exactly that mark region."
                 }
               }
             }
@@ -203,15 +232,15 @@ internal static class DesktopToolDefinitions
 
     new(
             "move_mouse",
-            "Moves the mouse cursor to the specified absolute screen coordinates.",
+            "Moves the mouse cursor to the specified absolute screen coordinates or to the center of a numbered mark from the latest marked screenshot.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
                 "x": { "type": "integer", "description": "X coordinate (pixels from left edge)" },
-                "y": { "type": "integer", "description": "Y coordinate (pixels from top edge)" }
-              },
-              "required": ["x", "y"]
+                "y": { "type": "integer", "description": "Y coordinate (pixels from top edge)" },
+                "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the cursor moves to the center of that mark." }
+              }
             }
             """)
         ),
@@ -240,35 +269,35 @@ internal static class DesktopToolDefinitions
 
           new(
             "click",
-            "Moves the mouse cursor to (x, y) and clicks the specified mouse button.",
+            "Moves the mouse cursor to (x, y) or to the center of a numbered mark and clicks the specified mouse button.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
                 "x": { "type": "integer", "description": "X coordinate" },
                 "y": { "type": "integer", "description": "Y coordinate" },
+                "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the click targets the center of that mark." },
                 "button": {
                   "type": "string",
                   "enum": ["left", "right", "middle"],
                   "description": "Mouse button to click (default: left)"
                 }
-              },
-              "required": ["x", "y"]
+              }
             }
             """)
         ),
 
           new(
             "double_click",
-            "Moves the mouse cursor to (x, y) and double-clicks the left mouse button.",
+            "Moves the mouse cursor to (x, y) or to the center of a numbered mark and double-clicks the left mouse button.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
                 "x": { "type": "integer", "description": "X coordinate" },
-                "y": { "type": "integer", "description": "Y coordinate" }
-              },
-              "required": ["x", "y"]
+                "y": { "type": "integer", "description": "Y coordinate" },
+                "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the double-click targets the center of that mark." }
+              }
             }
             """)
         ),

@@ -8,7 +8,8 @@ internal readonly record struct ScreenshotAnnotationData(
     int CursorY,
     WindowBounds? SuggestedContentArea = null,
     ScreenshotClickTarget? IntendedClickTarget = null,
-    ScreenshotHighlightedRegion? IntendedElementRegion = null)
+    ScreenshotHighlightedRegion? IntendedElementRegion = null,
+    IReadOnlyList<ScreenshotMark>? Marks = null)
 {
     public bool CursorIsInsideCapture =>
         ContainsPoint(CursorX, CursorY);
@@ -29,6 +30,8 @@ internal readonly record struct ScreenshotAnnotationData(
 
     public bool HasIntendedElementRegion => IntendedElementRegion is { Bounds.Width: > 0, Bounds.Height: > 0 };
 
+    public bool HasMarks => Marks is { Count: > 0 };
+
     public bool IntendedClickIsInsideCapture =>
         IntendedClickTarget is { } target
         && ContainsPoint(target.X, target.Y);
@@ -36,6 +39,18 @@ internal readonly record struct ScreenshotAnnotationData(
     public bool IntendedElementRegionIntersectsCapture =>
         IntendedElementRegion is { } region
         && Intersects(region.Bounds);
+
+    public IEnumerable<ScreenshotMark> VisibleMarks
+    {
+        get
+        {
+            if (Marks is not { Count: > 0 })
+                return Enumerable.Empty<ScreenshotMark>();
+
+            ScreenshotAnnotationData self = this;
+            return Marks.Where(mark => mark.Bounds.Width > 0 && mark.Bounds.Height > 0 && self.Intersects(mark.Bounds));
+        }
+    }
 
     public bool ContainsPoint(int x, int y)
         => x >= CaptureBounds.X
@@ -72,3 +87,5 @@ internal readonly record struct ScreenshotAnnotationData(
 internal readonly record struct ScreenshotClickTarget(int X, int Y, string? Label = null);
 
 internal readonly record struct ScreenshotHighlightedRegion(WindowBounds Bounds, string? Label = null);
+
+internal readonly record struct ScreenshotMark(int Id, WindowBounds Bounds, string Source, string Label);

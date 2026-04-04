@@ -9,6 +9,8 @@ internal static class ScreenshotAnnotator
     private static readonly SKColor CursorColor = new(255, 106, 0, 255);
     private static readonly SKColor IntendedClickColor = new(255, 208, 0, 255);
     private static readonly SKColor IntendedElementColor = new(64, 255, 191, 255);
+    private static readonly SKColor AxMarkColor = new(79, 195, 247, 255);
+    private static readonly SKColor OcrMarkColor = new(255, 99, 132, 255);
     private static readonly SKColor RulerTickColor = new(255, 255, 255, 120);
     private static readonly SKColor RulerGuideColor = new(255, 255, 255, 28);
     private static readonly SKColor MinorGridColor = new(255, 255, 255, 18);
@@ -36,6 +38,7 @@ internal static class ScreenshotAnnotator
             float fontSize = CreateFontSize(sourceBitmap.Width, sourceBitmap.Height);
             var metrics = new ImageMetrics(sourceBitmap.Width, sourceBitmap.Height, fontSize);
             DrawCoordinateRaster(canvas, metrics, annotation);
+            DrawNumberedMarks(canvas, metrics, annotation);
             DrawIntendedElementRegion(canvas, metrics, annotation);
             DrawIntendedClickTarget(canvas, metrics, annotation);
             DrawCornerAnnotations(canvas, metrics, annotation);
@@ -258,6 +261,45 @@ internal static class ScreenshotAnnotator
         SKPoint anchorPoint = new(rect.MidX, rect.Top);
         SKPoint labelOrigin = new(Math.Min(metrics.Width - 18, rect.Left + 12f), Math.Max(18f, rect.Top + 12f));
         DrawLabelWithAnchor(canvas, metrics, labelText, labelOrigin, anchorPoint, CornerAnchor.TopLeft, IntendedElementColor);
+    }
+
+    private static void DrawNumberedMarks(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
+    {
+        if (!annotation.HasMarks)
+            return;
+
+        foreach (ScreenshotMark mark in annotation.VisibleMarks)
+        {
+            int right = mark.Bounds.X + Math.Max(0, mark.Bounds.Width - 1);
+            int bottom = mark.Bounds.Y + Math.Max(0, mark.Bounds.Height - 1);
+            SKPoint topLeft = MapGlobalPointToImage(annotation, mark.Bounds.X, mark.Bounds.Y, metrics.Width, metrics.Height);
+            SKPoint bottomRight = MapGlobalPointToImage(annotation, right, bottom, metrics.Width, metrics.Height);
+            SKRect rect = NormalizeRect(new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y));
+            SKColor accentColor = string.Equals(mark.Source, "ocr", StringComparison.OrdinalIgnoreCase) ? OcrMarkColor : AxMarkColor;
+
+            using var outerPaint = new SKPaint { Color = accentColor.WithAlpha(230), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3f };
+            using var fillPaint = new SKPaint { Color = accentColor.WithAlpha(26), IsAntialias = true, Style = SKPaintStyle.Fill };
+            canvas.DrawRect(rect, fillPaint);
+            canvas.DrawRect(rect, outerPaint);
+
+            float badgeDiameter = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 18f, 22f, 34f);
+            SKPoint badgeCenter = new(Math.Max(badgeDiameter, rect.Left + 8f), Math.Max(badgeDiameter, rect.Top + 8f));
+            using var badgeFill = new SKPaint { Color = accentColor, IsAntialias = true, Style = SKPaintStyle.Fill };
+            using var badgeStroke = new SKPaint { Color = LabelBorderColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 2f };
+            using var numberPaint = CreateTextPaint(Math.Max(10f, metrics.FontSize * 0.78f));
+            numberPaint.TextAlign = SKTextAlign.Center;
+
+            canvas.DrawCircle(badgeCenter, badgeDiameter / 2f, badgeFill);
+            canvas.DrawCircle(badgeCenter, badgeDiameter / 2f, badgeStroke);
+
+            SKFontMetrics fontMetrics = numberPaint.FontMetrics;
+            float baseline = badgeCenter.Y - ((fontMetrics.Ascent + fontMetrics.Descent) / 2f);
+            canvas.DrawText(mark.Id.ToString(), badgeCenter.X, baseline, numberPaint);
+
+            string label = $"Mark {mark.Id} ({mark.Source}): {mark.Label}";
+            SKPoint labelOrigin = new(Math.Min(metrics.Width - 18f, rect.Left + badgeDiameter + 12f), Math.Max(18f, rect.Top + 10f));
+            DrawLabelWithAnchor(canvas, metrics, label, labelOrigin, new SKPoint(rect.MidX, rect.Top), CornerAnchor.TopLeft, accentColor);
+        }
     }
 
     private static void DrawCursorAnnotation(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)

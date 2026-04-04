@@ -927,13 +927,13 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
 
 final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let panelWidth: CGFloat = 460
-    private static let minimumPanelHeight: CGFloat = 224
+    private static let minimumPanelHeight: CGFloat = 216
     private static let maximumPanelHeight: CGFloat = 316
-    private static let backgroundInset: CGFloat = 10
-    private static let sideInset: CGFloat = 28
-    private static let textHorizontalInset: CGFloat = 20
-    private static let topInset: CGFloat = 34
-    private static let bottomInset: CGFloat = 12
+    private static let backgroundInset: CGFloat = 8
+    private static let sideInset: CGFloat = 24
+    private static let textHorizontalInset: CGFloat = 16
+    private static let topInset: CGFloat = 28
+    private static let bottomInset: CGFloat = 10
     private static let defaultTextHeight: CGFloat = 36
     private static let maximumTextHeight: CGFloat = 108
     private static let maximumStatusLength = 240
@@ -1192,7 +1192,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     @objc private func sendText(_ sender: Any?) {
-        submitCurrentText(dismissAfterSend: true)
+        submitCurrentText(dismissAfterSend: false)
     }
 
     @objc private func toggleLogWindowAction(_ sender: Any?) {
@@ -1267,7 +1267,6 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func startRecording(autoFollowUp: Bool, interruptCurrentWork: Bool) {
-        dismissPopover()
         recordButton.isEnabled = false
         resetCurrentResponseAudioState()
         isAutoFollowUpRecording = autoFollowUp
@@ -2084,7 +2083,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private func updateOverlayLayout(animated: Bool) {
         let contentTextHeight = calculatedContentTextHeight()
         let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
-        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 150))
+        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 138))
         currentPanelHeight = desiredPanelHeight
 
         view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
@@ -2339,7 +2338,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var logWindow: NSWindow?
     private weak var viewController: StatusBarViewController?
     private var isBusy = false
-    private var hidInputWindowForAutomation = false
 
     init(serverURL: URL) {
         self.serverURL = serverURL
@@ -2402,7 +2400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func makeInputWindow(contentViewController: NSViewController) -> NSPanel {
         let panel = OverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 206),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 216),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false)
@@ -2459,16 +2457,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setBusy(_ busy: Bool) {
-        if busy {
-            if inputWindow?.isVisible == true {
-                hidInputWindowForAutomation = true
-                inputWindow?.orderOut(nil)
-                diagnosticsLogger.log("Input window hidden while automation is running")
-            }
-        } else {
-            hidInputWindowForAutomation = false
-        }
-
         isBusy = busy
         updateStatusItemTitle()
     }

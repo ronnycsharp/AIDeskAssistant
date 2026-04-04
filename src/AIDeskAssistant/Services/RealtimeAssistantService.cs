@@ -10,6 +10,7 @@ namespace AIDeskAssistant.Services;
 internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 {
     private const string AssistantRole = "assistant";
+    private const string InitialLiveStatusMessage = "Ich prüfe jetzt live den aktuellen Zustand und arbeite das Problem Schritt für Schritt ab.";
     private static readonly string[] BuiltInVoiceIds = new[] { "alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse" };
     private const double ScreenshotHistorySimilarityThreshold = 0.995;
 
@@ -148,6 +149,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             _debugLogger?.LogUiContext(uiContext);
             _debugLogger?.LogPreparedUserMessage(preparedUserMessage);
             _debugLogger?.LogHistoryEntry("user", preparedUserMessage);
+            PublishInitialLiveStatus(pendingTurn);
             MenuBarActivityState.UpdateStep("Textstream an Modell gesendet", eventMessage: "Textstream wurde an das Modell gesendet.");
             await _session!.AddItemAsync(CreateUserTextMessage(preparedUserMessage), turnCts.Token);
             await StartResponseAsync(pendingTurn, turnCts.Token);
@@ -330,6 +332,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
         try
         {
+            PublishInitialLiveStatus(liveAudioInputSession.PendingTurn);
             await StartResponseAsync(liveAudioInputSession.PendingTurn, liveAudioInputSession.TurnCancellationSource.Token);
 
             await foreach (RealtimeAssistantStreamEvent streamEvent in liveAudioInputSession.PendingTurn.ReadEventsAsync(liveAudioInputSession.TurnCancellationSource.Token))
@@ -564,6 +567,12 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         {
             PendingTurn? pendingTurn = _pendingTurn;
 
+            if (pendingTurn is not null && pendingTurn.IsTerminal)
+            {
+                _debugLogger?.LogHistoryEntry("assistant", $"Ignored late realtime update after turn completion: {update.GetType().Name}");
+                continue;
+            }
+
             switch (update)
             {
                 case RealtimeServerUpdateResponseOutputTextDelta textDelta when pendingTurn is not null:
@@ -604,28 +613,40 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     private async Task HandleFunctionCallAsync(RealtimeServerUpdateResponseFunctionCallArgumentsDone functionCall, PendingTurn pendingTurn, CancellationToken ct)
     {
+        if (pendingTurn.IsTerminal)
+        {
+            _debugLogger?.LogHistoryEntry(AssistantRole, $"Ignored tool call after turn completion: {functionCall.FunctionName}({functionCall.CallId})");
+            return;
+        }
+
         string argumentsJson = functionCall.FunctionArguments.ToString();
-        string toolResult;
+        string rawToolResult;
         _debugLogger?.LogToolCall($"→ Tool: {functionCall.FunctionName}({argumentsJson})");
         _debugLogger?.LogHistoryEntry(AssistantRole, $"Requested tool call: {functionCall.FunctionName}({argumentsJson})");
         _debugLogger?.StartToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson);
 
         try
         {
-            string rawToolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
+            rawToolResult = _executor.Execute(functionCall.FunctionName, argumentsJson);
             rawToolResult = await EnrichRealtimeToolResultAsync(functionCall.FunctionName, rawToolResult, ct);
             LogRealtimeToolResult(functionCall.CallId, functionCall.FunctionName, rawToolResult);
-            toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, rawToolResult);
-            _debugLogger?.CompleteToolExecution(functionCall.CallId, toolResult);
+            _debugLogger?.CompleteToolExecution(functionCall.CallId, rawToolResult);
         }
         catch (Exception ex)
         {
-            toolResult = DesktopToolExecutor.Err($"Tool '{functionCall.FunctionName}' failed: {ex.Message}");
-            _debugLogger?.FailToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson, toolResult);
+            rawToolResult = DesktopToolExecutor.Err($"Tool '{functionCall.FunctionName}' failed: {ex.Message}");
+            _debugLogger?.FailToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson, rawToolResult);
         }
 
-        _debugLogger?.LogToolResult($"← Result: {toolResult}");
-        _debugLogger?.LogHistoryEntry("tool", toolResult);
+        string toolResult = AIService.CompactToolResultForRealtimeTransport(functionCall.FunctionName, rawToolResult);
+        _debugLogger?.LogToolResult($"← Result: {rawToolResult}");
+        _debugLogger?.LogHistoryEntry("tool", rawToolResult);
+
+        if (pendingTurn.IsTerminal)
+        {
+            _debugLogger?.LogHistoryEntry(AssistantRole, $"Skipped function-call output for late tool result after turn completion: {functionCall.FunctionName}({functionCall.CallId})");
+            return;
+        }
 
         await _session!.AddItemAsync(new RealtimeFunctionCallOutputItem(functionCall.CallId, toolResult), ct);
         await StartResponseAsync(pendingTurn, ct);
@@ -803,6 +824,16 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         return builtInVoice ?? trimmedVoiceId;
     }
 
+    private void PublishInitialLiveStatus(PendingTurn pendingTurn)
+    {
+        if (pendingTurn.HasPublishedInitialStatus)
+            return;
+
+        pendingTurn.HasPublishedInitialStatus = true;
+        pendingTurn.PublishTextDelta(InitialLiveStatusMessage);
+        _debugLogger?.LogHistoryEntry(AssistantRole, InitialLiveStatusMessage);
+    }
+
     private sealed class PendingTurn
     {
         private readonly int _sampleRate;
@@ -816,6 +847,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         });
         private RealtimeAssistantUsage? _usage;
         private int _outstandingResponses;
+        private int _terminalState;
 
         private readonly AIDebugLogger? _debugLogger;
 
@@ -827,6 +859,10 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         }
 
         public TaskCompletionSource<RealtimeAssistantTurnResult> Completion { get; }
+
+        public bool IsTerminal => Volatile.Read(ref _terminalState) != 0;
+
+        public bool HasPublishedInitialStatus { get; set; }
 
         public IAsyncEnumerable<RealtimeAssistantStreamEvent> ReadEventsAsync(CancellationToken ct)
             => _events.Reader.ReadAllAsync(ct);
@@ -875,6 +911,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
         public void TrySetResult()
         {
+            if (Interlocked.CompareExchange(ref _terminalState, 1, 0) != 0)
+                return;
+
             string text = _text.Length > 0 ? _text.ToString() : _transcript.ToString();
             byte[]? audio = _audio.Length > 0 ? WaveAudioUtility.CreateWaveFile(_audio.ToArray(), _sampleRate) : null;
             Completion.TrySetResult(new RealtimeAssistantTurnResult(text, audio, _usage));
@@ -886,6 +925,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
         public void TrySetException(Exception exception)
         {
+            if (Interlocked.CompareExchange(ref _terminalState, 1, 0) != 0)
+                return;
+
             Completion.TrySetException(exception);
             _debugLogger?.LogHistoryEntry(AssistantRole, $"Error: {exception.Message}");
             _events.Writer.TryWrite(new RealtimeAssistantStreamEvent(RealtimeAssistantStreamEventType.Error, ErrorMessage: exception.Message));
@@ -894,6 +936,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
         public void TrySetCanceled()
         {
+            if (Interlocked.CompareExchange(ref _terminalState, 1, 0) != 0)
+                return;
+
             Completion.TrySetCanceled();
             _debugLogger?.LogHistoryEntry(AssistantRole, "Cancelled");
             _events.Writer.TryComplete();

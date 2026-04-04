@@ -11,6 +11,8 @@ namespace AIDeskAssistant.Services;
 /// </summary>
 internal sealed class AIService
 {
+    private const string AssistantRole = "assistant";
+    private const string TakeScreenshotToolName = "take_screenshot";
     private const string DefaultModel       = "gpt-4o";
     private const string DefaultImageMediaType = "image/png";
     private const string HistoricalScreenshotNote = "Historical screenshot image omitted from context to reduce latency. Only the latest screenshot image is retained.";
@@ -24,6 +26,8 @@ internal sealed class AIService
         "Mandatory final validation loop: do not answer the user yet. Re-verify the current desktop state from the live UI. If you changed the UI, take a fresh validation screenshot and confirm the requested outcome is actually visible now. If the task involves files or terminal output, run one concrete verification step against the current state. If validation fails, continue working instead of claiming success. You must use at least one concrete validation tool call after this instruction before you may send the final user-facing completion message.";
     private const string FinalValidationMissingEvidenceInstruction =
         "You still have not performed a concrete final verification tool call from the current live state. Do not answer the user yet. Call a validation tool now, such as take_screenshot, read_screen_text, assert_state, get_frontmost_application, get_frontmost_ui_elements, list_windows, get_focused_ui_element, wait_for_window, wait_for_ui_element, get_active_window_bounds, or run_command for file/terminal verification. Only after that validation tool result confirms the outcome may you send the final completion message.";
+    private const string NegativeValidationDetectedInstructionPrefix =
+        "The latest verification result showed that the requested outcome is still not confirmed. Do not answer the user with success and do not ask an optional follow-up question. Continue autonomously with the next corrective or verification step. Latest failed verification summary:";
     private const string FinalValidationAbortedMessage =
         "Stopped because the assistant attempted to finish without performing the required final validation tool call. Please ask me to continue if you want me to retry the validation step.";
     private const int MaxFinalValidationRetries = 2;
@@ -49,9 +53,11 @@ internal sealed class AIService
         Decide: choose one concrete next action and state what exact visible change or text you expect afterward.
         Act: execute only the next tool step needed.
         Reflect: verify whether the expected change actually happened. If verification is ambiguous or incomplete, treat the step as not yet done and continue correcting.
+        If you emit an internal step or planning message instead of calling a tool immediately, output a single strict JSON object and nothing else. Use this schema: {"intent":"observe|decide|act|reflect","action":{"name":"tool-or-step-name","args":{}},"expected_state":"short expected visible result","verification":"which tool or check will confirm the result"}. Do not emit free-form thought text. Your final user-facing completion message after validation should still be normal German prose, not JSON.
 
         When the user gives you a task, figure out the necessary steps and execute them one at a time.
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
+        In AIDesk live/realtime interactions, after each new user request, first send one short German status sentence that explains what you are going to check or do next before the first tool call. Keep it brief, user-facing, and concrete, for example that you are now checking the current state live and then fixing the issue step by step.
         On macOS, prefer keyboard-first approaches by default for text-heavy apps and forms. Use the mouse only when keyboard shortcuts, AX tools, OCR-guided verification, or other structured methods are insufficient for the next step.
         For browser workflows such as Gmail, web shops, or forms, prefer opening the exact URL first and then continue with screenshots, clicks, typing, and waiting as needed.
         For terminal tasks, prefer using terminal output from run_command when you need reliable text results instead of relying only on screenshots.
@@ -62,18 +68,27 @@ internal sealed class AIService
         When a screenshot includes an additional mouse detail image around the cursor, use that close-up to validate the exact cursor position and nearby click target before choosing click or double_click coordinates.
         If you are about to click, you may call take_screenshot with intended_click_x, intended_click_y, and intended_click_label so the screenshot shows an explicit click-target marker before the click.
         If you plan to click a control identified from the Accessibility UI summary, also pass its frame to take_screenshot with intended_element_x, intended_element_y, intended_element_width, intended_element_height, and intended_element_label so the screenshot shows a separate outline around that AX element.
+        When take_screenshot returns numbered marks, prefer referring to those marks by ID in the next action instead of using vague phrases like 'top left' or freshly guessed coordinates. If a relevant control or OCR line is already marked, prefer mark_id-based follow-up actions.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
         For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
         For Microsoft Word and Microsoft Excel on macOS, do not keep sending 'cmd+n' in a loop. If one blank document or workbook is already open, use the frontmost one. Only retry 'cmd+n' when a follow-up screenshot clearly shows that no editable blank document or workbook was opened.
         For Microsoft Excel on macOS, strongly prefer keyboard-first data entry and navigation. Use shortcuts like cmd+n, cmd+home, return, tab, and arrow keys before considering mouse clicks inside the grid. After editing visible cells, use read_screen_text on the relevant grid region to verify the actual values.
         For Microsoft Word on macOS, do not declare success after typing unless a follow-up screenshot shows visible document text or the status bar word count is no longer 0. If the document still looks blank, keep troubleshooting.
+        For Microsoft Word verification, if a screenshot or OCR says the page is blank, the requested text is not visible, the desired result is not confirmed, or the word count is still 0, then the task is not complete and you must continue correcting.
+        For text replacement or editing tasks, do not declare success unless verification shows both of these are true: the old text is gone from the relevant document location, and the new text appears in the intended document context. If the old text still appears, or the new text appears appended elsewhere, in a sidebar, in a search panel, or outside the target line/paragraph, treat the edit as failed and continue correcting.
+        When OCR or screenshots include sidebars, search/replace panels, result lists, status bars, helper overlays, or other UI chrome, distinguish document content from chrome. Text that appears only in search/replace UI, a helper overlay, or another non-document panel is not proof that the document content changed.
+        If a validation screenshot or OCR explicitly says that the desired result is not visible, not confirmed, or still wrong, do not send a success message in that turn.
         For Microsoft Word save tasks on macOS, do not stop after pressing Save. Wait, take another screenshot, confirm the dialog is gone, and verify the document returned to the editing window before declaring success.
         For macOS save dialogs, after changing the filename or location, do not reuse stale button coordinates. Take another screenshot, re-localize the visible Save button, and if possible validate the click with intended_click_x and intended_click_y before clicking.
         If a save dialog remains open after a click, do not keep clicking nearby coordinates blindly. Re-check the button position from the latest screenshot or use a keyboard confirmation path such as press_key with enter only when the focused default button is clearly Save.
         For cursor placement in Microsoft Word, editors, and other text areas, prefer a precise mouse click at the visible insertion point when the target text is on screen. Use long arrow-key sequences only when the user explicitly requires keyboard-only positioning.
         If keyboard-only cursor placement is explicitly required, first move to a stable anchor such as the start or end of the relevant line or paragraph, take a screenshot to verify the caret moved as expected, and only then extend a selection. Do not declare success unless the follow-up screenshot clearly shows the caret or selection on the requested target text.
         When the user asks to save a document to a specific folder such as the Desktop, verify the file exists using a concrete absolute path before you stop.
+        If there is a safe and obvious next diagnostic or corrective step, do not stop to ask the user for permission. Continue autonomously. Only ask a clarifying question when there is no reliable next step, multiple materially different paths are possible, or a destructive choice must be made.
+        Do not end a troubleshooting turn with optional prompts such as 'Möchtest du, dass ich ...?', 'Soll ich ...?', or 'Lass uns jetzt ...', when you can already continue safely on your own.
+        If you are not blocked, do not wait for a user reply. Continue with the next verification or corrective step in the same turn.
+        Do not add conversational filler after a failed verification. State the problem briefly, then continue acting.
         The run_command tool does not execute a shell. Do not use shell syntax such as ~, $HOME, $(whoami), pipes, redirection, globbing, or quoted one-liners inside its arguments. If you need the home directory, first call run_command with printenv HOME and then use the returned absolute path literally in a second command.
         When entering text into editors or forms, use type_text only for literal text content. Use press_key for special keys like enter, return, tab, escape, backspace, delete, arrows, or shortcuts. Never type words like 'enter', 'tab', 'escape', 'backspace', or 'delete' into the document unless the user explicitly asked for those literal words.
         In text editors and document apps such as Microsoft Word, cursor navigation must always use press_key with arrow keys. Never type words like 'up', 'down', 'left', 'right', 'home', 'end', 'page up', or 'page down' into the document when the intent is to move the caret.
@@ -101,7 +116,7 @@ internal sealed class AIService
     private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
-    private readonly record struct ToolRoundOutcome(bool PerformedStateChangingTool, bool PerformedConcreteValidationTool);
+    private readonly record struct ToolRoundOutcome(bool PerformedStateChangingTool, bool PerformedConcreteValidationTool, string? FailedValidationSummary);
 
     public AIService(string apiKey, DesktopToolExecutor executor, string model = DefaultModel, AIDebugLogger? debugLogger = null)
     {
@@ -137,6 +152,7 @@ internal sealed class AIService
         bool performedStateChangingTool = false;
         bool finalValidationRequested = false;
         bool finalValidationEvidenceObserved = false;
+        string? failedValidationSummary = null;
         int finalValidationRetryCount = 0;
         while (true)
         {
@@ -144,13 +160,24 @@ internal sealed class AIService
 
             if (completion.FinishReason != ChatFinishReason.ToolCalls)
             {
+                if (!string.IsNullOrWhiteSpace(failedValidationSummary))
+                {
+                    string draftResponse = completion.Content[0].Text;
+                    _history.Add(new AssistantChatMessage(draftResponse));
+                    _debugLogger?.LogHistoryEntry(AssistantRole, $"Draft final response after failed validation: {draftResponse}");
+                    _history.Add(new UserChatMessage(BuildNegativeValidationDetectedInstruction(failedValidationSummary)));
+                    _debugLogger?.LogHistoryEntry("user", BuildNegativeValidationDetectedInstruction(failedValidationSummary));
+                    failedValidationSummary = null;
+                    continue;
+                }
+
                 if (performedStateChangingTool && !finalValidationRequested)
                 {
                     finalValidationRequested = true;
                     finalValidationEvidenceObserved = false;
                     string draftResponse = completion.Content[0].Text;
                     _history.Add(new AssistantChatMessage(draftResponse));
-                    _debugLogger?.LogHistoryEntry("assistant", $"Draft final response before mandatory validation: {draftResponse}");
+                    _debugLogger?.LogHistoryEntry(AssistantRole, $"Draft final response before mandatory validation: {draftResponse}");
                     _history.Add(new UserChatMessage(BuildMandatoryFinalValidationInstruction()));
                     _debugLogger?.LogHistoryEntry("user", BuildMandatoryFinalValidationInstruction());
                     continue;
@@ -160,13 +187,13 @@ internal sealed class AIService
                 {
                     string draftResponse = completion.Content[0].Text;
                     _history.Add(new AssistantChatMessage(draftResponse));
-                    _debugLogger?.LogHistoryEntry("assistant", $"Draft final response without concrete validation evidence: {draftResponse}");
+                    _debugLogger?.LogHistoryEntry(AssistantRole, $"Draft final response without concrete validation evidence: {draftResponse}");
 
                     finalValidationRetryCount++;
                     if (finalValidationRetryCount > MaxFinalValidationRetries)
                     {
                         _history.Add(new AssistantChatMessage(FinalValidationAbortedMessage));
-                        _debugLogger?.LogHistoryEntry("assistant", FinalValidationAbortedMessage);
+                        _debugLogger?.LogHistoryEntry(AssistantRole, FinalValidationAbortedMessage);
                         return FinalValidationAbortedMessage;
                     }
 
@@ -190,14 +217,24 @@ internal sealed class AIService
             if (toolRoundOutcome.PerformedStateChangingTool)
             {
                 performedStateChangingTool = true;
+                failedValidationSummary = null;
                 if (finalValidationRequested)
                     finalValidationEvidenceObserved = false;
             }
 
             if (toolRoundOutcome.PerformedConcreteValidationTool)
                 finalValidationEvidenceObserved = true;
+
+            if (!string.IsNullOrWhiteSpace(toolRoundOutcome.FailedValidationSummary))
+            {
+                finalValidationEvidenceObserved = false;
+                failedValidationSummary = toolRoundOutcome.FailedValidationSummary;
+            }
         }
     }
+
+    internal static string BuildNegativeValidationDetectedInstruction(string validationSummary)
+        => $"{NegativeValidationDetectedInstructionPrefix} {validationSummary}";
 
     private static ChatCompletionOptions CreateChatCompletionOptions()
     {
@@ -221,7 +258,7 @@ internal sealed class AIService
         => toolName switch
         {
             "move_mouse" => false,
-            "take_screenshot" => false,
+            TakeScreenshotToolName => false,
             "read_screen_text" => false,
             "get_screen_info" => false,
             "get_frontmost_ui_elements" => false,
@@ -245,7 +282,7 @@ internal sealed class AIService
     internal static bool IsConcreteValidationTool(string toolName)
         => toolName switch
         {
-            "take_screenshot" => true,
+            TakeScreenshotToolName => true,
             "read_screen_text" => true,
             "get_frontmost_ui_elements" => true,
             "get_frontmost_application" => true,
@@ -270,6 +307,7 @@ internal sealed class AIService
 
         bool performedStateChangingTool = false;
         bool performedConcreteValidationTool = false;
+        string? failedValidationSummary = null;
 
         foreach (ChatToolCall toolCall in completion.ToolCalls)
         {
@@ -291,17 +329,27 @@ internal sealed class AIService
             }
 
             if (IsConcreteValidationTool(toolName) && !DesktopToolExecutor.IsErrorResult(result))
-                performedConcreteValidationTool = true;
+            {
+                if (TrySummarizeFailedValidation(toolName, result, out string? validationFailureSummary))
+                {
+                    performedConcreteValidationTool = false;
+                    failedValidationSummary = validationFailureSummary;
+                }
+                else
+                {
+                    performedConcreteValidationTool = true;
+                }
+            }
         }
 
         PruneHistoricalScreenshotImages();
         await Task.CompletedTask;
-        return new ToolRoundOutcome(performedStateChangingTool, performedConcreteValidationTool);
+        return new ToolRoundOutcome(performedStateChangingTool, performedConcreteValidationTool, failedValidationSummary);
     }
 
     private ToolChatMessage CreateToolResultMessage(ChatToolCall toolCall, string toolName, string result)
     {
-        if (toolName == "take_screenshot"
+        if (toolName == TakeScreenshotToolName
             && TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment)
             && attachment is not null)
         {
@@ -359,6 +407,41 @@ internal sealed class AIService
         _history.Add(new AssistantChatMessage(response));
         _debugLogger?.LogAssistantResponse(response);
         return response;
+    }
+
+    internal static bool TrySummarizeFailedValidation(string toolName, string result, out string? summary)
+    {
+        summary = null;
+        if (DesktopToolExecutor.IsErrorResult(result))
+            return false;
+
+        string normalized = result.ToLowerInvariant();
+        string[] negativeIndicators =
+        [
+            "nicht sichtbar",
+            "nicht bestätigt",
+            "nicht korrekt",
+            "nicht vorhanden",
+            "nicht im dokument",
+            "seite ist leer",
+            "leer sichtbar",
+            "kein gedichttext",
+            "kein text",
+            "0 wörter",
+            "bestätigt die gewünschte überprüfung nicht",
+            "bestätigt die gewünschte aktion nicht",
+            "task is not complete",
+            "not visible",
+            "not confirmed",
+            "page is blank",
+            "word count is still 0"
+        ];
+
+        if (!negativeIndicators.Any(normalized.Contains))
+            return false;
+
+        summary = $"{toolName}: {TruncateForDisplay(result, 280)}";
+        return true;
     }
 
     /// <summary>Clears the conversation history (keeps the system prompt).</summary>

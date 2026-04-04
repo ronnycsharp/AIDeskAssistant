@@ -64,6 +64,8 @@ internal sealed class DesktopToolExecutor
     private readonly IWindowService _window;
     private readonly IUiAutomationService _uiAutomation;
     private readonly ITextRecognitionService _textRecognition;
+    private readonly object _markSync = new();
+    private Dictionary<int, ScreenshotMark> _latestScreenshotMarks = [];
 
     public DesktopToolExecutor(
         IScreenshotService screenshot,
@@ -186,14 +188,16 @@ internal sealed class DesktopToolExecutor
         ScreenshotClickTarget? intendedClickTarget = TryGetIntendedClickTarget(args);
         ScreenshotHighlightedRegion? intendedElementRegion = TryGetIntendedElementRegion(args);
         WindowHitTestResult? windowUnderCursor = TryGetWindowUnderCursor(cursorX, cursorY);
-        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion);
 
         byte[] screenshot = _screenshot.TakeScreenshot(options);
+        (bool marksRequested, IReadOnlyList<ScreenshotMark> marks) = BuildScreenshotMarks(args, captureBounds, screenshot);
+        SetLatestScreenshotMarks(marks);
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, marks);
         byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, annotation);
         ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
         ScreenshotCursorDetail? mouseDetail = ScreenshotCursorDetailExtractor.Create(annotatedScreenshot, annotation);
         ScreenshotPayload? mouseDetailPayload = mouseDetail is null ? null : _screenshotOptimizer.Optimize(mouseDetail.Bytes);
-        var context = new ScreenshotResultContext(target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, windowUnderCursor);
+        var context = new ScreenshotResultContext(target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, windowUnderCursor, marksRequested, marks);
         return BuildScreenshotToolResult(payload, mouseDetailPayload, mouseDetail?.Bounds, context);
     }
 
@@ -214,6 +218,14 @@ internal sealed class DesktopToolExecutor
             WindowBounds resolvedCaptureBounds = captureBounds ?? new WindowBounds(0, 0, screenInfo.Width, screenInfo.Height);
             byte[] screenshot = _screenshot.TakeScreenshot(options);
             WindowBounds? requestedRegion = TryGetRequestedRegion(args);
+            if (requestedRegion is null && TryGetOptionalInt(args, "mark_id", out int requestedMarkId))
+            {
+                if (!TryGetLatestScreenshotMark(requestedMarkId, out ScreenshotMark requestedMark, out string markError))
+                    return markError;
+
+                requestedRegion = requestedMark.Bounds;
+            }
+
             WindowBounds effectiveRegion = ResolveEffectiveOcrRegion(requestedRegion, resolvedCaptureBounds);
             byte[] croppedImageBytes = CropScreenshotToRegion(screenshot, resolvedCaptureBounds, effectiveRegion);
             TextRecognitionResult ocrResult = _textRecognition.RecognizeText(croppedImageBytes);
@@ -419,7 +431,7 @@ internal sealed class DesktopToolExecutor
 
     private static string BuildScreenshotToolResult(ScreenshotPayload payload, ScreenshotPayload? mouseDetailPayload, WindowBounds? mouseDetailBounds, ScreenshotResultContext context)
     {
-        var annotation = new ScreenshotAnnotationData(context.CaptureBounds, context.CursorX, context.CursorY, context.SuggestedContentArea, context.IntendedClickTarget, context.IntendedElementRegion);
+        var annotation = new ScreenshotAnnotationData(context.CaptureBounds, context.CursorX, context.CursorY, context.SuggestedContentArea, context.IntendedClickTarget, context.IntendedElementRegion, context.Marks);
         var parts = new List<string>
         {
             "Screenshot taken.",
@@ -440,6 +452,10 @@ internal sealed class DesktopToolExecutor
             parts.Add($"Intended click target: X={clickTarget.X}, Y={clickTarget.Y}, InsideCapture={annotation.IntendedClickIsInsideCapture}, Label={FormatWindowTitle(clickTarget.Label)}. Use the highlighted target marker to validate the click before you press click or double_click.");
         if (context.IntendedElementRegion is ScreenshotHighlightedRegion highlightedRegion)
             parts.Add($"Highlighted AX element: X={highlightedRegion.Bounds.X}, Y={highlightedRegion.Bounds.Y}, Width={highlightedRegion.Bounds.Width}, Height={highlightedRegion.Bounds.Height}, IntersectsCapture={annotation.IntendedElementRegionIntersectsCapture}, Label={FormatWindowTitle(highlightedRegion.Label)}. Use the extra outline to validate the intended AX/UI element before clicking.");
+        if (context.Marks.Count > 0)
+            parts.Add($"Numbered marks: {string.Join(" ", context.Marks.Select(mark => $"[{mark.Id}] Source={mark.Source}, Label={FormatWindowTitle(mark.Label)}, X={mark.Bounds.X}, Y={mark.Bounds.Y}, Width={mark.Bounds.Width}, Height={mark.Bounds.Height}."))} Prefer follow-up actions with mark_id when a matching mark already exists.");
+        else if (context.MarksRequested)
+            parts.Add("Numbered marks: none found for the requested mark filters/source.");
         if (mouseDetailBounds is WindowBounds detailBounds)
             parts.Add($"Mouse detail bounds: X={detailBounds.X}, Y={detailBounds.Y}, Width={detailBounds.Width}, Height={detailBounds.Height}. The additional mouse detail image includes a 100 px coordinate raster with x/y labels to validate exact cursor placement before clicking or double-clicking.");
         parts.Add($"Coordinate raster: major lines every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor lines every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
@@ -472,7 +488,164 @@ internal sealed class DesktopToolExecutor
         WindowBounds? SuggestedContentArea,
         ScreenshotClickTarget? IntendedClickTarget,
         ScreenshotHighlightedRegion? IntendedElementRegion,
-        WindowHitTestResult? WindowUnderCursor);
+        WindowHitTestResult? WindowUnderCursor,
+        bool MarksRequested,
+        IReadOnlyList<ScreenshotMark> Marks);
+
+    private (bool Requested, IReadOnlyList<ScreenshotMark> Marks) BuildScreenshotMarks(Dictionary<string, JsonElement> args, WindowBounds captureBounds, byte[] screenshotBytes)
+    {
+        string markSource = DesktopToolDefinitions.GetString(args, "mark_source", "none").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(markSource) || string.Equals(markSource, "none", StringComparison.Ordinal))
+            return (false, Array.Empty<ScreenshotMark>());
+
+        int maxCount = Math.Clamp(DesktopToolDefinitions.GetInt(args, "mark_max_count", 12), 1, 40);
+        string titleFilter = DesktopToolDefinitions.GetString(args, "mark_title").Trim();
+        string roleFilter = DesktopToolDefinitions.GetString(args, "mark_role").Trim();
+        string valueFilter = DesktopToolDefinitions.GetString(args, "mark_value").Trim();
+        string textFilter = DesktopToolDefinitions.GetString(args, "mark_text_contains").Trim();
+
+        var candidates = new List<(WindowBounds Bounds, string Source, string Label)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        bool includeAx = string.Equals(markSource, "ax", StringComparison.Ordinal)
+            || string.Equals(markSource, "ax_and_ocr", StringComparison.Ordinal);
+        bool includeOcr = string.Equals(markSource, "ocr", StringComparison.Ordinal)
+            || string.Equals(markSource, "ax_and_ocr", StringComparison.Ordinal);
+
+        if (includeAx)
+        {
+            try
+            {
+                IReadOnlyList<UiElementInfo> elements = _uiAutomation.FindFrontmostUiElements(
+                    string.IsNullOrWhiteSpace(titleFilter) ? null : titleFilter,
+                    string.IsNullOrWhiteSpace(roleFilter) ? null : roleFilter,
+                    string.IsNullOrWhiteSpace(valueFilter) ? null : valueFilter);
+
+                foreach (UiElementInfo element in elements)
+                {
+                    if (element.Bounds is not WindowBounds bounds || bounds.Width <= 0 || bounds.Height <= 0 || !Intersects(captureBounds, bounds))
+                        continue;
+
+                    string label = BuildAxMarkLabel(element);
+                    string key = $"ax|{bounds.X}|{bounds.Y}|{bounds.Width}|{bounds.Height}|{label}";
+                    if (seen.Add(key))
+                        candidates.Add((bounds, "ax", label));
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (includeOcr)
+        {
+            try
+            {
+                TextRecognitionResult ocr = _textRecognition.RecognizeText(screenshotBytes);
+                foreach (TextRecognitionLine line in ocr.Lines)
+                {
+                    if (string.IsNullOrWhiteSpace(line.Text))
+                        continue;
+
+                    if (!string.IsNullOrWhiteSpace(textFilter)
+                        && line.Text.IndexOf(textFilter, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        continue;
+                    }
+
+                    WindowBounds bounds = new(captureBounds.X + line.Bounds.X, captureBounds.Y + line.Bounds.Y, line.Bounds.Width, line.Bounds.Height);
+                    if (bounds.Width <= 0 || bounds.Height <= 0 || !Intersects(captureBounds, bounds))
+                        continue;
+
+                    string label = line.Text.Trim();
+                    string key = $"ocr|{bounds.X}|{bounds.Y}|{bounds.Width}|{bounds.Height}|{label}";
+                    if (seen.Add(key))
+                        candidates.Add((bounds, "ocr", label));
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        IReadOnlyList<ScreenshotMark> marks = candidates
+            .OrderBy(candidate => candidate.Bounds.Y)
+            .ThenBy(candidate => candidate.Bounds.X)
+            .Take(maxCount)
+            .Select((candidate, index) => new ScreenshotMark(index + 1, candidate.Bounds, candidate.Source, candidate.Label))
+            .ToArray();
+
+        return (true, marks);
+    }
+
+    private static string BuildAxMarkLabel(UiElementInfo element)
+    {
+        if (!string.IsNullOrWhiteSpace(element.Title))
+            return $"{element.Role} {element.Title}";
+
+        if (!string.IsNullOrWhiteSpace(element.Value))
+            return $"{element.Role} {element.Value}";
+
+        return element.Role;
+    }
+
+    private void SetLatestScreenshotMarks(IReadOnlyList<ScreenshotMark> marks)
+    {
+        lock (_markSync)
+        {
+            _latestScreenshotMarks = marks.ToDictionary(mark => mark.Id);
+        }
+    }
+
+    private bool TryGetLatestScreenshotMark(int markId, out ScreenshotMark mark, out string error)
+    {
+        lock (_markSync)
+        {
+            if (_latestScreenshotMarks.TryGetValue(markId, out mark))
+            {
+                error = string.Empty;
+                return true;
+            }
+        }
+
+        mark = default;
+        error = Err($"Unknown mark_id {markId}. Call take_screenshot with mark_source first and then reuse one of the returned mark IDs.");
+        return false;
+    }
+
+    private bool TryResolvePointFromArgs(Dictionary<string, JsonElement> args, out int x, out int y, out string descriptor, out string error)
+    {
+        if (TryGetOptionalInt(args, "mark_id", out int markId))
+        {
+            if (!TryGetLatestScreenshotMark(markId, out ScreenshotMark mark, out error))
+            {
+                x = 0;
+                y = 0;
+                descriptor = string.Empty;
+                return false;
+            }
+
+            x = mark.Bounds.X + (mark.Bounds.Width / 2);
+            y = mark.Bounds.Y + (mark.Bounds.Height / 2);
+            descriptor = $"mark {mark.Id} ({mark.Source}: {mark.Label})";
+            return true;
+        }
+
+        x = DesktopToolDefinitions.GetInt(args, "x");
+        y = DesktopToolDefinitions.GetInt(args, "y");
+        descriptor = "explicit coordinates";
+        error = string.Empty;
+        return true;
+    }
+
+    private static bool Intersects(WindowBounds captureBounds, WindowBounds bounds)
+    {
+        int left = Math.Max(captureBounds.X, bounds.X);
+        int top = Math.Max(captureBounds.Y, bounds.Y);
+        int right = Math.Min(captureBounds.X + captureBounds.Width, bounds.X + bounds.Width);
+        int bottom = Math.Min(captureBounds.Y + captureBounds.Height, bounds.Y + bounds.Height);
+        return right > left && bottom > top;
+    }
 
     private static int GetScreenshotRulerMajorStep(int width, int height)
     {
@@ -544,10 +717,11 @@ internal sealed class DesktopToolExecutor
 
     private string MoveMouse(Dictionary<string, JsonElement> args)
     {
-        int x = DesktopToolDefinitions.GetInt(args, "x");
-        int y = DesktopToolDefinitions.GetInt(args, "y");
+        if (!TryResolvePointFromArgs(args, out int x, out int y, out string descriptor, out string error))
+            return error;
+
         _mouse.MoveTo(x, y);
-        return $"Mouse moved to ({x}, {y})";
+        return $"Mouse moved to ({x}, {y}) via {descriptor}";
     }
 
     private string Drag(Dictionary<string, JsonElement> args)
@@ -570,8 +744,9 @@ internal sealed class DesktopToolExecutor
 
     private string Click(Dictionary<string, JsonElement> args)
     {
-        int x = DesktopToolDefinitions.GetInt(args, "x");
-        int y = DesktopToolDefinitions.GetInt(args, "y");
+        if (!TryResolvePointFromArgs(args, out int x, out int y, out string descriptor, out string error))
+            return error;
+
         string buttonName = DesktopToolDefinitions.GetString(args, "button", "left");
         MouseButton button = buttonName.ToLowerInvariant() switch
         {
@@ -581,15 +756,16 @@ internal sealed class DesktopToolExecutor
         };
 
         _mouse.ClickAt(x, y, button);
-        return $"Clicked {button} button at ({x}, {y})";
+        return $"Clicked {button} button at ({x}, {y}) via {descriptor}";
     }
 
     private string DoubleClick(Dictionary<string, JsonElement> args)
     {
-        int x = DesktopToolDefinitions.GetInt(args, "x");
-        int y = DesktopToolDefinitions.GetInt(args, "y");
+        if (!TryResolvePointFromArgs(args, out int x, out int y, out string descriptor, out string error))
+            return error;
+
         _mouse.DoubleClick(x, y);
-        return $"Double-clicked at ({x}, {y})";
+        return $"Double-clicked at ({x}, {y}) via {descriptor}";
     }
 
     private string Scroll(Dictionary<string, JsonElement> args)

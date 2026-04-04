@@ -187,7 +187,18 @@ internal sealed class FakeUiAutomationService : IUiAutomationService
         LastFindTitle = title;
         LastFindRole = role;
         LastFindValue = value;
-        return MatchingElements;
+
+        return MatchingElements
+            .Where(element => string.IsNullOrWhiteSpace(title)
+                || (!string.IsNullOrWhiteSpace(element.Title)
+                    && element.Title.Contains(title, StringComparison.OrdinalIgnoreCase)))
+            .Where(element => string.IsNullOrWhiteSpace(role)
+                || (!string.IsNullOrWhiteSpace(element.Role)
+                    && element.Role.Contains(role, StringComparison.OrdinalIgnoreCase)))
+            .Where(element => string.IsNullOrWhiteSpace(value)
+                || (!string.IsNullOrWhiteSpace(element.Value)
+                    && element.Value.Contains(value, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
     }
 
     public UiElementInfo? GetFocusedUiElement() => FocusedElement;
@@ -259,6 +270,16 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_TakeScreenshot_WithAxMarks_ReturnsNumberedMarks()
+    {
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"mark_source\":\"ax\",\"mark_role\":\"AXButton\",\"mark_title\":\"Save\",\"mark_max_count\":1}");
+
+        Assert.Contains("Numbered marks: [1] Source=ax", result);
+        Assert.Contains("Label=AXButton Save", result);
+        Assert.DoesNotContain("[2]", result);
+    }
+
+    [Fact]
     public void Execute_ReadScreenText_ReturnsOcrResultForActiveWindow()
     {
         string result = _sut.Execute("read_screen_text", "{\"target\":\"active_window\",\"purpose\":\"verify Excel values\"}");
@@ -287,7 +308,7 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("move_mouse", "{\"x\":300,\"y\":400}");
 
         Assert.Equal((300, 400), _mouse.LastMoveTarget);
-        Assert.Equal("Mouse moved to (300, 400)", result);
+        Assert.Equal("Mouse moved to (300, 400) via explicit coordinates", result);
     }
 
     [Fact]
@@ -334,15 +355,47 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Equal((100, 200), _mouse.LastClickTarget);
         Assert.Equal(MouseButton.Right, _mouse.LastClickButton);
-        Assert.Equal("Clicked Right button at (100, 200)", result);
+        Assert.Equal("Clicked Right button at (100, 200) via explicit coordinates", result);
     }
 
     [Fact]
     public void Execute_DoubleClick_UsesMouseService()
     {
-        _sut.Execute("double_click", "{\"x\":150,\"y\":250}");
+        string result = _sut.Execute("double_click", "{\"x\":150,\"y\":250}");
 
         Assert.Equal((150, 250), _mouse.LastDoubleClickTarget);
+        Assert.Equal("Double-clicked at (150, 250) via explicit coordinates", result);
+    }
+
+    [Fact]
+    public void Execute_Click_WithMarkId_UsesCenterOfLatestScreenshotMark()
+    {
+        _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"mark_source\":\"ax\",\"mark_role\":\"AXButton\",\"mark_title\":\"Save\",\"mark_max_count\":1}");
+
+        string result = _sut.Execute("click", "{\"mark_id\":1}");
+
+        Assert.Equal((460, 314), _mouse.LastClickTarget);
+        Assert.Equal(MouseButton.Left, _mouse.LastClickButton);
+        Assert.Contains("via mark 1 (ax: AXButton Save)", result);
+    }
+
+    [Fact]
+    public void Execute_ReadScreenText_WithMarkId_UsesMarkedBoundsAsOcrRegion()
+    {
+        _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"mark_source\":\"ax\",\"mark_role\":\"AXButton\",\"mark_title\":\"Save\",\"mark_max_count\":1}");
+
+        string result = _sut.Execute("read_screen_text", "{\"target\":\"active_window\",\"mark_id\":1}");
+
+        Assert.Contains("OCR region: X=420, Y=300, Width=80, Height=28.", result);
+    }
+
+    [Fact]
+    public void Execute_Click_WithUnknownMarkId_ReturnsError()
+    {
+        string result = _sut.Execute("click", "{\"mark_id\":99}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Unknown mark_id 99", result);
     }
 
     [Fact]

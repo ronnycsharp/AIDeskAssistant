@@ -16,9 +16,14 @@ public sealed class AIServiceTests
         Assert.Contains("Read visible on-screen text via native OCR on macOS", prompt);
         Assert.Contains("Default language is German for both text and spoken interactions", prompt);
         Assert.Contains("Observe -> Decide -> Act -> Reflect loop", prompt);
+        Assert.Contains("single strict JSON object", prompt);
+        Assert.Contains("\"intent\":\"observe|decide|act|reflect\"", prompt);
         Assert.Contains("prefer keyboard-first approaches by default", prompt);
         Assert.Contains("read_screen_text", prompt);
+        Assert.Contains("When take_screenshot returns numbered marks", prompt);
         Assert.Contains("target='active_window'", prompt);
+        Assert.Contains("after each new user request, first send one short German status sentence", prompt);
+        Assert.Contains("checking the current state live and then fixing the issue step by step", prompt);
         Assert.Contains("purpose string", prompt);
         Assert.Contains("intended_click_x", prompt);
         Assert.Contains("intended_element_x", prompt);
@@ -36,6 +41,13 @@ public sealed class AIServiceTests
         Assert.Contains("Never type words like 'up', 'down', 'left', or 'right' into a cell", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
+        Assert.Contains("the page is blank, the requested text is not visible, the desired result is not confirmed, or the word count is still 0", prompt);
+        Assert.Contains("the old text is gone from the relevant document location", prompt);
+        Assert.Contains("search/replace UI, a helper overlay, or another non-document panel is not proof", prompt);
+        Assert.Contains("If there is a safe and obvious next diagnostic or corrective step, do not stop to ask the user for permission", prompt);
+        Assert.Contains("Do not end a troubleshooting turn with optional prompts", prompt);
+        Assert.Contains("If you are not blocked, do not wait for a user reply", prompt);
+        Assert.Contains("Do not add conversational filler after a failed verification", prompt);
         Assert.Contains("Tool results that start with '[ERROR]' indicate that the tool call failed", prompt);
         Assert.Contains("You must use at least one concrete validation tool call after this instruction", AIService.BuildMandatoryFinalValidationInstruction());
     }
@@ -70,6 +82,41 @@ public sealed class AIServiceTests
         Assert.Contains("read_screen_text", instruction);
         Assert.Contains("assert_state", instruction);
         Assert.Contains("run_command", instruction);
+    }
+
+    [Fact]
+    public void BuildNegativeValidationDetectedInstruction_RequiresContinuation()
+    {
+        string instruction = AIService.BuildNegativeValidationDetectedInstruction("read_screen_text: Seite ist leer sichtbar.");
+
+        Assert.Contains("still not confirmed", instruction);
+        Assert.Contains("Continue autonomously", instruction);
+        Assert.Contains("Seite ist leer sichtbar", instruction);
+    }
+
+    [Theory]
+    [InlineData("take_screenshot", "Die Ansicht bestätigt die gewünschte Überprüfung nicht, weil kein Gedicht sichtbar ist.")]
+    [InlineData("read_screen_text", "Recognized text: Seite 1 von 1 0 Wörter Deutsch")]
+    [InlineData("read_screen_text", "Microsoft Word ist aktiv, Dokument2 ist geöffnet. Die Seite ist leer sichtbar.")]
+    public void TrySummarizeFailedValidation_DetectsNegativeVerification(string toolName, string result)
+    {
+        bool detected = AIService.TrySummarizeFailedValidation(toolName, result, out string? summary);
+
+        Assert.True(detected);
+        Assert.NotNull(summary);
+        Assert.Contains(toolName, summary);
+    }
+
+    [Fact]
+    public void TrySummarizeFailedValidation_IgnoresPositiveVerification()
+    {
+        bool detected = AIService.TrySummarizeFailedValidation(
+            "read_screen_text",
+            "Recognized text: Ein stiller See im Morgengrauen, Ein leiser Wind, der leise spricht. Seite 1 von 1 29 Wörter",
+            out string? summary);
+
+        Assert.False(detected);
+        Assert.Null(summary);
     }
 
     [Fact]

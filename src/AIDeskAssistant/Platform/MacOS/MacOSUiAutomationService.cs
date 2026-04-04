@@ -267,7 +267,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
 
         let dockElement = AXUIElementCreateApplication(dockApp.processIdentifier)
         let candidates = descendants(of: dockElement).filter {
-            role(of: $0) == kAXButtonRole as String || role(of: $0) == kAXUIElementRole as String
+            role(of: $0) == kAXButtonRole as String || role(of: $0) == "AXUIElement"
         }
 
         guard let target = candidates.first(where: { matches(title(of: $0), requestedTitles: requestedTitles) }) else {
@@ -658,7 +658,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
         }
 
         func frame(of element: AXUIElement) -> CGRect? {
-            guard let value = attribute(element, kAXFrameAttribute as CFString) else { return nil }
+            guard let value = attribute(element, "AXFrame" as CFString) else { return nil }
             let axValue = value as! AXValue
             var frame = CGRect.zero
             return AXValueGetValue(axValue, .cgRect, &frame) ? frame : nil
@@ -720,11 +720,11 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
 
         func roleScore(_ role: String?) -> Int {
             switch role {
-            case kAXTextAreaRole as String: return 10_000
-            case kAXWebAreaRole as String: return 9_000
-            case kAXScrollAreaRole as String: return 8_000
-            case kAXTextFieldRole as String: return 4_000
-            case kAXGroupRole as String: return 3_000
+            case "AXTextArea": return 10_000
+            case "AXWebArea": return 9_000
+            case "AXScrollArea": return 8_000
+            case "AXTextField": return 4_000
+            case "AXGroup": return 3_000
             case "AXLayoutArea": return 2_500
             case "AXSplitGroup": return 2_000
             default: return 0
@@ -951,7 +951,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             ?? elementArrayAttribute(appElement, kAXWindowsAttribute as CFString).first
 
         let candidates = window.map { [$0] + descendants(of: $0) } ?? []
-        let matches = candidates.compactMap { element -> ElementInfo? in
+            let matchingElements = candidates.compactMap { element -> ElementInfo? in
             let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? ""
             let title = stringAttribute(element, kAXTitleAttribute as CFString) ?? ""
             let value = stringAttribute(element, kAXValueAttribute as CFString) ?? ""
@@ -979,7 +979,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             return ($0.y ?? Int.max) < ($1.y ?? Int.max)
         }
 
-        let data = try JSONEncoder().encode(Array(matches.prefix(40)))
+        let data = try JSONEncoder().encode(Array(matchingElements.prefix(40)))
         print(String(data: data, encoding: .utf8) ?? "[]")
         """;
 

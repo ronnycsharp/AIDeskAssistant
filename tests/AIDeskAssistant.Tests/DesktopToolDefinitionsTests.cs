@@ -152,4 +152,16 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("assert_state", allDescriptions);
         Assert.Contains("read_screen_text", allDescriptions);
     }
+
+    [Fact]
+    public void MouseSchemas_DoNotUseAnyOf()
+    {
+        foreach (string toolName in new[] { "move_mouse", "click", "double_click" })
+        {
+            DesktopFunctionToolDefinition definition = DesktopToolDefinitions.FunctionDefinitions.Single(x => x.Name == toolName);
+            string parameters = definition.Parameters?.ToString() ?? string.Empty;
+
+            Assert.DoesNotContain("\"anyOf\"", parameters);
+        }
+    }
 }
