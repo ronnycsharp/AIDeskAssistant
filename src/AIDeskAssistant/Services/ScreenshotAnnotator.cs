@@ -195,8 +195,6 @@ internal static class ScreenshotAnnotator
 
         canvas.DrawCircle(cursorPoint, radius, fillPaint);
         canvas.DrawCircle(cursorPoint, radius, strokePaint);
-        canvas.DrawLine(cursorPoint.X - radius - 10, cursorPoint.Y, cursorPoint.X + radius + 10, cursorPoint.Y, strokePaint);
-        canvas.DrawLine(cursorPoint.X, cursorPoint.Y - radius - 10, cursorPoint.X, cursorPoint.Y + radius + 10, strokePaint);
 
         SKPoint labelOrigin = new(
             Math.Min(metrics.Width - 18, cursorPoint.X + radius + 14),

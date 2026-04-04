@@ -6,6 +6,14 @@ The goal is simple: control the desktop with natural language. The assistant can
 
 The repository currently contains both macOS and Windows implementations, but the project has only been tested on macOS so far.
 
+## Security Notice
+
+This project is security-critical.
+
+`AIDeskAssistant` can capture screenshots of your desktop and send them to the configured OpenAI service so the model can reason about the current UI. This can expose sensitive information that is visible on screen, including passwords, emails, documents, chat content, tokens, internal systems, or other confidential data.
+
+Use this project only in environments where that risk is acceptable. Do not use it on screens or systems that display highly sensitive or regulated information unless you have reviewed the data-flow, trust boundary, retention implications, and compliance impact yourself.
+
 ## Current Status
 
 - Work in progress.

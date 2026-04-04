@@ -1,6 +1,7 @@
 using AIDeskAssistant.Models;
 using AIDeskAssistant.Services;
 using AIDeskAssistant.Tools;
+using SkiaSharp;
 
 namespace AIDeskAssistant.Tests;
 
@@ -11,7 +12,12 @@ internal sealed class FakeScreenshotService : IScreenshotService
     public byte[] TakeScreenshot(ScreenshotCaptureOptions options = default)
     {
         LastOptions = options;
-        return Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WnRsl0AAAAASUVORK5CYII=");
+        WindowBounds bounds = options.Bounds ?? new WindowBounds(0, 0, 1920, 1080);
+        using var surface = SKSurface.Create(new SKImageInfo(bounds.Width, bounds.Height));
+        surface.Canvas.Clear(SKColors.White);
+        using SKImage image = surface.Snapshot();
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        return png.ToArray();
     }
 
     public ScreenInfo GetScreenInfo() => new(1920, 1080, 32);
@@ -132,6 +138,9 @@ public sealed class DesktopToolExecutorTests
         string result = _sut.Execute("take_screenshot", "{}");
 
         Assert.Contains("Base64:", result);
+        Assert.Contains("Mouse detail bounds:", result);
+        Assert.Contains("Mouse detail media type:", result);
+        Assert.Contains("Mouse detail base64:", result);
         Assert.Contains("Capture bounds: X=0, Y=0, Width=1920, Height=1080.", result);
         Assert.Contains("Corner pixels: TL=(0,0), TR=(1919,0), BL=(0,1079), BR=(1919,1079).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
@@ -154,6 +163,7 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Corner pixels: TL=(0,0), TR=(839,0), BL=(0,639), BR=(839,639).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
         Assert.Contains("Likely content area: X=34, Y=90, Width=772, Height=518.", result);
+        Assert.Contains("Use the additional mouse detail image to validate exact cursor placement", result);
         Assert.Contains("Edge ruler: major ticks every 50 px with minor ticks every 25 px.", result);
     }
 
@@ -219,6 +229,11 @@ public sealed class DesktopToolExecutorTests
     [InlineData("TAB")]
     [InlineData("ESC")]
     [InlineData("BACKSPACE")]
+    [InlineData("DOWN")]
+    [InlineData("DOWN DOWN DOWN")]
+    [InlineData("DOWN,")]
+    [InlineData("page down")]
+    [InlineData("page down page down")]
     public void Execute_TypeText_BlocksNavigationLikeInput(string text)
     {
         string result = _sut.Execute("type_text", $"{{\"text\":\"{text}\"}}");

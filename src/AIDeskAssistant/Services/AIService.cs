@@ -40,6 +40,7 @@ internal sealed class AIService
         For desktop application workflows such as Mail, Calendar, Word, Excel, Outlook, Finder, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would, then verify the app is frontmost before typing or clicking inside it.
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         The current request may include a compact Accessibility UI summary for the frontmost macOS app, including visible roles, titles, and frames. Treat that summary as high-value structure about what is currently on screen and use it together with the screenshot.
+        When a screenshot includes an additional mouse detail image around the cursor, use that close-up to validate the exact cursor position and nearby click target before choosing click or double_click coordinates.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
         For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
@@ -309,29 +310,45 @@ internal sealed class AIService
 
         if (differenceBytes is null)
         {
-            return new ToolChatMessage(
-                toolCallId,
+            var parts = new List<ChatMessageContentPart>
+            {
                 ChatMessageContentPart.CreateTextPart(summary),
-                ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low));
+                ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low),
+            };
+
+            foreach (ScreenshotSupplementalImage supplementalImage in attachment.SupplementalImages)
+                parts.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(supplementalImage.Bytes), supplementalImage.MediaType, ChatImageDetailLevel.High));
+
+            return new ToolChatMessage(toolCallId, parts.ToArray());
         }
 
-        return new ToolChatMessage(
-            toolCallId,
+        var content = new List<ChatMessageContentPart>
+        {
             ChatMessageContentPart.CreateTextPart(summary),
             ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.Low),
-            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(differenceBytes), "image/png", ChatImageDetailLevel.Low));
+        };
+
+        foreach (ScreenshotSupplementalImage supplementalImage in attachment.SupplementalImages)
+            content.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(supplementalImage.Bytes), supplementalImage.MediaType, ChatImageDetailLevel.High));
+
+        content.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(differenceBytes), "image/png", ChatImageDetailLevel.Low));
+        return new ToolChatMessage(toolCallId, content.ToArray());
     }
 
     internal static bool TryParseScreenshotAttachment(string result, out ScreenshotModelAttachment? attachment)
     {
         attachment = null;
         const string base64Marker = "Base64:";
+        const string mouseDetailBase64Marker = "Mouse detail base64:";
         int base64Index = result.IndexOf(base64Marker, StringComparison.Ordinal);
         if (base64Index < 0)
             return false;
 
         string summary = result[..base64Index].Trim();
-        string base64 = result[(base64Index + base64Marker.Length)..].Trim();
+        int mouseDetailBase64Index = result.IndexOf(mouseDetailBase64Marker, base64Index + base64Marker.Length, StringComparison.Ordinal);
+        string base64 = mouseDetailBase64Index >= 0
+            ? result[(base64Index + base64Marker.Length)..mouseDetailBase64Index].Trim()
+            : result[(base64Index + base64Marker.Length)..].Trim();
         Match mediaTypeMatch = Regex.Match(summary, @"Media type:\s*(\S+)", RegexOptions.CultureInvariant);
         string mediaType = mediaTypeMatch.Success ? mediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
 
@@ -345,7 +362,24 @@ internal sealed class AIService
             return false;
         }
 
-        attachment = new ScreenshotModelAttachment(summary, bytes, mediaType);
+        var supplementalImages = new List<ScreenshotSupplementalImage>();
+        if (mouseDetailBase64Index >= 0)
+        {
+            string detailBase64 = result[(mouseDetailBase64Index + mouseDetailBase64Marker.Length)..].Trim();
+            Match detailMediaTypeMatch = Regex.Match(summary, @"Mouse detail media type:\s*(\S+)", RegexOptions.CultureInvariant);
+            string detailMediaType = detailMediaTypeMatch.Success ? detailMediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : "image/png";
+
+            try
+            {
+                byte[] detailBytes = Convert.FromBase64String(detailBase64);
+                supplementalImages.Add(new ScreenshotSupplementalImage("mouse-detail", detailBytes, detailMediaType));
+            }
+            catch (FormatException)
+            {
+            }
+        }
+
+        attachment = new ScreenshotModelAttachment(summary, bytes, mediaType, supplementalImages);
         return true;
     }
 
@@ -414,4 +448,6 @@ internal sealed class AIService
     }
 }
 
-internal sealed record ScreenshotModelAttachment(string Summary, byte[] Bytes, string MediaType);
+internal sealed record ScreenshotModelAttachment(string Summary, byte[] Bytes, string MediaType, IReadOnlyList<ScreenshotSupplementalImage> SupplementalImages);
+
+internal sealed record ScreenshotSupplementalImage(string Label, byte[] Bytes, string MediaType);

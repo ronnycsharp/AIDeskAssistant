@@ -71,6 +71,21 @@ public sealed class AIServiceTests
     }
 
     [Fact]
+    public void TryParseScreenshotAttachment_ExtractsMouseDetailImage()
+    {
+        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Mouse detail media type: image/png. Base64: AQID Mouse detail base64: BAUG";
+
+        bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
+
+        Assert.True(parsed);
+        Assert.NotNull(attachment);
+        ScreenshotSupplementalImage supplementalImage = Assert.Single(attachment.SupplementalImages);
+        Assert.Equal("mouse-detail", supplementalImage.Label);
+        Assert.Equal("image/png", supplementalImage.MediaType);
+        Assert.Equal([4, 5, 6], supplementalImage.Bytes);
+    }
+
+    [Fact]
     public void TryCompactScreenshotToolMessage_ReplacesHistoricalImageWithTextOnlyMessage()
     {
         ToolChatMessage original = new(

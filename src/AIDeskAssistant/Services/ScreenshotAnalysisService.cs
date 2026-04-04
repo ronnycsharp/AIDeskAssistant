@@ -24,9 +24,16 @@ internal sealed class ScreenshotAnalysisService : IScreenshotAnalysisService
 
     public async Task<string?> AnalyzeAsync(ScreenshotModelAttachment attachment, CancellationToken ct = default)
     {
-        UserChatMessage userMessage = new(
+        var parts = new List<ChatMessageContentPart>
+        {
             ChatMessageContentPart.CreateTextPart($"Screenshot summary:\n{attachment.Summary}\n\nProvide a short UI analysis for the controller model."),
-            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.High));
+            ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(attachment.Bytes), attachment.MediaType, ChatImageDetailLevel.High),
+        };
+
+        foreach (ScreenshotSupplementalImage supplementalImage in attachment.SupplementalImages)
+            parts.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(supplementalImage.Bytes), supplementalImage.MediaType, ChatImageDetailLevel.High));
+
+        UserChatMessage userMessage = new(parts.ToArray());
 
         ChatCompletion completion = await _client.CompleteChatAsync(
             [new SystemChatMessage(SystemPrompt), userMessage],

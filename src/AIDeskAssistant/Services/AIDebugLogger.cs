@@ -102,6 +102,19 @@ internal sealed class AIDebugLogger
                 : string.Empty;
 
             File.WriteAllBytes(imagePath, attachment.Bytes);
+            foreach (ScreenshotSupplementalImage supplementalImage in attachment.SupplementalImages)
+            {
+                string supplementalExtension = supplementalImage.MediaType switch
+                {
+                    "image/jpeg" => ".jpg",
+                    "image/png" => ".png",
+                    _ => ".bin",
+                };
+
+                string supplementalPath = Path.Combine(_sessionDirectoryPath, $"{fileStem}-{SanitizeFileName(supplementalImage.Label)}{supplementalExtension}");
+                File.WriteAllBytes(supplementalPath, supplementalImage.Bytes);
+            }
+
             File.WriteAllText(metaPath, $"Media type: {attachment.MediaType}{Environment.NewLine}History retention: {retentionStatus}{similaritySummary}{Environment.NewLine}{attachment.Summary}");
             LogHistoryEntry("screenshot", $"{retentionStatus} image={relativeImagePath} meta={relativeMetaPath} summary={attachment.Summary}{(similarityToPrevious.HasValue ? $" similarity={similarityToPrevious.Value:P2}" : string.Empty)}");
         }

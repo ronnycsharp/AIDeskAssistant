@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using AIDeskAssistant.Models;
 using AIDeskAssistant.Services;
@@ -13,6 +14,7 @@ internal sealed class DesktopToolExecutor
     private const string HeightArg = "height";
     private const string FullScreenScreenshotTarget = "full_screen";
     private const string ActiveWindowScreenshotTarget = "active_window";
+    private const string MouseDetailBase64Marker = "Mouse detail base64:";
     private static readonly HashSet<string> SpecialInputTextTokens = new(StringComparer.OrdinalIgnoreCase)
     {
         "up",
@@ -35,6 +37,12 @@ internal sealed class DesktopToolExecutor
         "pgdown",
         "page-up",
         "page-down",
+    };
+
+    private static readonly HashSet<string> SpecialInputTwoWordPhrases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "page up",
+        "page down",
     };
 
     private readonly IScreenshotService _screenshot;
@@ -111,11 +119,14 @@ internal sealed class DesktopToolExecutor
             ? ScreenshotAnnotationData.CreateSuggestedContentArea(captureBounds)
             : null;
         var (cursorX, cursorY) = _mouse.GetPosition();
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea);
 
         byte[] screenshot = _screenshot.TakeScreenshot(options);
-        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea));
+        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, annotation);
         ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
-        return BuildScreenshotToolResult(payload, target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea);
+        ScreenshotCursorDetail? mouseDetail = ScreenshotCursorDetailExtractor.Create(annotatedScreenshot, annotation);
+        ScreenshotPayload? mouseDetailPayload = mouseDetail is null ? null : _screenshotOptimizer.Optimize(mouseDetail.Bytes);
+        return BuildScreenshotToolResult(payload, mouseDetailPayload, mouseDetail?.Bounds, target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea);
     }
 
     private bool TryResolveScreenshotCaptureOptions(
@@ -170,7 +181,7 @@ internal sealed class DesktopToolExecutor
         return new WindowBounds(x, y, width, height);
     }
 
-    private static string BuildScreenshotToolResult(ScreenshotPayload payload, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY, WindowBounds? suggestedContentArea)
+    private static string BuildScreenshotToolResult(ScreenshotPayload payload, ScreenshotPayload? mouseDetailPayload, WindowBounds? mouseDetailBounds, string target, string purpose, WindowBounds captureBounds, int cursorX, int cursorY, WindowBounds? suggestedContentArea)
     {
         var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea);
         var parts = new List<string>
@@ -187,6 +198,8 @@ internal sealed class DesktopToolExecutor
         parts.Add($"Cursor: X={cursorX}, Y={cursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
         if (annotation.HasSuggestedContentArea && annotation.SuggestedContentArea is WindowBounds contentArea)
             parts.Add($"Likely content area: X={contentArea.X}, Y={contentArea.Y}, Width={contentArea.Width}, Height={contentArea.Height}. Prefer clicks and typing inside this region unless the screenshot shows a more specific control elsewhere.");
+        if (mouseDetailBounds is WindowBounds detailBounds)
+            parts.Add($"Mouse detail bounds: X={detailBounds.X}, Y={detailBounds.Y}, Width={detailBounds.Width}, Height={detailBounds.Height}. Use the additional mouse detail image to validate exact cursor placement before clicking or double-clicking.");
         parts.Add($"Edge ruler: major ticks every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor ticks every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
 
         parts.Add($"Original: {payload.OriginalByteCount} bytes.");
@@ -195,6 +208,12 @@ internal sealed class DesktopToolExecutor
         parts.Add($"Resolution: {payload.Width}x{payload.Height}.");
         parts.Add($"Media type: {payload.MediaType}.");
         parts.Add($"Base64: {Convert.ToBase64String(payload.Bytes)}");
+
+        if (mouseDetailPayload is not null)
+        {
+            parts.Add($"Mouse detail media type: {mouseDetailPayload.MediaType}.");
+            parts.Add($"{MouseDetailBase64Marker} {Convert.ToBase64String(mouseDetailPayload.Bytes)}");
+        }
 
         return string.Join(" ", parts);
     }
@@ -293,13 +312,40 @@ internal sealed class DesktopToolExecutor
         if (string.IsNullOrWhiteSpace(text))
             return false;
 
-        string[] tokens = text
-            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string normalized = Regex.Replace(text, @"[^\p{L}\p{N}]+", " ")
+            .Trim()
+            .ToLowerInvariant();
+
+        if (string.IsNullOrWhiteSpace(normalized))
+            return false;
+
+        if (SpecialInputTextTokens.Contains(normalized) || SpecialInputTwoWordPhrases.Contains(normalized))
+            return true;
+
+        string[] tokens = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
         if (tokens.Length == 0)
             return false;
 
-        return tokens.All(static token => SpecialInputTextTokens.Contains(token));
+        for (int index = 0; index < tokens.Length;)
+        {
+            if (index + 1 < tokens.Length)
+            {
+                string twoWordPhrase = $"{tokens[index]} {tokens[index + 1]}";
+                if (SpecialInputTwoWordPhrases.Contains(twoWordPhrase))
+                {
+                    index += 2;
+                    continue;
+                }
+            }
+
+            if (!SpecialInputTextTokens.Contains(tokens[index]))
+                return false;
+
+            index++;
+        }
+
+        return true;
     }
 
     private string PressKey(Dictionary<string, JsonElement> args)
