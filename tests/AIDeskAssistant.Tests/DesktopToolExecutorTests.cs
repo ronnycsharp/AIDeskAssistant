@@ -118,6 +118,7 @@ internal sealed class FakeWindowService : IWindowService
     public string? LastFocusApplicationName;
     public string? LastFocusTitleSubstring;
     public bool FocusWindowResult = true;
+    public int FocusWindowCallCount;
 
     public WindowBounds GetActiveWindowBounds() => Bounds;
 
@@ -129,6 +130,7 @@ internal sealed class FakeWindowService : IWindowService
 
     public bool FocusWindow(string? applicationName, string? titleSubstring)
     {
+        FocusWindowCallCount++;
         LastFocusApplicationName = applicationName;
         LastFocusTitleSubstring = titleSubstring;
         return FocusWindowResult;
@@ -487,6 +489,26 @@ public sealed class DesktopToolExecutorTests
         Assert.Equal("Microsoft Word", _window.LastFocusApplicationName);
         Assert.Equal("Document1", _window.LastFocusTitleSubstring);
         Assert.Contains("Focused window matching", result);
+    }
+
+    [Fact]
+    public void ApplicationNamesMatch_TreatsMicrosoftPrefixAsEquivalent()
+    {
+        Assert.True(DesktopToolExecutor.ApplicationNamesMatch("Microsoft Word", "Word"));
+        Assert.True(DesktopToolExecutor.ApplicationNamesMatch("Word", "Microsoft Word"));
+        Assert.False(DesktopToolExecutor.ApplicationNamesMatch("Safari", "Microsoft Word"));
+    }
+
+    [Fact]
+    public void Execute_FocusApplication_WhenUnsupportedPlatform_ReturnsImplementationError()
+    {
+        if (OperatingSystem.IsMacOS())
+            return;
+
+        string result = _sut.Execute("focus_application", "{\"name\":\"Word\"}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("not implemented", result);
     }
 
     [Fact]

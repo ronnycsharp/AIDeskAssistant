@@ -707,7 +707,7 @@ internal sealed class DesktopToolExecutor
         }
     }
 
-    private static string FocusApplication(Dictionary<string, JsonElement> args)
+    private string FocusApplication(Dictionary<string, JsonElement> args)
     {
         string name = DesktopToolDefinitions.GetString(args, "name");
         if (string.IsNullOrWhiteSpace(name))
@@ -722,8 +722,8 @@ internal sealed class DesktopToolExecutor
 
             if (OperatingSystem.IsMacOS())
             {
-                BringMacOSApplicationToForeground(resolvedName);
-                return $"Focused application: {resolvedName}";
+                string verificationMessage = EnsureMacOSApplicationForeground(resolvedName);
+                return $"Focused application: {resolvedName}. {verificationMessage}";
             }
 
             return Err($"Focusing applications by name is not implemented on this platform. Requested: {resolvedName}");
@@ -1315,5 +1315,60 @@ internal sealed class DesktopToolExecutor
             string stderr = process.StandardError.ReadToEnd().Trim();
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "Failed to activate the application." : stderr);
         }
+    }
+
+    private string EnsureMacOSApplicationForeground(string applicationName)
+    {
+        string? lastObservedFrontmostApplication = null;
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            BringMacOSApplicationToForeground(applicationName);
+
+            try
+            {
+                _window.FocusWindow(applicationName, null);
+            }
+            catch
+            {
+            }
+
+            Thread.Sleep(250);
+
+            try
+            {
+                lastObservedFrontmostApplication = _window.GetFrontmostApplicationName();
+                if (ApplicationNamesMatch(lastObservedFrontmostApplication, applicationName))
+                    return $"Foreground verification succeeded. Frontmost application: {lastObservedFrontmostApplication}.";
+            }
+            catch (Exception ex)
+            {
+                lastObservedFrontmostApplication = $"unavailable ({ex.Message})";
+            }
+        }
+
+        throw new InvalidOperationException($"Activation did not make '{applicationName}' frontmost. Last observed frontmost application: {lastObservedFrontmostApplication ?? "unknown"}.");
+    }
+
+    internal static bool ApplicationNamesMatch(string? actualName, string expectedName)
+    {
+        if (string.IsNullOrWhiteSpace(actualName) || string.IsNullOrWhiteSpace(expectedName))
+            return false;
+
+        string normalizedActual = NormalizeApplicationName(actualName);
+        string normalizedExpected = NormalizeApplicationName(expectedName);
+
+        return normalizedActual.Contains(normalizedExpected, StringComparison.OrdinalIgnoreCase)
+            || normalizedExpected.Contains(normalizedActual, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeApplicationName(string applicationName)
+    {
+        string normalized = applicationName.Trim();
+
+        if (normalized.StartsWith("Microsoft ", StringComparison.OrdinalIgnoreCase))
+            normalized = normalized[10..];
+
+        return normalized;
     }
 }

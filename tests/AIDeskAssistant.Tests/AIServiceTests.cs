@@ -37,6 +37,39 @@ public sealed class AIServiceTests
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
         Assert.Contains("Tool results that start with '[ERROR]' indicate that the tool call failed", prompt);
+        Assert.Contains("You must use at least one concrete validation tool call after this instruction", AIService.BuildMandatoryFinalValidationInstruction());
+    }
+
+    [Theory]
+    [InlineData("read_screen_text")]
+    [InlineData("assert_state")]
+    [InlineData("get_frontmost_application")]
+    [InlineData("wait_for_window")]
+    public void IsStateChangingTool_ReadOnlyToolsReturnFalse(string toolName)
+    {
+        Assert.False(AIService.IsStateChangingTool(toolName));
+        Assert.True(AIService.IsConcreteValidationTool(toolName));
+    }
+
+    [Theory]
+    [InlineData("type_text")]
+    [InlineData("press_key")]
+    [InlineData("click")]
+    [InlineData("focus_application")]
+    public void IsStateChangingTool_MutatingToolsReturnTrue(string toolName)
+    {
+        Assert.True(AIService.IsStateChangingTool(toolName));
+        Assert.False(AIService.IsConcreteValidationTool(toolName));
+    }
+
+    [Fact]
+    public void BuildFinalValidationMissingEvidenceInstruction_NamesConcreteValidationTools()
+    {
+        string instruction = AIService.BuildFinalValidationMissingEvidenceInstruction();
+
+        Assert.Contains("read_screen_text", instruction);
+        Assert.Contains("assert_state", instruction);
+        Assert.Contains("run_command", instruction);
     }
 
     [Fact]

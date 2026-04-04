@@ -21,7 +21,12 @@ internal sealed class AIService
     private const string MaxToolRoundsReachedMessage =
         "Stopped after reaching the configured maximum number of tool rounds. Ask me to continue or increase AIDESK_MAX_TOOL_ROUNDS for longer tasks.";
     private const string MandatoryFinalValidationInstruction =
-        "Mandatory final validation loop: do not answer the user yet. Re-verify the current desktop state from the live UI. If you changed the UI, take a fresh validation screenshot and confirm the requested outcome is actually visible now. If the task involves files or terminal output, run one concrete verification step against the current state. If validation fails, continue working instead of claiming success. Only after this extra validation loop may you send the final user-facing completion message.";
+        "Mandatory final validation loop: do not answer the user yet. Re-verify the current desktop state from the live UI. If you changed the UI, take a fresh validation screenshot and confirm the requested outcome is actually visible now. If the task involves files or terminal output, run one concrete verification step against the current state. If validation fails, continue working instead of claiming success. You must use at least one concrete validation tool call after this instruction before you may send the final user-facing completion message.";
+    private const string FinalValidationMissingEvidenceInstruction =
+        "You still have not performed a concrete final verification tool call from the current live state. Do not answer the user yet. Call a validation tool now, such as take_screenshot, read_screen_text, assert_state, get_frontmost_application, get_frontmost_ui_elements, list_windows, get_focused_ui_element, wait_for_window, wait_for_ui_element, get_active_window_bounds, or run_command for file/terminal verification. Only after that validation tool result confirms the outcome may you send the final completion message.";
+    private const string FinalValidationAbortedMessage =
+        "Stopped because the assistant attempted to finish without performing the required final validation tool call. Please ask me to continue if you want me to retry the validation step.";
+    private const int MaxFinalValidationRetries = 2;
     private const string SystemPrompt =
         """
         You are an AI desktop assistant that can control the user's computer.
@@ -96,6 +101,8 @@ internal sealed class AIService
     private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
+    private readonly record struct ToolRoundOutcome(bool PerformedStateChangingTool, bool PerformedConcreteValidationTool);
+
     public AIService(string apiKey, DesktopToolExecutor executor, string model = DefaultModel, AIDebugLogger? debugLogger = null)
     {
         _client   = new ChatClient(model, apiKey);
@@ -129,6 +136,8 @@ internal sealed class AIService
         int toolRounds = 0;
         bool performedStateChangingTool = false;
         bool finalValidationRequested = false;
+        bool finalValidationEvidenceObserved = false;
+        int finalValidationRetryCount = 0;
         while (true)
         {
             ChatCompletion completion = await _client.CompleteChatAsync(_history, options, ct);
@@ -138,11 +147,31 @@ internal sealed class AIService
                 if (performedStateChangingTool && !finalValidationRequested)
                 {
                     finalValidationRequested = true;
+                    finalValidationEvidenceObserved = false;
                     string draftResponse = completion.Content[0].Text;
                     _history.Add(new AssistantChatMessage(draftResponse));
                     _debugLogger?.LogHistoryEntry("assistant", $"Draft final response before mandatory validation: {draftResponse}");
                     _history.Add(new UserChatMessage(BuildMandatoryFinalValidationInstruction()));
                     _debugLogger?.LogHistoryEntry("user", BuildMandatoryFinalValidationInstruction());
+                    continue;
+                }
+
+                if (finalValidationRequested && !finalValidationEvidenceObserved)
+                {
+                    string draftResponse = completion.Content[0].Text;
+                    _history.Add(new AssistantChatMessage(draftResponse));
+                    _debugLogger?.LogHistoryEntry("assistant", $"Draft final response without concrete validation evidence: {draftResponse}");
+
+                    finalValidationRetryCount++;
+                    if (finalValidationRetryCount > MaxFinalValidationRetries)
+                    {
+                        _history.Add(new AssistantChatMessage(FinalValidationAbortedMessage));
+                        _debugLogger?.LogHistoryEntry("assistant", FinalValidationAbortedMessage);
+                        return FinalValidationAbortedMessage;
+                    }
+
+                    _history.Add(new UserChatMessage(BuildFinalValidationMissingEvidenceInstruction()));
+                    _debugLogger?.LogHistoryEntry("user", BuildFinalValidationMissingEvidenceInstruction());
                     continue;
                 }
 
@@ -157,8 +186,16 @@ internal sealed class AIService
                 return MaxToolRoundsReachedMessage;
             }
 
-            if (await HandleToolCallsAsync(completion, onToolCall, onToolResult))
+            ToolRoundOutcome toolRoundOutcome = await HandleToolCallsAsync(completion, onToolCall, onToolResult);
+            if (toolRoundOutcome.PerformedStateChangingTool)
+            {
                 performedStateChangingTool = true;
+                if (finalValidationRequested)
+                    finalValidationEvidenceObserved = false;
+            }
+
+            if (toolRoundOutcome.PerformedConcreteValidationTool)
+                finalValidationEvidenceObserved = true;
         }
     }
 
@@ -177,13 +214,24 @@ internal sealed class AIService
     internal static string BuildMandatoryFinalValidationInstruction()
         => MandatoryFinalValidationInstruction;
 
-    internal static bool RequiresMandatoryFinalValidation(string toolName)
+    internal static string BuildFinalValidationMissingEvidenceInstruction()
+        => FinalValidationMissingEvidenceInstruction;
+
+    internal static bool IsStateChangingTool(string toolName)
         => toolName switch
         {
             "move_mouse" => false,
             "take_screenshot" => false,
+            "read_screen_text" => false,
             "get_screen_info" => false,
             "get_frontmost_ui_elements" => false,
+            "get_frontmost_application" => false,
+            "list_windows" => false,
+            "wait_for_window" => false,
+            "find_ui_element" => false,
+            "wait_for_ui_element" => false,
+            "get_focused_ui_element" => false,
+            "assert_state" => false,
             "get_cursor_position" => false,
             "get_active_window_bounds" => false,
             "wait" => false,
@@ -191,7 +239,28 @@ internal sealed class AIService
             _ => true,
         };
 
-    private async Task<bool> HandleToolCallsAsync(
+    internal static bool RequiresMandatoryFinalValidation(string toolName)
+        => IsStateChangingTool(toolName);
+
+    internal static bool IsConcreteValidationTool(string toolName)
+        => toolName switch
+        {
+            "take_screenshot" => true,
+            "read_screen_text" => true,
+            "get_frontmost_ui_elements" => true,
+            "get_frontmost_application" => true,
+            "list_windows" => true,
+            "wait_for_window" => true,
+            "find_ui_element" => true,
+            "wait_for_ui_element" => true,
+            "get_focused_ui_element" => true,
+            "assert_state" => true,
+            "get_active_window_bounds" => true,
+            "run_command" => true,
+            _ => false,
+        };
+
+    private async Task<ToolRoundOutcome> HandleToolCallsAsync(
         ChatCompletion completion,
         Action<string>? onToolCall,
         Action<string>? onToolResult)
@@ -200,6 +269,7 @@ internal sealed class AIService
         _debugLogger?.LogHistoryEntry("assistant", $"Requested {completion.ToolCalls.Count} tool call(s): {string.Join(", ", completion.ToolCalls.Select(static call => call.FunctionName))}");
 
         bool performedStateChangingTool = false;
+        bool performedConcreteValidationTool = false;
 
         foreach (ChatToolCall toolCall in completion.ToolCalls)
         {
@@ -213,12 +283,20 @@ internal sealed class AIService
             onToolResult?.Invoke($"← Result: {TruncateForDisplay(result)}");
 
             _history.Add(CreateToolResultMessage(toolCall, toolName, result));
-            performedStateChangingTool |= RequiresMandatoryFinalValidation(toolName);
+
+            if (IsStateChangingTool(toolName) && !DesktopToolExecutor.IsErrorResult(result))
+            {
+                performedStateChangingTool = true;
+                performedConcreteValidationTool = false;
+            }
+
+            if (IsConcreteValidationTool(toolName) && !DesktopToolExecutor.IsErrorResult(result))
+                performedConcreteValidationTool = true;
         }
 
         PruneHistoricalScreenshotImages();
         await Task.CompletedTask;
-        return performedStateChangingTool;
+        return new ToolRoundOutcome(performedStateChangingTool, performedConcreteValidationTool);
     }
 
     private ToolChatMessage CreateToolResultMessage(ChatToolCall toolCall, string toolName, string result)
