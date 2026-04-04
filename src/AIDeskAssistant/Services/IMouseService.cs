@@ -7,6 +7,9 @@ public interface IMouseService
     /// <summary>Moves the mouse cursor to the specified screen coordinates using a smooth eased path.</summary>
     void MoveTo(int x, int y);
 
+    /// <summary>Drags the specified mouse button from the start coordinates to the end coordinates.</summary>
+    void Drag(int startX, int startY, int endX, int endY, MouseButton button = MouseButton.Left);
+
     /// <summary>Clicks the specified mouse button at the current cursor position.</summary>
     void Click(MouseButton button = MouseButton.Left);
 

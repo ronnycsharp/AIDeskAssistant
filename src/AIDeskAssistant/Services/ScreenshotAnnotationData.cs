@@ -7,7 +7,8 @@ internal readonly record struct ScreenshotAnnotationData(
     int CursorX,
     int CursorY,
     WindowBounds? SuggestedContentArea = null,
-    ScreenshotClickTarget? IntendedClickTarget = null)
+    ScreenshotClickTarget? IntendedClickTarget = null,
+    ScreenshotHighlightedRegion? IntendedElementRegion = null)
 {
     public bool CursorIsInsideCapture =>
         ContainsPoint(CursorX, CursorY);
@@ -26,15 +27,30 @@ internal readonly record struct ScreenshotAnnotationData(
 
     public bool HasIntendedClickTarget => IntendedClickTarget is not null;
 
+    public bool HasIntendedElementRegion => IntendedElementRegion is { Bounds.Width: > 0, Bounds.Height: > 0 };
+
     public bool IntendedClickIsInsideCapture =>
         IntendedClickTarget is { } target
         && ContainsPoint(target.X, target.Y);
+
+    public bool IntendedElementRegionIntersectsCapture =>
+        IntendedElementRegion is { } region
+        && Intersects(region.Bounds);
 
     public bool ContainsPoint(int x, int y)
         => x >= CaptureBounds.X
         && x < CaptureBounds.X + CaptureBounds.Width
         && y >= CaptureBounds.Y
         && y < CaptureBounds.Y + CaptureBounds.Height;
+
+    public bool Intersects(WindowBounds bounds)
+    {
+        int left = Math.Max(CaptureBounds.X, bounds.X);
+        int top = Math.Max(CaptureBounds.Y, bounds.Y);
+        int right = Math.Min(CaptureBounds.X + CaptureBounds.Width, bounds.X + bounds.Width);
+        int bottom = Math.Min(CaptureBounds.Y + CaptureBounds.Height, bounds.Y + bounds.Height);
+        return right > left && bottom > top;
+    }
 
     public static WindowBounds CreateSuggestedContentArea(WindowBounds captureBounds)
     {
@@ -54,3 +70,5 @@ internal readonly record struct ScreenshotAnnotationData(
 }
 
 internal readonly record struct ScreenshotClickTarget(int X, int Y, string? Label = null);
+
+internal readonly record struct ScreenshotHighlightedRegion(WindowBounds Bounds, string? Label = null);

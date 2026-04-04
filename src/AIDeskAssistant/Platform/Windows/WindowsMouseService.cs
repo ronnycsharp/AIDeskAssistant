@@ -14,7 +14,7 @@ internal sealed class WindowsMouseService : IMouseService
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out POINT lpPoint);
+    private static extern bool GetCursorPos(out Point lpPoint);
 
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint dwFlags, int dx, int dy, int dwData, nint dwExtraInfo);
@@ -28,7 +28,7 @@ internal sealed class WindowsMouseService : IMouseService
     private const uint MOUSEEVENTF_WHEEL      = 0x0800;
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X; public int Y; }
+    private struct Point { public int X; public int Y; }
 
     private const int ClickDelayMs       = 30;
     private const int DoubleClickDelayMs = 50;
@@ -54,6 +54,28 @@ internal sealed class WindowsMouseService : IMouseService
         mouse_event(up,   0, 0, 0, 0);
     }
 
+    public void Drag(int startX, int startY, int endX, int endY, MouseButton button = MouseButton.Left)
+    {
+        (uint down, uint up) = button switch
+        {
+            MouseButton.Right  => (MOUSEEVENTF_RIGHTDOWN,  MOUSEEVENTF_RIGHTUP),
+            MouseButton.Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            _                  => (MOUSEEVENTF_LEFTDOWN,   MOUSEEVENTF_LEFTUP),
+        };
+
+        MoveTo(startX, startY);
+        Thread.Sleep(ClickDelayMs);
+        mouse_event(down, 0, 0, 0, 0);
+
+        foreach (var point in MouseMotion.CreateEasedPath((startX, startY), (endX, endY)))
+        {
+            SetCursorPos(point.X, point.Y);
+            Thread.Sleep(MouseMotion.StepDelayMs);
+        }
+
+        mouse_event(up, 0, 0, 0, 0);
+    }
+
     public void ClickAt(int x, int y, MouseButton button = MouseButton.Left)
     {
         MoveTo(x, y);
@@ -77,7 +99,7 @@ internal sealed class WindowsMouseService : IMouseService
 
     public (int X, int Y) GetPosition()
     {
-        GetCursorPos(out POINT p);
+        GetCursorPos(out Point p);
         return (p.X, p.Y);
     }
 }

@@ -354,8 +354,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
         textView.string = ""
         updateOverlayLayout(animated: true)
+        dismissPopover()
         submitText(text)
-        focusTextField()
     }
 
     @objc private func changeVoice(_ sender: Any?) {
@@ -409,6 +409,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func startRecording(autoFollowUp: Bool, interruptCurrentWork: Bool) {
+        dismissPopover()
         recordButton.isEnabled = false
         resetCurrentResponseAudioState()
         isAutoFollowUpRecording = autoFollowUp
@@ -1528,7 +1529,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false)
         panel.contentViewController = contentViewController
-        panel.title = "AIDesk"
+        panel.title = "AIDeskAssistantOverlayPanel"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isOpaque = false

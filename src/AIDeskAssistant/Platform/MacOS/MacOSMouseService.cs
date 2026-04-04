@@ -41,7 +41,10 @@ internal sealed class MacOSMouseService : IMouseService
         MouseMoved    = 5,
         LeftMouseDown = 1, LeftMouseUp  = 2,
         RightMouseDown = 3, RightMouseUp = 4,
+        LeftMouseDragged = 6,
+        RightMouseDragged = 7,
         OtherMouseDown = 25, OtherMouseUp = 26,
+        OtherMouseDragged = 27,
         ScrollWheel   = 22,
     }
 
@@ -71,6 +74,32 @@ internal sealed class MacOSMouseService : IMouseService
         };
         PostMouseEvent(down, pos, btn);
         PostMouseEvent(up,   pos, btn);
+    }
+
+    public void Drag(int startX, int startY, int endX, int endY, MouseButton button = MouseButton.Left)
+    {
+        MoveTo(startX, startY);
+        Thread.Sleep(ClickDelayMs);
+
+        (CGEventType down, CGEventType dragged, CGEventType up, CGMouseButton btn) = button switch
+        {
+            MouseButton.Right => (CGEventType.RightMouseDown, CGEventType.RightMouseDragged, CGEventType.RightMouseUp, CGMouseButton.Right),
+            MouseButton.Middle => (CGEventType.OtherMouseDown, CGEventType.OtherMouseDragged, CGEventType.OtherMouseUp, CGMouseButton.Center),
+            _ => (CGEventType.LeftMouseDown, CGEventType.LeftMouseDragged, CGEventType.LeftMouseUp, CGMouseButton.Left),
+        };
+
+        CGPoint startPoint = new() { X = startX, Y = startY };
+        PostMouseEvent(down, startPoint, btn);
+
+        foreach (var point in MouseMotion.CreateEasedPath((startX, startY), (endX, endY)))
+        {
+            CGPoint dragPoint = new() { X = point.X, Y = point.Y };
+            PostMouseEvent(dragged, dragPoint, btn);
+            Thread.Sleep(MouseMotion.StepDelayMs);
+        }
+
+        CGPoint endPoint = new() { X = endX, Y = endY };
+        PostMouseEvent(up, endPoint, btn);
     }
 
     public void ClickAt(int x, int y, MouseButton button = MouseButton.Left)

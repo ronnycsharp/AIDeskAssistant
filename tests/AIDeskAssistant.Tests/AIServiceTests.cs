@@ -17,13 +17,15 @@ public sealed class AIServiceTests
         Assert.Contains("target='active_window'", prompt);
         Assert.Contains("purpose string", prompt);
         Assert.Contains("intended_click_x", prompt);
+        Assert.Contains("intended_element_x", prompt);
         Assert.Contains("After each significant action, take a validation screenshot", prompt);
         Assert.Contains("compare the validation screenshot with the pre-action screenshot", prompt);
-        Assert.Contains("subtle edge ruler with labeled spacing", prompt);
+        Assert.Contains("visible coordinate raster with labeled spacing", prompt);
         Assert.Contains("Microsoft Word and Microsoft Excel", prompt);
         Assert.Contains("In text editors and document apps such as Microsoft Word, cursor navigation must always use press_key with arrow keys", prompt);
         Assert.Contains("Never type words like 'up', 'down', 'left', 'right', 'home', 'end', 'page up', or 'page down' into the document when the intent is to move the caret", prompt);
         Assert.Contains("prefer a precise mouse click at the visible insertion point", prompt);
+        Assert.Contains("do not reuse stale button coordinates", prompt);
         Assert.Contains("Use press_key for special keys like enter, return, tab, escape, backspace, delete, arrows, or shortcuts", prompt);
         Assert.Contains("Never type words like 'enter', 'tab', 'escape', 'backspace', or 'delete' into the document", prompt);
         Assert.Contains("arrow navigation must always use press_key with arrow keys", prompt);

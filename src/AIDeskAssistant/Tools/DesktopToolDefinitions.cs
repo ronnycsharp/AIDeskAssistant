@@ -12,7 +12,7 @@ internal static class DesktopToolDefinitions
     {
     new(
             "take_screenshot",
-          "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate. If you are about to click, you can also provide intended click coordinates so the screenshot renders a visible click-target marker before the click.",
+          "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate. If you are about to click, you can also provide intended click coordinates so the screenshot renders a visible click-target marker before the click. If you identified an AX/UI element by its frame, you can also provide that frame so the screenshot highlights the intended element with an extra outline.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -41,6 +41,26 @@ internal static class DesktopToolDefinitions
                 "intended_click_label": {
                   "type": "string",
                   "description": "Optional short label for the intended click target, e.g. 'Word document body' or 'Save button'."
+                },
+                "intended_element_x": {
+                  "type": "integer",
+                  "description": "Optional X coordinate of an AX/UI element frame you want highlighted in the screenshot. Use together with intended_element_y, intended_element_width, and intended_element_height."
+                },
+                "intended_element_y": {
+                  "type": "integer",
+                  "description": "Optional Y coordinate of an AX/UI element frame you want highlighted in the screenshot."
+                },
+                "intended_element_width": {
+                  "type": "integer",
+                  "description": "Optional width of the AX/UI element frame to highlight in the screenshot."
+                },
+                "intended_element_height": {
+                  "type": "integer",
+                  "description": "Optional height of the AX/UI element frame to highlight in the screenshot."
+                },
+                "intended_element_label": {
+                  "type": "string",
+                  "description": "Optional short label for the highlighted AX/UI element, e.g. 'Save button' or 'Word toolbar button'."
                 }
               }
             }
@@ -68,6 +88,28 @@ internal static class DesktopToolDefinitions
                 "y": { "type": "integer", "description": "Y coordinate (pixels from top edge)" }
               },
               "required": ["x", "y"]
+            }
+            """)
+        ),
+
+          new(
+            "drag",
+            "Performs a drag gesture from one absolute screen coordinate to another using the specified mouse button. Use this for selecting text, moving windows, resizing panes, or dragging sliders and files.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "start_x": { "type": "integer", "description": "Starting X coordinate" },
+                "start_y": { "type": "integer", "description": "Starting Y coordinate" },
+                "end_x": { "type": "integer", "description": "Ending X coordinate" },
+                "end_y": { "type": "integer", "description": "Ending Y coordinate" },
+                "button": {
+                  "type": "string",
+                  "enum": ["left", "right", "middle"],
+                  "description": "Mouse button to hold during the drag (default: left)"
+                }
+              },
+              "required": ["start_x", "start_y", "end_x", "end_y"]
             }
             """)
         ),

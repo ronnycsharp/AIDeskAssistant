@@ -26,12 +26,20 @@ internal sealed class FakeScreenshotService : IScreenshotService
 internal sealed class FakeMouseService : IMouseService
 {
     public (int X, int Y) LastMoveTarget;
+    public (int StartX, int StartY, int EndX, int EndY) LastDragTarget;
+    public MouseButton LastDragButton;
     public (int X, int Y) LastClickTarget;
     public MouseButton LastClickButton;
     public (int X, int Y) LastDoubleClickTarget;
     public int LastScrollDelta;
 
     public void MoveTo(int x, int y) => LastMoveTarget = (x, y);
+
+    public void Drag(int startX, int startY, int endX, int endY, MouseButton button = MouseButton.Left)
+    {
+        LastDragTarget = (startX, startY, endX, endY);
+        LastDragButton = button;
+    }
 
     public void Click(MouseButton button = MouseButton.Left)
     {
@@ -149,8 +157,8 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Corner pixels: TL=(0,0), TR=(1919,0), BL=(0,1079), BR=(1919,1079).", result);
         Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
         Assert.Contains("Mouse detail bounds: X=490, Y=330, Width=300, Height=300.", result);
-        Assert.Contains("Edge ruler: major ticks every", result);
-        Assert.Contains("minor ticks every", result);
+        Assert.Contains("Coordinate raster: major lines every", result);
+        Assert.Contains("minor lines every", result);
         Assert.Contains("Original:", result);
         Assert.Contains("Final:", result);
         Assert.Equal(default, _screenshot.LastOptions);
@@ -159,7 +167,7 @@ public sealed class DesktopToolExecutorTests
     [Fact]
     public void Execute_TakeScreenshotActiveWindow_UsesWindowBoundsAndPurpose()
     {
-        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20,\"intended_click_x\":420,\"intended_click_y\":360,\"intended_click_label\":\"Word document body\"}");
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20,\"intended_click_x\":420,\"intended_click_y\":360,\"intended_click_label\":\"Word document body\",\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":28,\"intended_element_label\":\"Save button\"}");
 
         Assert.Equal(new WindowBounds(0, 0, 840, 640), _screenshot.LastOptions.Bounds);
         Assert.Contains("Target: active_window.", result);
@@ -170,8 +178,9 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Window under cursor: App=Microsoft Word, Title=Document1, X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Likely content area: X=34, Y=90, Width=772, Height=518.", result);
         Assert.Contains("Intended click target: X=420, Y=360, InsideCapture=True, Label=Word document body.", result);
+        Assert.Contains("Highlighted AX element: X=390, Y=330, Width=80, Height=28, IntersectsCapture=True, Label=Save button.", result);
         Assert.Contains("includes a 100 px coordinate raster with x/y labels", result);
-        Assert.Contains("Edge ruler: major ticks every 50 px with minor ticks every 25 px.", result);
+        Assert.Contains("Coordinate raster: major lines every 50 px with minor lines every 25 px.", result);
     }
 
     [Fact]
@@ -181,6 +190,16 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Equal((300, 400), _mouse.LastMoveTarget);
         Assert.Equal("Mouse moved to (300, 400)", result);
+    }
+
+    [Fact]
+    public void Execute_Drag_UsesMouseService()
+    {
+        string result = _sut.Execute("drag", "{\"start_x\":120,\"start_y\":180,\"end_x\":420,\"end_y\":260,\"button\":\"left\"}");
+
+        Assert.Equal((120, 180, 420, 260), _mouse.LastDragTarget);
+        Assert.Equal(MouseButton.Left, _mouse.LastDragButton);
+        Assert.Equal("Dragged Left button from (120, 180) to (420, 260)", result);
     }
 
     [Fact]

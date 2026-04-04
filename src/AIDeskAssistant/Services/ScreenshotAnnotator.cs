@@ -8,9 +8,11 @@ internal static class ScreenshotAnnotator
     private static readonly SKColor CornerColor = new(0, 170, 140, 255);
     private static readonly SKColor CursorColor = new(255, 106, 0, 255);
     private static readonly SKColor IntendedClickColor = new(255, 208, 0, 255);
-    private static readonly SKColor ContentAreaColor = new(0, 122, 255, 255);
+    private static readonly SKColor IntendedElementColor = new(64, 255, 191, 255);
     private static readonly SKColor RulerTickColor = new(255, 255, 255, 120);
     private static readonly SKColor RulerGuideColor = new(255, 255, 255, 28);
+    private static readonly SKColor MinorGridColor = new(255, 255, 255, 18);
+    private static readonly SKColor MajorGridColor = new(255, 255, 255, 34);
     private static readonly SKColor LabelBackgroundColor = new(18, 18, 18, 210);
     private static readonly SKColor LabelBorderColor = new(255, 255, 255, 235);
     private static readonly SKColor LabelTextColor = SKColors.White;
@@ -33,8 +35,8 @@ internal static class ScreenshotAnnotator
 
             float fontSize = CreateFontSize(sourceBitmap.Width, sourceBitmap.Height);
             var metrics = new ImageMetrics(sourceBitmap.Width, sourceBitmap.Height, fontSize);
-            DrawEdgeRuler(canvas, metrics, annotation);
-            DrawSuggestedContentArea(canvas, metrics, annotation);
+            DrawCoordinateRaster(canvas, metrics, annotation);
+            DrawIntendedElementRegion(canvas, metrics, annotation);
             DrawIntendedClickTarget(canvas, metrics, annotation);
             DrawCornerAnnotations(canvas, metrics, annotation);
             DrawCursorAnnotation(canvas, metrics, annotation);
@@ -52,17 +54,49 @@ internal static class ScreenshotAnnotator
     private static float CreateFontSize(int imageWidth, int imageHeight)
         => Math.Clamp(Math.Min(imageWidth, imageHeight) / 36f, 12f, 24f);
 
-    private static void DrawEdgeRuler(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
+    private static void DrawCoordinateRaster(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
     {
         int majorStep = CalculateMajorStep(annotation.CaptureBounds.Width, annotation.CaptureBounds.Height);
         int minorStep = Math.Max(majorStep / 2, 25);
         float edgeBand = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 28f, 18f, 32f);
         using var tickPaint = new SKPaint { Color = RulerTickColor, IsAntialias = true, StrokeWidth = 1.5f, Style = SKPaintStyle.Stroke };
         using var guidePaint = new SKPaint { Color = RulerGuideColor, IsAntialias = true, StrokeWidth = 1f, Style = SKPaintStyle.Stroke };
-        var rulerStyle = new RulerStyle(minorStep, majorStep, edgeBand, tickPaint, guidePaint);
+        using var minorGridPaint = new SKPaint { Color = MinorGridColor, IsAntialias = true, StrokeWidth = 1f, Style = SKPaintStyle.Stroke };
+        using var majorGridPaint = new SKPaint { Color = MajorGridColor, IsAntialias = true, StrokeWidth = 1.25f, Style = SKPaintStyle.Stroke };
+        var rulerStyle = new RulerStyle(minorStep, majorStep, edgeBand, tickPaint, guidePaint, minorGridPaint, majorGridPaint);
+
+        DrawGridLines(canvas, metrics, annotation, rulerStyle);
 
         DrawVerticalRuler(canvas, metrics, annotation, rulerStyle);
         DrawHorizontalRuler(canvas, metrics, annotation, rulerStyle);
+    }
+
+    private static void DrawGridLines(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation, RulerStyle rulerStyle)
+    {
+        int left = annotation.CaptureBounds.X;
+        int right = annotation.CaptureBounds.X + Math.Max(0, annotation.CaptureBounds.Width - 1);
+        int top = annotation.CaptureBounds.Y;
+        int bottom = annotation.CaptureBounds.Y + Math.Max(0, annotation.CaptureBounds.Height - 1);
+
+        for (int globalX = AlignDown(left, rulerStyle.MinorStep); globalX <= right; globalX += rulerStyle.MinorStep)
+        {
+            if (globalX < left)
+                continue;
+
+            float x = MapGlobalXToImage(annotation, globalX, metrics.Width);
+            bool isMajor = globalX % rulerStyle.MajorStep == 0;
+            canvas.DrawLine(x, 0, x, metrics.Height - 1, isMajor ? rulerStyle.MajorGridPaint : rulerStyle.MinorGridPaint);
+        }
+
+        for (int globalY = AlignDown(top, rulerStyle.MinorStep); globalY <= bottom; globalY += rulerStyle.MinorStep)
+        {
+            if (globalY < top)
+                continue;
+
+            float y = MapGlobalYToImage(annotation, globalY, metrics.Height);
+            bool isMajor = globalY % rulerStyle.MajorStep == 0;
+            canvas.DrawLine(0, y, metrics.Width - 1, y, isMajor ? rulerStyle.MajorGridPaint : rulerStyle.MinorGridPaint);
+        }
     }
 
     private static void DrawVerticalRuler(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation, RulerStyle rulerStyle)
@@ -141,37 +175,6 @@ internal static class ScreenshotAnnotator
         }
     }
 
-    private static void DrawSuggestedContentArea(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
-    {
-        if (!annotation.HasSuggestedContentArea || annotation.SuggestedContentArea is not WindowBounds contentArea)
-            return;
-
-        SKPoint topLeft = MapGlobalPointToImage(annotation, contentArea.X, contentArea.Y, metrics.Width, metrics.Height);
-        SKPoint bottomRight = MapGlobalPointToImage(
-            annotation,
-            contentArea.X + Math.Max(0, contentArea.Width - 1),
-            contentArea.Y + Math.Max(0, contentArea.Height - 1),
-            metrics.Width,
-            metrics.Height);
-
-        var rect = new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
-        rect = NormalizeRect(rect);
-
-        using var strokePaint = new SKPaint { Color = ContentAreaColor.WithAlpha(220), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 3f, PathEffect = SKPathEffect.CreateDash(new float[] { 14f, 10f }, 0f) };
-
-        canvas.DrawRect(rect, strokePaint);
-
-        string label = $"Likely content area ({contentArea.X},{contentArea.Y})-{(contentArea.X + Math.Max(0, contentArea.Width - 1))},{(contentArea.Y + Math.Max(0, contentArea.Height - 1))}";
-        DrawDetachedBadge(
-            canvas,
-            Math.Max(11f, metrics.FontSize * 0.8f),
-            label,
-            new SKRect(rect.Left + 10f, Math.Max(18f, rect.Top + 10f), Math.Min(metrics.Width - 18f, rect.Right - 10f), Math.Min(metrics.Height - 18f, rect.Top + 64f)),
-            ContentAreaColor,
-            metrics.Width,
-            metrics.Height);
-    }
-
     private static void DrawIntendedClickTarget(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
     {
         if (!annotation.HasIntendedClickTarget || annotation.IntendedClickTarget is not ScreenshotClickTarget clickTarget)
@@ -216,6 +219,45 @@ internal static class ScreenshotAnnotator
             Math.Min(metrics.Height - 18, targetPoint.Y + outerRadius + 12));
 
         DrawLabelWithAnchor(canvas, metrics, labelText, labelOrigin, targetPoint, CornerAnchor.TopLeft, IntendedClickColor);
+    }
+
+    private static void DrawIntendedElementRegion(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
+    {
+        if (!annotation.HasIntendedElementRegion || annotation.IntendedElementRegion is not ScreenshotHighlightedRegion region)
+            return;
+
+        string labelText = string.IsNullOrWhiteSpace(region.Label)
+            ? $"AX element ({region.Bounds.X},{region.Bounds.Y},{region.Bounds.Width}x{region.Bounds.Height})"
+            : $"{region.Label} ({region.Bounds.X},{region.Bounds.Y},{region.Bounds.Width}x{region.Bounds.Height})";
+
+        if (!annotation.IntendedElementRegionIntersectsCapture)
+        {
+            DrawDetachedBadge(
+                canvas,
+                metrics.FontSize,
+                $"{labelText} outside capture",
+                new SKRect(18, 102, Math.Max(240, metrics.Width - 18), 144),
+                IntendedElementColor,
+                metrics.Width,
+                metrics.Height);
+            return;
+        }
+
+        int right = region.Bounds.X + Math.Max(0, region.Bounds.Width - 1);
+        int bottom = region.Bounds.Y + Math.Max(0, region.Bounds.Height - 1);
+        SKPoint topLeft = MapGlobalPointToImage(annotation, region.Bounds.X, region.Bounds.Y, metrics.Width, metrics.Height);
+        SKPoint bottomRight = MapGlobalPointToImage(annotation, right, bottom, metrics.Width, metrics.Height);
+        SKRect rect = NormalizeRect(new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y));
+
+        using var outerPaint = new SKPaint { Color = IntendedElementColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 4f, PathEffect = SKPathEffect.CreateDash(new float[] { 18f, 10f }, 0f) };
+        using var innerPaint = new SKPaint { Color = LabelBorderColor.WithAlpha(220), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f };
+
+        canvas.DrawRect(rect, outerPaint);
+        canvas.DrawRect(new SKRect(rect.Left + 3f, rect.Top + 3f, rect.Right - 3f, rect.Bottom - 3f), innerPaint);
+
+        SKPoint anchorPoint = new(rect.MidX, rect.Top);
+        SKPoint labelOrigin = new(Math.Min(metrics.Width - 18, rect.Left + 12f), Math.Max(18f, rect.Top + 12f));
+        DrawLabelWithAnchor(canvas, metrics, labelText, labelOrigin, anchorPoint, CornerAnchor.TopLeft, IntendedElementColor);
     }
 
     private static void DrawCursorAnnotation(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
@@ -404,7 +446,7 @@ internal static class ScreenshotAnnotator
 
     private readonly record struct ImageMetrics(int Width, int Height, float FontSize);
 
-    private readonly record struct RulerStyle(int MinorStep, int MajorStep, float EdgeBand, SKPaint TickPaint, SKPaint GuidePaint);
+    private readonly record struct RulerStyle(int MinorStep, int MajorStep, float EdgeBand, SKPaint TickPaint, SKPaint GuidePaint, SKPaint MinorGridPaint, SKPaint MajorGridPaint);
 
     private readonly record struct BadgeStyle(SKColor? BackgroundColorOverride, float BorderWidth, float Radius);
 
