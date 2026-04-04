@@ -73,6 +73,47 @@ internal static class DesktopToolDefinitions
         ),
 
     new(
+            "read_screen_text",
+            "Uses native Apple Vision OCR on macOS to read visible text from the full screen, active window, or a specific screen region. Prefer this for verification of spreadsheet values, dialog text, filenames, and other text-heavy UI state after actions. Use keyboard-first workflows whenever possible, then verify the result with OCR instead of guessing from pixels alone.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "enum": ["full_screen", "active_window"],
+                  "description": "Capture the full screen or only the active window before running OCR. Prefer 'active_window' for app-specific verification."
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "Short reason for the OCR read, e.g. 'verify Excel values in column A'."
+                },
+                "padding": {
+                  "type": "integer",
+                  "description": "Optional extra pixels around the active window capture (0-200). Ignored for full_screen."
+                },
+                "region_x": {
+                  "type": "integer",
+                  "description": "Optional screen-space X coordinate of a smaller region to OCR. Use together with region_y, region_width, and region_height."
+                },
+                "region_y": {
+                  "type": "integer",
+                  "description": "Optional screen-space Y coordinate of a smaller region to OCR."
+                },
+                "region_width": {
+                  "type": "integer",
+                  "description": "Optional width of the OCR region in pixels."
+                },
+                "region_height": {
+                  "type": "integer",
+                  "description": "Optional height of the OCR region in pixels."
+                }
+              }
+            }
+            """)
+        ),
+
+    new(
             "get_frontmost_ui_elements",
             "Returns a compact Accessibility-based summary of the currently frontmost macOS application and its visible UI elements. Use this to understand app structure before clicking or typing."
         ),

@@ -14,6 +14,7 @@ public sealed class DesktopToolDefinitionsTests
 
         Assert.Contains("take_screenshot",    names);
         Assert.Contains("get_screen_info",    names);
+        Assert.Contains("read_screen_text", names);
         Assert.Contains("get_frontmost_ui_elements", names);
         Assert.Contains("get_frontmost_application", names);
         Assert.Contains("list_windows", names);
@@ -149,5 +150,6 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("click_ui_element", allDescriptions);
         Assert.Contains("wait_for_ui_element", allDescriptions);
         Assert.Contains("assert_state", allDescriptions);
+        Assert.Contains("read_screen_text", allDescriptions);
     }
 }

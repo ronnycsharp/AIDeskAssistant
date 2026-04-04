@@ -24,6 +24,7 @@
   <ItemGroup>
     <None Include="Platform/MacOS/AIDeskAssistantStatusBar.swift" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Platform/MacOS/AIDeskAssistantScreenCaptureKit.swift" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Platform/MacOS/AIDeskAssistantVisionOCR.swift" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

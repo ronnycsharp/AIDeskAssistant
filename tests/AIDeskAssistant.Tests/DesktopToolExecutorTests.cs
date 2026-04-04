@@ -68,6 +68,25 @@ internal sealed class FakeKeyboardService : IKeyboardService
     public void PressKey(string keyCombo) => LastPressedKey = keyCombo;
 }
 
+internal sealed class FakeTextRecognitionService : ITextRecognitionService
+{
+    public TextRecognitionResult NextResult = new(
+        "1\n2\n3",
+        [
+            new TextRecognitionLine("1", 0.99, new WindowBounds(4, 6, 12, 16)),
+            new TextRecognitionLine("2", 0.99, new WindowBounds(4, 26, 12, 16)),
+            new TextRecognitionLine("3", 0.99, new WindowBounds(4, 46, 12, 16)),
+        ]);
+
+    public byte[] LastImageBytes = Array.Empty<byte>();
+
+    public TextRecognitionResult RecognizeText(byte[] imageBytes)
+    {
+        LastImageBytes = imageBytes;
+        return NextResult;
+    }
+}
+
 internal sealed class FakeTerminalService : ITerminalService
 {
     public string LastCommand = string.Empty;
@@ -189,11 +208,12 @@ public sealed class DesktopToolExecutorTests
     private readonly FakeTerminalService _terminal = new();
     private readonly FakeWindowService _window = new();
     private readonly FakeUiAutomationService _uiAutomation = new();
+    private readonly FakeTextRecognitionService _textRecognition = new();
     private readonly DesktopToolExecutor _sut;
 
     public DesktopToolExecutorTests()
     {
-        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard, _terminal, _window, _uiAutomation);
+        _sut = new DesktopToolExecutor(_screenshot, _mouse, _keyboard, _terminal, _window, _uiAutomation, _textRecognition);
     }
 
     [Fact]
@@ -234,6 +254,29 @@ public sealed class DesktopToolExecutorTests
         Assert.Contains("Highlighted AX element: X=390, Y=330, Width=80, Height=28, IntersectsCapture=True, Label=Save button.", result);
         Assert.Contains("includes a 100 px coordinate raster with x/y labels", result);
         Assert.Contains("Coordinate raster: major lines every 50 px with minor lines every 25 px.", result);
+    }
+
+    [Fact]
+    public void Execute_ReadScreenText_ReturnsOcrResultForActiveWindow()
+    {
+        string result = _sut.Execute("read_screen_text", "{\"target\":\"active_window\",\"purpose\":\"verify Excel values\"}");
+
+        Assert.Equal(new WindowBounds(0, 4, 832, 632), _screenshot.LastOptions.Bounds);
+        Assert.Contains("OCR read completed. Target: active_window.", result);
+        Assert.Contains("Purpose: verify Excel values.", result);
+        Assert.Contains("Recognized text:", result);
+        Assert.Contains("1", result);
+        Assert.Contains("Confidence=0.99", result);
+        Assert.NotEmpty(_textRecognition.LastImageBytes);
+    }
+
+    [Fact]
+    public void Execute_ReadScreenText_CropsToRequestedRegion()
+    {
+        string result = _sut.Execute("read_screen_text", "{\"target\":\"active_window\",\"region_x\":100,\"region_y\":120,\"region_width\":140,\"region_height\":90}");
+
+        Assert.Contains("OCR region: X=100, Y=120, Width=140, Height=90.", result);
+        Assert.NotEmpty(_textRecognition.LastImageBytes);
     }
 
     [Fact]
@@ -372,6 +415,7 @@ public sealed class DesktopToolExecutorTests
         Assert.Equal("echo", _terminal.LastCommand);
         Assert.Equal(new[] { "hello" }, _terminal.LastArguments);
         Assert.Equal(5000, _terminal.LastTimeoutMs);
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
         Assert.Contains("exited with code 2", result);
         Assert.Contains("stdout", result);
         Assert.Contains("stderr", result);
@@ -390,7 +434,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("open_application", "{\"name\":\"bad;app\"}");
 
-        Assert.Equal("Invalid application name: 'bad;app'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid application name: 'bad;app'", result);
     }
 
     [Fact]
@@ -398,7 +442,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("focus_application", "{\"name\":\"bad|app\"}");
 
-        Assert.Equal("Invalid application name: 'bad|app'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid application name: 'bad|app'", result);
     }
 
     [Fact]
@@ -406,7 +450,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("open_url", "{\"url\":\"file:///tmp/test\"}");
 
-        Assert.Equal("Invalid URL: 'file:///tmp/test'", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Invalid URL: 'file:///tmp/test'", result);
     }
 
     [Fact]
@@ -423,7 +467,7 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("click_apple_menu_item", "{}");
 
-        Assert.Equal("At least one Apple menu item title is required", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}At least one Apple menu item title is required", result);
     }
 
     [Fact]
@@ -561,7 +605,24 @@ public sealed class DesktopToolExecutorTests
     {
         string result = _sut.Execute("does_not_exist", "{}");
 
-        Assert.Equal("Unknown tool: does_not_exist", result);
+        Assert.Equal($"{DesktopToolExecutor.ErrorPrefix}Unknown tool: does_not_exist", result);
+    }
+
+    [Fact]
+    public void Execute_TypeText_BlockedNavigationLikeInput_IsMarkedAsError()
+    {
+        string result = _sut.Execute("type_text", "{\"text\":\"ENTER\"}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+    }
+
+    [Fact]
+    public void Execute_InvalidJson_ReturnsPrefixedErrorInsteadOfThrowing()
+    {
+        string result = _sut.Execute("move_mouse", "{not-json}");
+
+        Assert.StartsWith(DesktopToolExecutor.ErrorPrefix, result);
+        Assert.Contains("Tool 'move_mouse' failed", result);
     }
 
     [Theory]

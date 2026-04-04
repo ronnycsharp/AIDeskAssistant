@@ -62,6 +62,7 @@ IKeyboardService   keyboardService;
 ITerminalService   terminalService;
 IWindowService     windowService;
 IUiAutomationService uiAutomationService;
+ITextRecognitionService textRecognitionService;
 
 try
 {
@@ -71,6 +72,7 @@ try
     terminalService   = PlatformServiceFactory.CreateTerminalService();
     windowService     = PlatformServiceFactory.CreateWindowService();
     uiAutomationService = PlatformServiceFactory.CreateUiAutomationService();
+    textRecognitionService = PlatformServiceFactory.CreateTextRecognitionService();
 }
 catch (PlatformNotSupportedException ex)
 {
@@ -80,7 +82,7 @@ catch (PlatformNotSupportedException ex)
     return 1;
 }
 
-var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService, uiAutomationService);
+var executor = new DesktopToolExecutor(screenshotService, mouseService, keyboardService, terminalService, windowService, uiAutomationService, textRecognitionService);
 var debugLogger = AIDebugLogger.CreateFromArgsAndEnvironment(args);
 
 // ── Model selection ──────────────────────────────────────────────────────────

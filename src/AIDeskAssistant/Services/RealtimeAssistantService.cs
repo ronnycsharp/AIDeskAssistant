@@ -620,7 +620,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
         }
         catch (Exception ex)
         {
-            toolResult = $"Tool '{functionCall.FunctionName}' failed: {ex.Message}";
+            toolResult = DesktopToolExecutor.Err($"Tool '{functionCall.FunctionName}' failed: {ex.Message}");
             _debugLogger?.FailToolExecution(functionCall.CallId, functionCall.FunctionName, argumentsJson, toolResult);
         }
 

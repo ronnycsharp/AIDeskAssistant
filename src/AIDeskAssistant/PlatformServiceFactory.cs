@@ -51,4 +51,15 @@ internal static class PlatformServiceFactory
 
         return new UnsupportedUiAutomationService("this platform");
     }
+
+    public static ITextRecognitionService CreateTextRecognitionService()
+    {
+        if (OperatingSystem.IsMacOS())
+            return new MacOSVisionTextRecognitionService();
+
+        if (OperatingSystem.IsWindows())
+            return new UnsupportedTextRecognitionService("Windows");
+
+        return new UnsupportedTextRecognitionService("this platform");
+    }
 }

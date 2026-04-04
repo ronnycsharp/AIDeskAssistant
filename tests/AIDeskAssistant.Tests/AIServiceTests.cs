@@ -13,7 +13,11 @@ public sealed class AIServiceTests
         string prompt = AIService.BuildSystemPrompt();
 
         Assert.Contains("Always take a screenshot first", prompt);
+        Assert.Contains("Read visible on-screen text via native OCR on macOS", prompt);
         Assert.Contains("Default language is German for both text and spoken interactions", prompt);
+        Assert.Contains("Observe -> Decide -> Act -> Reflect loop", prompt);
+        Assert.Contains("prefer keyboard-first approaches by default", prompt);
+        Assert.Contains("read_screen_text", prompt);
         Assert.Contains("target='active_window'", prompt);
         Assert.Contains("purpose string", prompt);
         Assert.Contains("intended_click_x", prompt);
@@ -32,6 +36,7 @@ public sealed class AIServiceTests
         Assert.Contains("Never type words like 'up', 'down', 'left', or 'right' into a cell", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
+        Assert.Contains("Tool results that start with '[ERROR]' indicate that the tool call failed", prompt);
     }
 
     [Fact]
