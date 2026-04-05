@@ -947,6 +947,16 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let primaryTextColor = NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.17, alpha: 0.96)
     private static let secondaryTextColor = NSColor(calibratedRed: 0.25, green: 0.29, blue: 0.35, alpha: 0.92)
     private static let accentTextColor = NSColor(calibratedRed: 0.09, green: 0.38, blue: 0.60, alpha: 0.98)
+    private static let activityFilePath: String = {
+        if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_ACTIVITY_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return path
+        }
+
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AIDeskAssistant", isDirectory: true)
+            .appendingPathComponent("menu-bar-activity.json")
+            .path
+    }()
 
     private let serverURL: URL
     private let dismissPopover: () -> Void
@@ -959,6 +969,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let textScrollView = NSScrollView(frame: .zero)
     private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
+    private let toolStatusLabel = NSTextField(labelWithString: "Tool: -")
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
     private let logButton = NSButton(frame: .zero)
     private let activityIndicator = NSProgressIndicator(frame: .zero)
@@ -1002,6 +1013,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var isUpdatingVoiceSelection = false
     private var isUpdatingThinkingSelection = false
     private var isBusy = false
+    private var activityPollTimer: Timer?
     private var pendingPlaybackChunkCount = 0
     private var pendingPlaybackDurationSeconds = 0.0
     private var currentResponseAllowsAutoFollowUpRecording = false
@@ -1009,6 +1021,13 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var shouldAutoResumeRecordingAfterPlayback = false
     private var isAutoFollowUpRecording = false
     private var autoResumeAfterPlaybackTask: Task<Void, Never>?
+    private lazy var hostSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 600
+        configuration.timeoutIntervalForResource = 3_600
+        configuration.waitsForConnectivity = false
+        return URLSession(configuration: configuration)
+    }()
 
     init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, toggleLogWindow: @escaping () -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
         self.serverURL = serverURL
@@ -1029,6 +1048,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        activityPollTimer?.invalidate()
+        hostSession.invalidateAndCancel()
     }
 
     override func loadView() {
@@ -1093,6 +1117,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         statusLabel.textColor = Self.accentTextColor
         statusLabel.isHidden = true
 
+        toolStatusLabel.lineBreakMode = .byTruncatingTail
+        toolStatusLabel.maximumNumberOfLines = 1
+        toolStatusLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        toolStatusLabel.textColor = Self.secondaryTextColor
+        toolStatusLabel.alignment = .left
+
         usageLabel.lineBreakMode = .byWordWrapping
         usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -1147,6 +1177,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         backgroundView.addSubview(thinkingPopup)
         backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
+        backgroundView.addSubview(toolStatusLabel)
         backgroundView.addSubview(usageLabel)
         backgroundView.addSubview(logButton)
         backgroundView.addSubview(activityIndicator)
@@ -1162,9 +1193,16 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     override func viewDidAppear() {
         super.viewDidAppear()
         focusTextField()
+        startActivityPolling()
         Task { [weak self] in
             await self?.loadVoiceSettings()
         }
+    }
+
+    override func viewDidDisappear() {
+        super.viewDidDisappear()
+        activityPollTimer?.invalidate()
+        activityPollTimer = nil
     }
 
     func focusTextField() {
@@ -1476,7 +1514,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data("{}".utf8)
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await hostSession.data(for: request)
             if let httpResponse = response as? HTTPURLResponse {
                 diagnosticsLogger.log("Cancel request returned HTTP \(httpResponse.statusCode)")
             } else {
@@ -1499,7 +1537,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = Data("{}".utf8)
-            let (_, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await hostSession.data(for: request)
             if let httpResponse = response as? HTTPURLResponse {
                 diagnosticsLogger.log("Live audio cancel returned HTTP \(httpResponse.statusCode)")
             }
@@ -1514,7 +1552,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("{}".utf8)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await hostSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
             let hostError = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Der Live-Audio-Start wurde vom lokalen Host abgelehnt."
             throw NSError(domain: "AIDeskAssistant", code: 1, userInfo: [NSLocalizedDescriptionKey: hostError])
@@ -1754,7 +1792,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         request.httpBody = chunk
 
         let semaphore = DispatchSemaphore(value: 0)
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+        hostSession.dataTask(with: request) { [weak self] _, response, error in
             if let error {
                 self?.diagnosticsLogger.log("Live audio chunk upload failed: \(error.localizedDescription)")
             } else if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
@@ -1778,7 +1816,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
     private func consumeStreamingResponse(_ request: URLRequest) async {
         do {
-            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            let (bytes, response) = try await hostSession.bytes(for: request)
             if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
                 await MainActor.run { [weak self] in
                     self?.setStatus("Serverfehler: \(httpResponse.statusCode)")
@@ -1825,7 +1863,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             await MainActor.run { [weak self] in
                 self?.responseTask = nil
                 self?.resetCurrentResponseAudioState()
-                self?.setStatus("Fehler: \(error.localizedDescription)")
+                self?.setStatus(self?.describeHostError(error, fallback: "Die Anfrage an den lokalen AIDesk-Host ist fehlgeschlagen") ?? "Die Anfrage an den lokalen AIDesk-Host ist fehlgeschlagen")
                 self?.setBusy(false)
             }
         }
@@ -2138,10 +2176,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let statusY = textY - 28
         let bottomRowY = Self.bottomInset
 
-        let voiceWidth: CGFloat = 102
-        let thinkingWidth: CGFloat = 116
+        let voiceWidth: CGFloat = 98
+        let thinkingWidth: CGFloat = 106
         voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: voiceWidth, height: 30)
-        thinkingPopup.frame = NSRect(x: voicePopup.frame.maxX + 8, y: topRowY, width: thinkingWidth, height: 30)
+        thinkingPopup.frame = NSRect(x: voicePopup.frame.maxX + 10, y: topRowY, width: thinkingWidth, height: 30)
         quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
         quitSeparator.frame = NSRect(x: quitButton.frame.minX - 12, y: topRowY + 4, width: 1, height: 22)
         cancelButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
@@ -2153,6 +2191,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         textView.frame = NSRect(origin: .zero, size: NSSize(width: textScrollView.contentSize.width, height: max(textHeight, contentTextHeight)))
 
         statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: contentWidth - (Self.sideInset * 2) - 24, height: 22)
+        toolStatusLabel.frame = NSRect(x: Self.sideInset, y: statusY - 18, width: contentWidth - (Self.sideInset * 2) - 24, height: 16)
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
         usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
@@ -2203,7 +2242,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
     private func loadVoiceSettings() async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: serverURL.appendingPathComponent("voices"))
+            let (data, response) = try await hostSession.data(from: serverURL.appendingPathComponent("voices"))
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Stimmen konnten nicht geladen werden"
                 await MainActor.run { [weak self] in
@@ -2220,7 +2259,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         } catch {
             diagnosticsLogger.log("Voice settings load failed: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
-                self?.setStatus("Stimmen konnten nicht geladen werden")
+                self?.setStatus(self?.describeHostError(error, fallback: "Stimmen konnten nicht geladen werden") ?? "Stimmen konnten nicht geladen werden")
                 self?.voicePopup.isEnabled = true
             }
         }
@@ -2233,7 +2272,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(VoiceSelectionRequest(voice: voice))
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await hostSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Stimme konnte nicht gesetzt werden"
                 await MainActor.run { [weak self] in
@@ -2250,7 +2289,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         } catch {
             diagnosticsLogger.log("Voice selection failed: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
-                self?.setStatus("Stimme konnte nicht gesetzt werden")
+                self?.setStatus(self?.describeHostError(error, fallback: "Stimme konnte nicht gesetzt werden") ?? "Stimme konnte nicht gesetzt werden")
                 self?.voicePopup.isEnabled = !(self?.isBusy ?? false)
             }
         }
@@ -2263,7 +2302,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(ThinkingSelectionRequest(thinkingLevel: thinkingLevel))
 
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await hostSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
                 let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Thinking-Level konnte nicht gesetzt werden"
                 await MainActor.run { [weak self] in
@@ -2280,9 +2319,32 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         } catch {
             diagnosticsLogger.log("Thinking selection failed: \(error.localizedDescription)")
             await MainActor.run { [weak self] in
-                self?.setStatus("Thinking-Level konnte nicht gesetzt werden")
+                self?.setStatus(self?.describeHostError(error, fallback: "Thinking-Level konnte nicht gesetzt werden") ?? "Thinking-Level konnte nicht gesetzt werden")
                 self?.thinkingPopup.isEnabled = !(self?.isBusy ?? false)
             }
+        }
+    }
+
+    private func startActivityPolling() {
+        activityPollTimer?.invalidate()
+        refreshActivityStatus()
+        activityPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.refreshActivityStatus()
+        }
+    }
+
+    private func refreshActivityStatus() {
+        let url = URL(fileURLWithPath: Self.activityFilePath)
+        guard let data = try? Data(contentsOf: url),
+              let snapshot = try? JSONDecoder().decode(ActivitySnapshot.self, from: data) else {
+            toolStatusLabel.stringValue = "Tool: -"
+            return
+        }
+
+        if let activeTool = snapshot.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
+            toolStatusLabel.stringValue = "Tool: \(activeTool)"
+        } else {
+            toolStatusLabel.stringValue = "Tool: -"
         }
     }
 
@@ -2368,6 +2430,25 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let totalSummary = "Total: \(derivedTotal.map(String.init) ?? "-")"
         let cacheSummary = usage.cachedInputTokens.map { " | Cache: \($0)" } ?? ""
         return "\(inputSummary) | \(outputSummary) | \(totalSummary)\(cacheSummary)"
+    }
+
+    private func describeHostError(_ error: Error, fallback: String) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut:
+                return "Die lokale AIDesk-Anfrage hat das Zeitlimit überschritten. Bitte erneut versuchen."
+            case .cannotConnectToHost, .cannotFindHost:
+                return "Der lokale AIDesk-Host ist momentan nicht erreichbar."
+            case .networkConnectionLost:
+                return "Die Verbindung zum lokalen AIDesk-Host wurde unterbrochen."
+            case .cancelled:
+                return "Die laufende Anfrage wurde abgebrochen."
+            default:
+                break
+            }
+        }
+
+        return "\(fallback): \(error.localizedDescription)"
     }
 
     private static func sumUsageParts(_ values: Int?...) -> Int? {

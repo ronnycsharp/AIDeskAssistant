@@ -68,8 +68,9 @@ internal sealed class AIService
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         The current request may include a compact Accessibility UI summary for the frontmost macOS app, including visible roles, titles, and frames. Treat that summary as high-value structure about what is currently on screen and use it together with the screenshot.
         When a screenshot includes an additional mouse detail image around the cursor, use that close-up to validate the exact cursor position and nearby click target before choosing click or double_click coordinates.
-        If you are about to click, you may call take_screenshot with intended_click_x, intended_click_y, and intended_click_label so the screenshot shows an explicit click-target marker before the click.
-        If you plan to click a control identified from the Accessibility UI summary, also pass its frame to take_screenshot with intended_element_x, intended_element_y, intended_element_width, intended_element_height, and intended_element_label so the screenshot shows a separate outline around that AX element.
+        Before a state-changing action, take a pre-action screenshot that includes a concrete prediction of the next tool and target. Use take_screenshot with predicted_tool, predicted_action, and predicted_target_label so the screenshot result explicitly states which tool you intend to use next and which button, control, or document area you are targeting.
+        If you are about to click, provide the intended target to take_screenshot so the screenshot shows an explicit click-target marker before the click.
+        If you plan to click a control identified from the Accessibility UI summary, pass its frame to take_screenshot with intended_element_x, intended_element_y, intended_element_width, intended_element_height, and intended_element_label. When that AX frame is available, prefer the center of that rectangle as the click point automatically instead of inventing separate intended_click coordinates.
         When take_screenshot returns numbered marks, prefer referring to those marks by ID in the next action instead of using vague phrases like 'top left' or freshly guessed coordinates. If a relevant control or OCR line is already marked, prefer mark_id-based follow-up actions.
         Before typing into desktop document content on macOS, do not assume app focus is sufficient. Use focus_frontmost_window_content for the expected app, then take a screenshot and verify the caret or content area is inside the document body rather than a toolbar, ribbon, title bar, search field, or menu input.
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
@@ -90,7 +91,7 @@ internal sealed class AIService
         When OCR or screenshots include sidebars, search/replace panels, result lists, status bars, helper overlays, or other UI chrome, distinguish document content from chrome. Text that appears only in search/replace UI, a helper overlay, or another non-document panel is not proof that the document content changed.
         If a validation screenshot or OCR explicitly says that the desired result is not visible, not confirmed, or still wrong, do not send a success message in that turn.
         For Microsoft Word save tasks on macOS, do not stop after pressing Save. Wait, take another screenshot, confirm the dialog is gone, and verify the document returned to the editing window before declaring success.
-        For macOS save dialogs, after changing the filename or location, do not reuse stale button coordinates. Take another screenshot, re-localize the visible Save button, and if possible validate the click with intended_click_x and intended_click_y before clicking.
+        For macOS save dialogs, after changing the filename or location, do not reuse stale button coordinates. Take another screenshot, re-localize the visible Save button, and prefer passing its AX frame so the click point can be recomputed from the button center before clicking.
         If a save dialog remains open after a click, do not keep clicking nearby coordinates blindly. Re-check the button position from the latest screenshot or use a keyboard confirmation path such as press_key with enter only when the focused default button is clearly Save.
         For cursor placement in Microsoft Word, editors, and other text areas, prefer a precise mouse click at the visible insertion point when the target text is on screen. Use long arrow-key sequences only when the user explicitly requires keyboard-only positioning.
         If keyboard-only cursor placement is explicitly required, first move to a stable anchor such as the start or end of the relevant line or paragraph, take a screenshot to verify the caret moved as expected, and only then extend a selection. Do not declare success unless the follow-up screenshot clearly shows the caret or selection on the requested target text.
@@ -114,7 +115,12 @@ internal sealed class AIService
         If the validation screenshot shows that the action did not succeed, retry the action once or choose a different approach before continuing.
         If the latest validation screenshot is still almost identical to the previous one, especially around 100% similarity, treat that as a failed attempt. Do not loop on the same click, keypress, or coordinate. Change strategy, refresh focus, use a different tool, or re-observe the UI before acting again.
         Before you send any final success message after using a state-changing desktop tool, you must perform one extra final validation loop from the current live state. Take a fresh validation screenshot or another concrete verification step, confirm the requested outcome is actually present now, and only then declare completion.
-        Be precise with coordinates — use the screenshot to determine exact pixel positions. Screenshots include capture-bound corner labels, cursor coordinates, and a visible coordinate raster with labeled spacing; use those annotations when you choose X/Y values.
+        Be precise with coordinates, but prefer Accessibility/UI element frames over guessing from screenshot decorations. When you have an AX/UI element frame, use the center point of that rectangle as the click position unless the visible UI clearly indicates a different hotspot.
+        For difficult focus, click, and command-triggering situations, prefer a multi-step targeting loop before the actual click or command trigger.
+        Before a click, press_key, or type_text step that depends on a specific visible control or text area, call take_screenshot once with predicted_tool, predicted_action, predicted_target_label, and any intended AX target frame.
+        That single take_screenshot result will include the untouched original crop first and, when a target is provided, a derived schematic target view generated from the same screenshot with the intended control emphasized.
+        Compare the original screenshot and the derived schematic target view and confirm that both point to the same control before you execute the click, double_click, press_key, type_text, or other state-changing action.
+        If the original screenshot and the derived schematic target view do not clearly confirm the same target, do not act yet. Re-observe, refine the target, and repeat the validation loop until the target is unambiguous.
         When using the mouse, do not assume the cursor landed correctly. Prefer active-window screenshots for targeting, check the cursor marker against the intended UI element, and validate the result with a follow-up screenshot after clicking.
         After a follow-up instruction from the AIDesk menu bar while editing Microsoft Word on macOS, assume focus may have returned to AIDesk or another helper window. Before the next edit step, explicitly bring Microsoft Word back to the foreground, focus the document content, and validate with a screenshot before typing or pressing navigation keys.
         If something doesn't work, try an alternative approach.
@@ -157,11 +163,7 @@ internal sealed class AIService
         return _thinkingLevel;
     }
 
-    /// <summary>
-    /// Sends a user message and runs the tool-calling loop until the model
-    /// produces a final text response. Returns the assistant's final message.
-    /// </summary>
-    public async Task<string> SendMessageAsync(
+    public async Task<AIServiceTextResult> SendMessageWithUsageAsync(
         string userMessage,
         Action<string>? onToolCall   = null,
         Action<string>? onToolResult = null,
@@ -184,9 +186,13 @@ internal sealed class AIService
         bool finalValidationEvidenceObserved = false;
         string? failedValidationSummary = null;
         int finalValidationRetryCount = 0;
+        RealtimeAssistantUsage? accumulatedUsage = null;
         while (true)
         {
             ChatCompletion completion = await _client.CompleteChatAsync(_history, options, ct);
+            accumulatedUsage = accumulatedUsage is null
+                ? CreateUsage(completion.Usage)
+                : accumulatedUsage.Add(CreateUsage(completion.Usage));
 
             if (completion.FinishReason != ChatFinishReason.ToolCalls)
             {
@@ -224,7 +230,7 @@ internal sealed class AIService
                     {
                         _history.Add(new AssistantChatMessage(FinalValidationAbortedMessage));
                         _debugLogger?.LogHistoryEntry(AssistantRole, FinalValidationAbortedMessage);
-                        return FinalValidationAbortedMessage;
+                        return new AIServiceTextResult(FinalValidationAbortedMessage, accumulatedUsage);
                     }
 
                     _history.Add(new UserChatMessage(BuildFinalValidationMissingEvidenceInstruction()));
@@ -232,7 +238,7 @@ internal sealed class AIService
                     continue;
                 }
 
-                return FinalizeAssistantResponse(completion);
+                return FinalizeAssistantResponse(completion, accumulatedUsage);
             }
 
             toolRounds++;
@@ -240,7 +246,7 @@ internal sealed class AIService
             {
                 _history.Add(new AssistantChatMessage(MaxToolRoundsReachedMessage));
                 _debugLogger?.LogHistoryEntry("assistant", MaxToolRoundsReachedMessage);
-                return MaxToolRoundsReachedMessage;
+                return new AIServiceTextResult(MaxToolRoundsReachedMessage, accumulatedUsage);
             }
 
             ToolRoundOutcome toolRoundOutcome = await HandleToolCallsAsync(completion, onToolCall, onToolResult);
@@ -262,6 +268,18 @@ internal sealed class AIService
             }
         }
     }
+
+    /// <summary>
+    /// Sends a user message and runs the tool-calling loop until the model
+    /// produces a final text response. Returns the assistant's final message.
+    /// </summary>
+    public async Task<string> SendMessageAsync(
+        string userMessage,
+        Action<string>? onToolCall   = null,
+        Action<string>? onToolResult = null,
+        int maxToolRounds            = 60,
+        CancellationToken ct         = default)
+        => (await SendMessageWithUsageAsync(userMessage, onToolCall, onToolResult, maxToolRounds, ct)).Text;
 
     internal static string BuildNegativeValidationDetectedInstruction(string validationSummary)
         => $"{NegativeValidationDetectedInstructionPrefix} {validationSummary}";
@@ -433,12 +451,29 @@ internal sealed class AIService
         return CreateScreenshotToolMessage(toolCallId, attachment, differenceBytes, similarity);
     }
 
-    private string FinalizeAssistantResponse(ChatCompletion completion)
+    private static RealtimeAssistantUsage? CreateUsage(ChatTokenUsage? usage)
+    {
+        if (usage is null)
+            return null;
+
+        return new RealtimeAssistantUsage(
+            InputTokens: usage.InputTokenCount,
+            InputTextTokens: usage.InputTokenCount,
+            InputAudioTokens: usage.InputTokenDetails?.AudioTokenCount,
+            InputImageTokens: null,
+            CachedInputTokens: usage.InputTokenDetails?.CachedTokenCount,
+            OutputTokens: usage.OutputTokenCount,
+            OutputTextTokens: usage.OutputTokenCount,
+            OutputAudioTokens: usage.OutputTokenDetails?.AudioTokenCount,
+            TotalTokens: usage.TotalTokenCount);
+    }
+
+    private AIServiceTextResult FinalizeAssistantResponse(ChatCompletion completion, RealtimeAssistantUsage? usage)
     {
         string response = completion.Content[0].Text;
         _history.Add(new AssistantChatMessage(response));
         _debugLogger?.LogAssistantResponse(response);
-        return response;
+        return new AIServiceTextResult(response, usage);
     }
 
     internal static bool TrySummarizeFailedValidation(string toolName, string result, out string? summary)
@@ -583,6 +618,7 @@ internal sealed class AIService
     {
         attachment = null;
         const string base64Marker = "Base64:";
+        const string supplementalImageMarker = "Supplemental image [";
         const string mouseDetailMediaTypeMarker = "Mouse detail media type:";
         const string mouseDetailBase64Marker = "Mouse detail base64:";
         int base64Index = result.IndexOf(base64Marker, StringComparison.Ordinal);
@@ -590,11 +626,13 @@ internal sealed class AIService
             return false;
 
         string summary = result[..base64Index].Trim();
+        int supplementalIndex = result.IndexOf(supplementalImageMarker, base64Index + base64Marker.Length, StringComparison.Ordinal);
         int mouseDetailMediaTypeIndex = result.IndexOf(mouseDetailMediaTypeMarker, base64Index + base64Marker.Length, StringComparison.Ordinal);
         int mouseDetailBase64Index = result.IndexOf(mouseDetailBase64Marker, base64Index + base64Marker.Length, StringComparison.Ordinal);
-        int mainPayloadEndIndex = mouseDetailMediaTypeIndex >= 0
-            ? mouseDetailMediaTypeIndex
-            : mouseDetailBase64Index;
+        int mainPayloadEndIndex = new[] { supplementalIndex, mouseDetailMediaTypeIndex, mouseDetailBase64Index }
+            .Where(index => index >= 0)
+            .DefaultIfEmpty(-1)
+            .Min();
         string base64 = mainPayloadEndIndex >= 0
             ? result[(base64Index + base64Marker.Length)..mainPayloadEndIndex].Trim()
             : result[(base64Index + base64Marker.Length)..].Trim();
@@ -612,6 +650,9 @@ internal sealed class AIService
         }
 
         var supplementalImages = new List<ScreenshotSupplementalImage>();
+        if (supplementalIndex >= 0)
+            supplementalImages.AddRange(ParseSupplementalImages(result[supplementalIndex..]));
+
         if (mouseDetailBase64Index >= 0)
         {
             string detailBase64 = result[(mouseDetailBase64Index + mouseDetailBase64Marker.Length)..].Trim();
@@ -621,8 +662,12 @@ internal sealed class AIService
             Match detailMediaTypeMatch = Regex.Match(detailMetadataSource, @"Mouse detail media type:\s*(\S+)", RegexOptions.CultureInvariant);
             string detailMediaType = detailMediaTypeMatch.Success ? detailMediaTypeMatch.Groups[1].Value.TrimEnd('.', ',', ';') : DefaultImageMediaType;
 
-            if (TryDecodeBase64(detailBase64, out byte[]? detailBytes) && detailBytes is not null)
+            if (supplementalImages.All(image => !string.Equals(image.Label, "mouse-detail", StringComparison.Ordinal))
+                && TryDecodeBase64(detailBase64, out byte[]? detailBytes)
+                && detailBytes is not null)
+            {
                 supplementalImages.Add(new ScreenshotSupplementalImage("mouse-detail", detailBytes, detailMediaType));
+            }
         }
 
         attachment = new ScreenshotModelAttachment(summary, bytes, mediaType, supplementalImages);
@@ -641,6 +686,32 @@ internal sealed class AIService
             bytes = null;
             return false;
         }
+    }
+
+    private static IReadOnlyList<ScreenshotSupplementalImage> ParseSupplementalImages(string payload)
+    {
+        MatchCollection matches = Regex.Matches(
+            payload,
+            @"Supplemental image \[(?<label>[^\]]+)\] media type:\s*(?<mediaType>\S+?)\.\s+Supplemental image \[\k<label>\] base64:\s*(?<base64>[A-Za-z0-9+/=]+)",
+            RegexOptions.CultureInvariant);
+
+        var supplementalImages = new List<ScreenshotSupplementalImage>();
+        foreach (Match match in matches.Cast<Match>().Where(static candidate => candidate.Success))
+        {
+            string label = match.Groups["label"].Value.Trim();
+            string mediaType = match.Groups["mediaType"].Value.TrimEnd('.', ',', ';');
+            string base64 = match.Groups["base64"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(label)
+                || !TryDecodeBase64(base64, out byte[]? bytes)
+                || bytes is null)
+            {
+                continue;
+            }
+
+            supplementalImages.Add(new ScreenshotSupplementalImage(label, bytes, string.IsNullOrWhiteSpace(mediaType) ? DefaultImageMediaType : mediaType));
+        }
+
+        return supplementalImages;
     }
 
     internal static string AppendScreenshotAnalysis(string result, string analysis)
@@ -711,3 +782,5 @@ internal sealed class AIService
 internal sealed record ScreenshotModelAttachment(string Summary, byte[] Bytes, string MediaType, IReadOnlyList<ScreenshotSupplementalImage> SupplementalImages);
 
 internal sealed record ScreenshotSupplementalImage(string Label, byte[] Bytes, string MediaType);
+
+internal sealed record AIServiceTextResult(string Text, RealtimeAssistantUsage? Usage);

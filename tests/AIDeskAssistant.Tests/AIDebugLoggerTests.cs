@@ -60,13 +60,13 @@ public sealed class AIDebugLoggerTests
                 "Screenshot taken.",
                 [1, 2, 3],
                 "image/png",
-                [new ScreenshotSupplementalImage("mouse-detail", [4, 5, 6], "image/png")]);
+                [new ScreenshotSupplementalImage("schematic-target", [4, 5, 6], "image/png")]);
 
             logger.LogScreenshotAttachment("call-1", attachment, retainedInHistory: true, similarityToPrevious: null);
 
             string[] files = Directory.GetFiles(logger.SessionDirectoryPath);
             Assert.Contains(files, path => Path.GetFileName(path) == "01-screenshot-call-1.png");
-            Assert.Contains(files, path => Path.GetFileName(path) == "01-screenshot-call-1-mouse-detail.png");
+            Assert.Contains(files, path => Path.GetFileName(path) == "01-screenshot-call-1-schematic-target.png");
         }
         finally
         {

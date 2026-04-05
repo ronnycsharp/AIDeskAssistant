@@ -47,9 +47,9 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
         {
             using CancellationTokenSource turnCts = CreateTurnCancellationSource(ct);
             _activeTurnCts = turnCts;
-            string responseText = await _assistant.SendMessageAsync(text, ct: turnCts.Token);
-            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(responseText, turnCts.Token);
-            return new RealtimeAssistantTurnResult(responseText, audioWavBytes);
+            AIServiceTextResult response = await _assistant.SendMessageWithUsageAsync(text, ct: turnCts.Token);
+            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
+            return new RealtimeAssistantTurnResult(response.Text, audioWavBytes, response.Usage);
         }
         finally
         {
@@ -86,9 +86,9 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
                 return new RealtimeAssistantTurnResult(noSpeechMessage, noSpeechAudio);
             }
 
-            string responseText = await _assistant.SendMessageAsync(transcript, ct: turnCts.Token);
-            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(responseText, turnCts.Token);
-            return new RealtimeAssistantTurnResult(responseText, audioWavBytes);
+            AIServiceTextResult response = await _assistant.SendMessageWithUsageAsync(transcript, ct: turnCts.Token);
+            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
+            return new RealtimeAssistantTurnResult(response.Text, audioWavBytes, response.Usage);
         }
         finally
         {

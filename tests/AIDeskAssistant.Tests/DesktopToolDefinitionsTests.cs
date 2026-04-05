@@ -135,7 +135,13 @@ public sealed class DesktopToolDefinitionsTests
 
         Assert.Contains("active_window", definition.Description);
         Assert.Contains("purpose", definition.Description);
+        Assert.Contains("predicted next tool", definition.Description);
         Assert.Contains("purpose", parameters);
+        Assert.Contains("predicted_tool", parameters);
+        Assert.Contains("predicted_action", parameters);
+        Assert.Contains("predicted_target_label", parameters);
+        Assert.Contains("visual_style", parameters);
+        Assert.Contains("schematic_target", parameters);
         Assert.Contains("padding", parameters);
         Assert.Contains("intended_click_x", parameters);
         Assert.Contains("intended_click_y", parameters);

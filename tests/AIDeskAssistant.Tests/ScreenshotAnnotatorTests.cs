@@ -7,7 +7,7 @@ namespace AIDeskAssistant.Tests;
 public sealed class ScreenshotAnnotatorTests
 {
     [Fact]
-    public void Annotate_AddsVisibleOverlayToImage()
+    public void Annotate_StandardStyle_PreservesPlainImageWithoutCornerOverlays()
     {
         using var surface = SKSurface.Create(new SKImageInfo(400, 300));
         surface.Canvas.Clear(SKColors.White);
@@ -17,13 +17,11 @@ public sealed class ScreenshotAnnotatorTests
 
         byte[] annotatedBytes = ScreenshotAnnotator.Annotate(sourceBytes, new ScreenshotAnnotationData(new WindowBounds(100, 200, 400, 300), 220, 320));
 
-        Assert.NotEqual(sourceBytes, annotatedBytes);
-
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
         Assert.NotNull(annotatedBitmap);
 
         SKColor topLeftPixel = annotatedBitmap.GetPixel(18, 18);
-        Assert.NotEqual(SKColors.White, topLeftPixel);
+        Assert.Equal(SKColors.White, topLeftPixel);
     }
 
     [Fact]
@@ -36,7 +34,13 @@ public sealed class ScreenshotAnnotatorTests
         byte[] sourceBytes = png.ToArray();
 
         WindowBounds contentArea = ScreenshotAnnotationData.CreateSuggestedContentArea(new WindowBounds(100, 200, 400, 300));
-        byte[] annotatedBytes = ScreenshotAnnotator.Annotate(sourceBytes, new ScreenshotAnnotationData(new WindowBounds(100, 200, 400, 300), 220, 320, contentArea));
+        byte[] annotatedBytes = ScreenshotAnnotator.Annotate(
+            sourceBytes,
+            new ScreenshotAnnotationData(
+                new WindowBounds(100, 200, 400, 300),
+                220,
+                320,
+                SuggestedContentArea: contentArea));
 
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
         Assert.NotNull(annotatedBitmap);
@@ -46,10 +50,8 @@ public sealed class ScreenshotAnnotatorTests
             && formerOutlinePixel.Blue > formerOutlinePixel.Green + 20;
         Assert.False(looksLikeBlueOutline);
 
-        bool rasterVisible = Enumerable.Range(80, 80)
-            .Any(x => Enumerable.Range(80, 80)
-                .Any(y => annotatedBitmap.GetPixel(x, y) != SKColors.White));
-        Assert.True(rasterVisible);
+        SKColor centralPixel = annotatedBitmap.GetPixel(120, 120);
+        Assert.Equal(SKColors.White, centralPixel);
     }
 
     [Fact]
@@ -67,6 +69,7 @@ public sealed class ScreenshotAnnotatorTests
                 new WindowBounds(100, 200, 400, 300),
                 220,
                 320,
+                ScreenshotVisualStyles.SchematicTarget,
                 IntendedClickTarget: new ScreenshotClickTarget(280, 360, "Button")));
 
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
@@ -91,6 +94,7 @@ public sealed class ScreenshotAnnotatorTests
                 new WindowBounds(100, 200, 400, 300),
                 220,
                 320,
+                ScreenshotVisualStyles.SchematicTarget,
                 IntendedElementRegion: new ScreenshotHighlightedRegion(new WindowBounds(250, 280, 90, 50), "Save button")));
 
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
@@ -98,6 +102,46 @@ public sealed class ScreenshotAnnotatorTests
 
         SKColor framePixel = annotatedBitmap.GetPixel(150, 80);
         Assert.NotEqual(SKColors.White, framePixel);
+    }
+
+    [Fact]
+    public void Annotate_WithSchematicTargetStyle_EmphasizesHighlightedTarget()
+    {
+        using var surface = SKSurface.Create(new SKImageInfo(400, 300));
+        surface.Canvas.Clear(new SKColor(40, 160, 220));
+        using SKImage image = surface.Snapshot();
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        byte[] sourceBytes = png.ToArray();
+
+        byte[] annotatedBytes = ScreenshotAnnotator.Annotate(
+            sourceBytes,
+            new ScreenshotAnnotationData(
+                new WindowBounds(100, 200, 400, 300),
+                220,
+                320,
+                ScreenshotVisualStyles.SchematicTarget,
+                IntendedElementRegion: new ScreenshotHighlightedRegion(new WindowBounds(250, 280, 90, 50), "calculator_key=7")));
+
+        using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
+        Assert.NotNull(annotatedBitmap);
+
+        SKColor originalColor = new(40, 160, 220);
+        SKColor backgroundPixel = annotatedBitmap.GetPixel(20, 20);
+        SKColor targetPixel = annotatedBitmap.GetPixel(170, 105);
+
+        static int ColorDistance(SKColor left, SKColor right)
+            => Math.Abs(left.Red - right.Red)
+                + Math.Abs(left.Green - right.Green)
+                + Math.Abs(left.Blue - right.Blue);
+
+        int backgroundDistance = ColorDistance(backgroundPixel, originalColor);
+        int targetDistance = ColorDistance(targetPixel, originalColor);
+        int bestTargetDistance = Enumerable.Range(160, 50)
+            .SelectMany(x => Enumerable.Range(90, 30).Select(y => ColorDistance(annotatedBitmap.GetPixel(x, y), originalColor)))
+            .Min();
+
+        Assert.True(backgroundDistance > 40);
+        Assert.True(targetDistance < backgroundDistance || bestTargetDistance < backgroundDistance);
     }
 
     [Fact]

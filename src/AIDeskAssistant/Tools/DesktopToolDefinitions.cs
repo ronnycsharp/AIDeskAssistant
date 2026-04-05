@@ -12,7 +12,7 @@ internal static class DesktopToolDefinitions
     {
     new(
             "take_screenshot",
-          "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate. If you are about to click, you can also provide intended click coordinates so the screenshot renders a visible click-target marker before the click. If you identified an AX/UI element by its frame, you can also provide that frame so the screenshot highlights the intended element with an extra outline.",
+          "Takes a screenshot for visual verification. Prefer target='active_window' for app-specific tasks like Word, Mail, or browsers to reduce payload size and keep only the relevant UI. Include a short purpose so the model can understand what this screenshot is meant to validate. Before a state-changing action, also include the predicted next tool and predicted target/button label so the screenshot result clearly states which action is being prepared. Use visual_style='standard' for the untouched original crop; when you also provide an intended target, the tool returns an additional derived schematic target view generated from that same screenshot so the intended button or text area is emphasized before the click or keyboard step. Use visual_style='schematic_target' only when you explicitly want the processed target-focused rendering as the primary image. If you identified an AX/UI element by its frame, provide that frame so the screenshot can highlight the button and derive the click point from the center of the AX rectangle.",
             BinaryData.FromString("""
             {
               "type": "object",
@@ -26,17 +26,34 @@ internal static class DesktopToolDefinitions
                   "type": "string",
                   "description": "Short reason for the screenshot, e.g. 'verify poem text is visible in the Word document body'."
                 },
+                "visual_style": {
+                  "type": "string",
+                  "enum": ["standard", "schematic_target"],
+                  "description": "Optional rendering style for the screenshot. Use 'standard' for the untouched original crop; if you also provide intended target metadata, the result additionally includes a derived schematic target image from the same capture. Use 'schematic_target' only when you want the processed target-focused rendering as the primary image."
+                },
+                "predicted_tool": {
+                  "type": "string",
+                  "description": "Optional exact next tool you expect to call after reviewing this screenshot, e.g. 'click', 'double_click', 'press_key', 'click_ui_element', or 'run_command'."
+                },
+                "predicted_action": {
+                  "type": "string",
+                  "description": "Optional short description of the next intended action, e.g. 'click the Save button' or 'press Enter in the focused dialog'."
+                },
+                "predicted_target_label": {
+                  "type": "string",
+                  "description": "Optional short label for the predicted UI target or button, e.g. 'Save button', 'Word document body', or 'Run button'."
+                },
                 "padding": {
                   "type": "integer",
                   "description": "Optional extra pixels around the active window capture (0-200). Ignored for full_screen."
                 },
                 "intended_click_x": {
                   "type": "integer",
-                  "description": "Optional X coordinate of the click you are about to perform. When provided together with intended_click_y, the screenshot highlights the intended click target."
+                  "description": "Optional X coordinate of the click you are about to perform. When an AX/UI element frame is also provided, the center of that frame should be preferred as the click position."
                 },
                 "intended_click_y": {
                   "type": "integer",
-                  "description": "Optional Y coordinate of the click you are about to perform. When provided together with intended_click_x, the screenshot highlights the intended click target."
+                  "description": "Optional Y coordinate of the click you are about to perform. When an AX/UI element frame is also provided, the center of that frame should be preferred as the click position."
                 },
                 "intended_click_label": {
                   "type": "string",
@@ -44,7 +61,7 @@ internal static class DesktopToolDefinitions
                 },
                 "intended_element_x": {
                   "type": "integer",
-                  "description": "Optional X coordinate of an AX/UI element frame you want highlighted in the screenshot. Use together with intended_element_y, intended_element_width, and intended_element_height."
+                  "description": "Optional X coordinate of an AX/UI element frame you want highlighted in the screenshot. Use together with intended_element_y, intended_element_width, and intended_element_height. The click point should be derived from the center of this frame."
                 },
                 "intended_element_y": {
                   "type": "integer",
@@ -232,13 +249,18 @@ internal static class DesktopToolDefinitions
 
     new(
             "move_mouse",
-            "Moves the mouse cursor to the specified absolute screen coordinates or to the center of a numbered mark from the latest marked screenshot.",
+            "Moves the mouse cursor to the specified absolute screen coordinates, to the center of a numbered mark from the latest marked screenshot, or to the automatically derived center of a provided AX/UI element frame.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
-                "x": { "type": "integer", "description": "X coordinate (pixels from left edge)" },
-                "y": { "type": "integer", "description": "Y coordinate (pixels from top edge)" },
+                "x": { "type": "integer", "description": "X coordinate (pixels from left edge). Optional when you provide a mark_id or AX element frame." },
+                "y": { "type": "integer", "description": "Y coordinate (pixels from top edge). Optional when you provide a mark_id or AX element frame." },
+                "intended_element_x": { "type": "integer", "description": "Optional X coordinate of an AX/UI element frame. When the full frame is provided, the pointer target is derived from the center of that rectangle." },
+                "intended_element_y": { "type": "integer", "description": "Optional Y coordinate of an AX/UI element frame." },
+                "intended_element_width": { "type": "integer", "description": "Optional width of the AX/UI element frame." },
+                "intended_element_height": { "type": "integer", "description": "Optional height of the AX/UI element frame." },
+                "intended_element_label": { "type": "string", "description": "Optional label for the AX/UI element whose center is being targeted." },
                 "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the cursor moves to the center of that mark." }
               }
             }
@@ -269,13 +291,18 @@ internal static class DesktopToolDefinitions
 
           new(
             "click",
-            "Moves the mouse cursor to (x, y) or to the center of a numbered mark and clicks the specified mouse button.",
+            "Moves the mouse cursor to (x, y), to the center of a numbered mark, or to the automatically derived center of a provided AX/UI element frame, then clicks the specified mouse button.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
-                "x": { "type": "integer", "description": "X coordinate" },
-                "y": { "type": "integer", "description": "Y coordinate" },
+                "x": { "type": "integer", "description": "X coordinate. Optional when you provide a mark_id or AX element frame." },
+                "y": { "type": "integer", "description": "Y coordinate. Optional when you provide a mark_id or AX element frame." },
+                "intended_element_x": { "type": "integer", "description": "Optional X coordinate of an AX/UI element frame. When the full frame is provided, the click target is derived from the center of that rectangle." },
+                "intended_element_y": { "type": "integer", "description": "Optional Y coordinate of an AX/UI element frame." },
+                "intended_element_width": { "type": "integer", "description": "Optional width of the AX/UI element frame." },
+                "intended_element_height": { "type": "integer", "description": "Optional height of the AX/UI element frame." },
+                "intended_element_label": { "type": "string", "description": "Optional label for the AX/UI element whose center is being clicked." },
                 "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the click targets the center of that mark." },
                 "button": {
                   "type": "string",
@@ -289,13 +316,18 @@ internal static class DesktopToolDefinitions
 
           new(
             "double_click",
-            "Moves the mouse cursor to (x, y) or to the center of a numbered mark and double-clicks the left mouse button.",
+            "Moves the mouse cursor to (x, y), to the center of a numbered mark, or to the automatically derived center of a provided AX/UI element frame, then double-clicks the left mouse button.",
             BinaryData.FromString("""
             {
               "type": "object",
               "properties": {
-                "x": { "type": "integer", "description": "X coordinate" },
-                "y": { "type": "integer", "description": "Y coordinate" },
+                "x": { "type": "integer", "description": "X coordinate. Optional when you provide a mark_id or AX element frame." },
+                "y": { "type": "integer", "description": "Y coordinate. Optional when you provide a mark_id or AX element frame." },
+                "intended_element_x": { "type": "integer", "description": "Optional X coordinate of an AX/UI element frame. When the full frame is provided, the double-click target is derived from the center of that rectangle." },
+                "intended_element_y": { "type": "integer", "description": "Optional Y coordinate of an AX/UI element frame." },
+                "intended_element_width": { "type": "integer", "description": "Optional width of the AX/UI element frame." },
+                "intended_element_height": { "type": "integer", "description": "Optional height of the AX/UI element frame." },
+                "intended_element_label": { "type": "string", "description": "Optional label for the AX/UI element whose center is being double-clicked." },
                 "mark_id": { "type": "integer", "description": "Optional numbered mark from the latest marked screenshot. When provided, the double-click targets the center of that mark." }
               }
             }

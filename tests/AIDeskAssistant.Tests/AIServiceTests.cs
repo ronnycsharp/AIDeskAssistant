@@ -28,13 +28,20 @@ public sealed class AIServiceTests
         Assert.Contains("must either call a tool immediately or emit the strict JSON planning object", prompt);
         Assert.Contains("never end the turn after a plan-only sentence", prompt);
         Assert.Contains("purpose string", prompt);
-        Assert.Contains("intended_click_x", prompt);
+        Assert.Contains("predicted_tool", prompt);
+        Assert.Contains("predicted_action", prompt);
+        Assert.Contains("predicted_target_label", prompt);
+        Assert.Contains("derived schematic target view", prompt);
         Assert.Contains("intended_element_x", prompt);
+        Assert.Contains("prefer the center of that rectangle as the click point automatically", prompt);
+        Assert.Contains("multi-step targeting loop", prompt);
+        Assert.Contains("Compare the original screenshot and the derived schematic target view", prompt);
         Assert.Contains("After each significant action, take a validation screenshot", prompt);
         Assert.Contains("compare the validation screenshot with the pre-action screenshot", prompt);
         Assert.Contains("especially around 100% similarity", prompt);
         Assert.Contains("Do not loop on the same click, keypress, or coordinate", prompt);
-        Assert.Contains("visible coordinate raster with labeled spacing", prompt);
+        Assert.Contains("prefer Accessibility/UI element frames over guessing from screenshot decorations", prompt);
+        Assert.Contains("use the center point of that rectangle as the click position", prompt);
         Assert.Contains("Microsoft Word and Microsoft Excel", prompt);
         Assert.Contains("In text editors and document apps such as Microsoft Word, cursor navigation must always use press_key with arrow keys", prompt);
         Assert.Contains("Never type words like 'up', 'down', 'left', 'right', 'home', 'end', 'page up', or 'page down' into the document when the intent is to move the caret", prompt);
@@ -176,14 +183,14 @@ public sealed class AIServiceTests
     [Fact]
     public void TryParseScreenshotAttachment_ExtractsMouseDetailImage()
     {
-        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID Mouse detail media type: image/png. Mouse detail base64: BAUG";
+        string result = "Screenshot taken. Resolution: 1280x800. Media type: image/jpeg. Base64: AQID Supplemental image [schematic-target] media type: image/png. Supplemental image [schematic-target] base64: BAUG";
 
         bool parsed = AIService.TryParseScreenshotAttachment(result, out ScreenshotModelAttachment? attachment);
 
         Assert.True(parsed);
         Assert.NotNull(attachment);
         ScreenshotSupplementalImage supplementalImage = Assert.Single(attachment.SupplementalImages);
-        Assert.Equal("mouse-detail", supplementalImage.Label);
+        Assert.Equal("schematic-target", supplementalImage.Label);
         Assert.Equal("image/png", supplementalImage.MediaType);
         Assert.Equal([4, 5, 6], supplementalImage.Bytes);
     }

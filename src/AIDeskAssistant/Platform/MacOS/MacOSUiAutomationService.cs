@@ -128,6 +128,101 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             let text: String
         }
 
+        struct CalculatorButtonLabel {
+            let x: Int
+            let y: Int
+            let width: Int
+            let height: Int
+            let label: String
+        }
+
+        func approximateEquals(_ left: CGFloat, _ right: CGFloat, tolerance: CGFloat = 6.0) -> Bool {
+            abs(left - right) <= tolerance
+        }
+
+        func appendUniqueAxisValue(_ values: inout [CGFloat], _ candidate: CGFloat, tolerance: CGFloat = 6.0) {
+            guard !values.contains(where: { approximateEquals($0, candidate, tolerance: tolerance) }) else { return }
+            values.append(candidate)
+        }
+
+        func calculatorButtonLabels(appName: String, windowFrame: CGRect, candidates: [AXUIElement]) -> [CalculatorButtonLabel] {
+            let normalizedAppName = normalizedText(appName).lowercased()
+            guard normalizedAppName == "calculator" || normalizedAppName == "rechner" else {
+                return []
+            }
+
+            let keypadButtons = candidates.compactMap { element -> (CGRect, String, String)? in
+                let elementRole = role(of: element)
+                guard elementRole == "AXButton", let rect = frame(of: element) else { return nil }
+                guard rect.width >= 40, rect.height >= 40 else { return nil }
+                guard rect.minY >= windowFrame.minY + 110 else { return nil }
+                let titleValue = title(of: element)
+                let valueText = valueDescription(of: element)
+                return (rect, titleValue, valueText)
+            }
+
+            guard keypadButtons.count >= 16 else {
+                return []
+            }
+
+            let groupedRows = Dictionary(grouping: keypadButtons) { item in
+                keypadButtons
+                    .map { $0.0.minY }
+                    .sorted()
+                    .first(where: { approximateEquals($0, item.0.minY, tolerance: 8.0) }) ?? item.0.minY
+            }
+
+            let keypadRows = groupedRows.values
+                .filter { $0.count >= 4 }
+                .sorted { left, right in left[0].0.minY < right[0].0.minY }
+                .suffix(5)
+                .map { row in
+                    row.sorted { left, right in left.0.minX < right.0.minX }.prefix(4)
+                }
+
+            guard keypadRows.count >= 5 else {
+                return []
+            }
+
+            let keypadButtonsForLabels = keypadRows.flatMap { $0 }
+
+            var rowValues: [CGFloat] = []
+            var columnValues: [CGFloat] = []
+            for item in keypadButtonsForLabels {
+                appendUniqueAxisValue(&rowValues, item.0.minY, tolerance: 8.0)
+                appendUniqueAxisValue(&columnValues, item.0.minX)
+            }
+
+            rowValues.sort()
+            columnValues.sort()
+
+            let rowLabels = [
+                ["delete", "ac", "percent", "divide"],
+                ["7", "8", "9", "multiply"],
+                ["4", "5", "6", "minus"],
+                ["1", "2", "3", "plus"],
+                ["plus_minus", "0", "decimal", "equals"]
+            ]
+
+            return keypadButtonsForLabels.compactMap { item in
+                let rect = item.0
+                guard let rowIndex = rowValues.firstIndex(where: { approximateEquals($0, rect.minY) }), rowIndex < rowLabels.count else {
+                    return nil
+                }
+
+                guard let columnIndex = columnValues.firstIndex(where: { approximateEquals($0, rect.minX) }), columnIndex < rowLabels[rowIndex].count else {
+                    return nil
+                }
+
+                return CalculatorButtonLabel(
+                    x: Int(rect.origin.x.rounded()),
+                    y: Int(rect.origin.y.rounded()),
+                    width: Int(rect.size.width.rounded()),
+                    height: Int(rect.size.height.rounded()),
+                    label: rowLabels[rowIndex][columnIndex])
+            }
+        }
+
         guard AXIsProcessTrusted() else {
             fail("Accessibility permission is required for AXUIElement inspection.")
         }
@@ -150,6 +245,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
             output.append(String(format: "Focused window: %@ at x=%.0f,y=%.0f,w=%.0f,h=%.0f", windowTitle.isEmpty ? "<untitled>" : windowTitle, windowFrame.origin.x, windowFrame.origin.y, windowFrame.size.width, windowFrame.size.height))
 
             let candidates = [mainWindow] + descendants(of: mainWindow)
+            let calculatorLabels = calculatorButtonLabels(appName: appName, windowFrame: windowFrame, candidates: candidates)
             var summaries: [SummaryLine] = []
             var seen = Set<String>()
 
@@ -160,11 +256,18 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
                 let elementTitle = title(of: element)
                 let elementValue = valueDescription(of: element)
                 let elementSubrole = subrole(of: element)
+                let calculatorLabel = calculatorLabels.first(where: {
+                    $0.x == Int(rect.origin.x.rounded())
+                        && $0.y == Int(rect.origin.y.rounded())
+                        && $0.width == Int(rect.size.width.rounded())
+                        && $0.height == Int(rect.size.height.rounded())
+                })?.label
 
                 var labelParts: [String] = [elementRole]
                 if !elementSubrole.isEmpty { labelParts.append(elementSubrole) }
                 if !elementTitle.isEmpty { labelParts.append("title=\(elementTitle)") }
                 if !elementValue.isEmpty && elementValue != elementTitle { labelParts.append("value=\(elementValue)") }
+                if let calculatorLabel, !calculatorLabel.isEmpty { labelParts.append("calculator_key=\(calculatorLabel)") }
                 labelParts.append(String(format: "x=%.0f,y=%.0f,w=%.0f,h=%.0f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height))
 
                 let line = labelParts.joined(separator: " | ")
@@ -178,7 +281,7 @@ internal sealed class MacOSUiAutomationService : IUiAutomationService
                     if lhs.orderY == rhs.orderY { return lhs.orderX < rhs.orderX }
                     return lhs.orderY < rhs.orderY
                 }
-                .prefix(25)
+                .prefix(40)
 
             output.append("Visible UI elements:")
             for summary in sorted {

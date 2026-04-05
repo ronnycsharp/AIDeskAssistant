@@ -23,9 +23,9 @@ internal sealed class DesktopToolExecutor
     private const string ValueArg = "value";
     private const string WidthArg = "width";
     private const string HeightArg = "height";
+    private const string VisualStyleArg = "visual_style";
     private const string FullScreenScreenshotTarget = "full_screen";
     private const string ActiveWindowScreenshotTarget = "active_window";
-    private const string MouseDetailBase64Marker = "Mouse detail base64:";
     private static readonly string[] MacOSAccessibilityPermissionErrorMarkers =
     [
         "-25211",
@@ -186,6 +186,7 @@ internal sealed class DesktopToolExecutor
             .Trim()
             .ToLowerInvariant();
         string purpose = DesktopToolDefinitions.GetString(args, PurposeArg).Trim();
+        string visualStyle = NormalizeScreenshotVisualStyle(DesktopToolDefinitions.GetString(args, VisualStyleArg, ScreenshotVisualStyles.Standard));
         int padding = Math.Clamp(DesktopToolDefinitions.GetInt(args, "padding", 16), 0, 200);
 
         if (!TryResolveScreenshotCaptureOptions(target, padding, out ScreenshotCaptureOptions options, out WindowBounds? bounds, out string error))
@@ -197,20 +198,36 @@ internal sealed class DesktopToolExecutor
             ? ScreenshotAnnotationData.CreateSuggestedContentArea(captureBounds)
             : null;
         var (cursorX, cursorY) = _mouse.GetPosition();
-        ScreenshotClickTarget? intendedClickTarget = TryGetIntendedClickTarget(args);
+        ScreenshotPrediction? prediction = TryGetScreenshotPrediction(args);
         ScreenshotHighlightedRegion? intendedElementRegion = TryGetIntendedElementRegion(args);
+        ScreenshotClickTarget? intendedClickTarget = ResolveEffectiveIntendedClickTarget(TryGetIntendedClickTarget(args), intendedElementRegion);
+
+        if (string.Equals(visualStyle, ScreenshotVisualStyles.SchematicTarget, StringComparison.Ordinal)
+            && intendedClickTarget is null
+            && intendedElementRegion is null)
+        {
+            return Err("visual_style 'schematic_target' requires intended_click coordinates or an intended_element region.");
+        }
+
         WindowHitTestResult? windowUnderCursor = TryGetWindowUnderCursor(cursorX, cursorY);
 
         byte[] screenshot = _screenshot.TakeScreenshot(options);
         (bool marksRequested, IReadOnlyList<ScreenshotMark> marks) = BuildScreenshotMarks(args, captureBounds, screenshot);
         SetLatestScreenshotMarks(marks);
-        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, marks);
-        byte[] annotatedScreenshot = ScreenshotAnnotator.Annotate(screenshot, annotation);
-        ScreenshotPayload payload = _screenshotOptimizer.Optimize(annotatedScreenshot);
-        ScreenshotCursorDetail? mouseDetail = ScreenshotCursorDetailExtractor.Create(annotatedScreenshot, annotation);
-        ScreenshotPayload? mouseDetailPayload = mouseDetail is null ? null : _screenshotOptimizer.Optimize(mouseDetail.Bytes);
-        var context = new ScreenshotResultContext(target, purpose, captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, windowUnderCursor, marksRequested, marks);
-        return BuildScreenshotToolResult(payload, mouseDetailPayload, mouseDetail?.Bounds, context);
+        var annotation = new ScreenshotAnnotationData(captureBounds, cursorX, cursorY, visualStyle, suggestedContentArea, intendedClickTarget, intendedElementRegion, marks);
+        ScreenshotToolImages images = BuildScreenshotToolImages(screenshot, annotation);
+        var context = new ScreenshotResultContext(target, purpose, visualStyle, prediction, captureBounds, cursorX, cursorY, suggestedContentArea, intendedClickTarget, intendedElementRegion, windowUnderCursor, marksRequested, marks);
+        return BuildScreenshotToolResult(images, context);
+    }
+
+    private static string NormalizeScreenshotVisualStyle(string? visualStyle)
+    {
+        string normalized = visualStyle?.Trim().ToLowerInvariant() ?? string.Empty;
+        return normalized switch
+        {
+            ScreenshotVisualStyles.SchematicTarget => ScreenshotVisualStyles.SchematicTarget,
+            _ => ScreenshotVisualStyles.Standard,
+        };
     }
 
     private string ReadScreenText(Dictionary<string, JsonElement> args)
@@ -260,6 +277,36 @@ internal sealed class DesktopToolExecutor
 
         string label = DesktopToolDefinitions.GetString(args, "intended_click_label").Trim();
         return new ScreenshotClickTarget(x, y, string.IsNullOrWhiteSpace(label) ? null : label);
+    }
+
+    private static ScreenshotClickTarget? ResolveEffectiveIntendedClickTarget(ScreenshotClickTarget? requestedClickTarget, ScreenshotHighlightedRegion? intendedElementRegion)
+    {
+        if (intendedElementRegion is not ScreenshotHighlightedRegion region)
+            return requestedClickTarget;
+
+        int centerX = region.Bounds.X + (region.Bounds.Width / 2);
+        int centerY = region.Bounds.Y + (region.Bounds.Height / 2);
+        string? label = string.IsNullOrWhiteSpace(region.Label) ? requestedClickTarget?.Label : region.Label;
+        return new ScreenshotClickTarget(centerX, centerY, label);
+    }
+
+    private static ScreenshotPrediction? TryGetScreenshotPrediction(Dictionary<string, JsonElement> args)
+    {
+        string predictedTool = DesktopToolDefinitions.GetString(args, "predicted_tool").Trim();
+        string predictedAction = DesktopToolDefinitions.GetString(args, "predicted_action").Trim();
+        string predictedTargetLabel = DesktopToolDefinitions.GetString(args, "predicted_target_label").Trim();
+
+        if (string.IsNullOrWhiteSpace(predictedTool)
+            && string.IsNullOrWhiteSpace(predictedAction)
+            && string.IsNullOrWhiteSpace(predictedTargetLabel))
+        {
+            return null;
+        }
+
+        return new ScreenshotPrediction(
+            string.IsNullOrWhiteSpace(predictedTool) ? null : predictedTool,
+            string.IsNullOrWhiteSpace(predictedAction) ? null : predictedAction,
+            string.IsNullOrWhiteSpace(predictedTargetLabel) ? null : predictedTargetLabel);
     }
 
     private static ScreenshotHighlightedRegion? TryGetIntendedElementRegion(Dictionary<string, JsonElement> args)
@@ -441,51 +488,103 @@ internal sealed class DesktopToolExecutor
         return string.Join(Environment.NewLine, parts);
     }
 
-    private static string BuildScreenshotToolResult(ScreenshotPayload payload, ScreenshotPayload? mouseDetailPayload, WindowBounds? mouseDetailBounds, ScreenshotResultContext context)
+    private ScreenshotToolImages BuildScreenshotToolImages(byte[] sourceScreenshot, ScreenshotAnnotationData annotation)
     {
-        var annotation = new ScreenshotAnnotationData(context.CaptureBounds, context.CursorX, context.CursorY, context.SuggestedContentArea, context.IntendedClickTarget, context.IntendedElementRegion, context.Marks);
+        bool processedPrimary = string.Equals(annotation.VisualStyle, ScreenshotVisualStyles.SchematicTarget, StringComparison.Ordinal);
+        byte[] primaryBytes = processedPrimary
+            ? ScreenshotAnnotator.Annotate(sourceScreenshot, annotation)
+            : sourceScreenshot;
+
+        ScreenshotPayload primaryPayload = _screenshotOptimizer.Optimize(primaryBytes);
+        var supplementalImages = new List<ScreenshotToolImage>();
+
+        if (!processedPrimary && ShouldCreateDerivedTargetView(annotation))
+        {
+            byte[] schematicBytes = ScreenshotAnnotator.Annotate(sourceScreenshot, annotation with { VisualStyle = ScreenshotVisualStyles.SchematicTarget });
+            ScreenshotPayload schematicPayload = _screenshotOptimizer.Optimize(schematicBytes);
+            supplementalImages.Add(new ScreenshotToolImage("schematic-target", schematicPayload));
+        }
+
+        return new ScreenshotToolImages(primaryPayload, supplementalImages);
+    }
+
+    private static bool ShouldCreateDerivedTargetView(ScreenshotAnnotationData annotation)
+        => annotation.HasIntendedClickTarget || annotation.HasIntendedElementRegion;
+
+    private static string BuildScreenshotToolResult(ScreenshotToolImages images, ScreenshotResultContext context)
+    {
+        var annotation = new ScreenshotAnnotationData(context.CaptureBounds, context.CursorX, context.CursorY, context.VisualStyle, context.SuggestedContentArea, context.IntendedClickTarget, context.IntendedElementRegion, context.Marks);
         var parts = new List<string>
         {
             "Screenshot taken.",
             $"Target: {context.Target}.",
         };
 
+        parts.Add($"Visual style: {context.VisualStyle}.");
+
         if (!string.IsNullOrWhiteSpace(context.Purpose))
             parts.Add($"Purpose: {context.Purpose}.");
 
+        if (string.Equals(context.VisualStyle, ScreenshotVisualStyles.SchematicTarget, StringComparison.Ordinal))
+            parts.Add("Schematic target overview: the background is desaturated and dimmed so the intended target/button stands out more strongly for pre-click validation.");
+        else if (images.SupplementalImages.Count > 0)
+            parts.Add("Derived schematic target view included: this second image was generated from the same original screenshot and highlights the intended control for the next click or keyboard action.");
+
+        AddScreenshotPredictionParts(parts, context.Prediction);
+
         parts.Add($"Capture bounds: X={context.CaptureBounds.X}, Y={context.CaptureBounds.Y}, Width={context.CaptureBounds.Width}, Height={context.CaptureBounds.Height}.");
-        parts.Add($"Corner pixels: TL=({annotation.TopLeft.X},{annotation.TopLeft.Y}), TR=({annotation.TopRight.X},{annotation.TopRight.Y}), BL=({annotation.BottomLeft.X},{annotation.BottomLeft.Y}), BR=({annotation.BottomRight.X},{annotation.BottomRight.Y}).");
-        parts.Add($"Cursor: X={context.CursorX}, Y={context.CursorY}, InsideCapture={annotation.CursorIsInsideCapture}.");
         if (context.WindowUnderCursor is WindowHitTestResult window)
             parts.Add($"Window under cursor: App={window.ApplicationName}, Title={FormatWindowTitle(window.Title)}, X={window.Bounds.X}, Y={window.Bounds.Y}, Width={window.Bounds.Width}, Height={window.Bounds.Height}.");
         if (annotation.HasSuggestedContentArea && annotation.SuggestedContentArea is WindowBounds contentArea)
             parts.Add($"Likely content area: X={contentArea.X}, Y={contentArea.Y}, Width={contentArea.Width}, Height={contentArea.Height}. Prefer clicks and typing inside this region unless the screenshot shows a more specific control elsewhere.");
-        if (context.IntendedClickTarget is ScreenshotClickTarget clickTarget)
-            parts.Add($"Intended click target: X={clickTarget.X}, Y={clickTarget.Y}, InsideCapture={annotation.IntendedClickIsInsideCapture}, Label={FormatWindowTitle(clickTarget.Label)}. Use the highlighted target marker to validate the click before you press click or double_click.");
-        if (context.IntendedElementRegion is ScreenshotHighlightedRegion highlightedRegion)
-            parts.Add($"Highlighted AX element: X={highlightedRegion.Bounds.X}, Y={highlightedRegion.Bounds.Y}, Width={highlightedRegion.Bounds.Width}, Height={highlightedRegion.Bounds.Height}, IntersectsCapture={annotation.IntendedElementRegionIntersectsCapture}, Label={FormatWindowTitle(highlightedRegion.Label)}. Use the extra outline to validate the intended AX/UI element before clicking.");
+        AddScreenshotTargetingParts(parts, annotation, context);
         if (context.Marks.Count > 0)
             parts.Add($"Numbered marks: {string.Join(" ", context.Marks.Select(mark => $"[{mark.Id}] Source={mark.Source}, Label={FormatWindowTitle(mark.Label)}, X={mark.Bounds.X}, Y={mark.Bounds.Y}, Width={mark.Bounds.Width}, Height={mark.Bounds.Height}."))} Prefer follow-up actions with mark_id when a matching mark already exists.");
         else if (context.MarksRequested)
             parts.Add("Numbered marks: none found for the requested mark filters/source.");
-        if (mouseDetailBounds is WindowBounds detailBounds)
-            parts.Add($"Mouse detail bounds: X={detailBounds.X}, Y={detailBounds.Y}, Width={detailBounds.Width}, Height={detailBounds.Height}. The additional mouse detail image includes a 100 px coordinate raster with x/y labels to validate exact cursor placement before clicking or double-clicking.");
-        parts.Add($"Coordinate raster: major lines every {GetScreenshotRulerMajorStep(payload.Width, payload.Height)} px with minor lines every {GetScreenshotRulerMinorStep(payload.Width, payload.Height)} px.");
 
-        parts.Add($"Original: {payload.OriginalByteCount} bytes.");
-        parts.Add($"Final: {payload.FinalByteCount} bytes.");
-        parts.Add($"Saved: {payload.BytesSaved} bytes ({payload.SavingsRatio:P1}).");
-        parts.Add($"Resolution: {payload.Width}x{payload.Height}.");
-        parts.Add($"Media type: {payload.MediaType}.");
-        parts.Add($"Base64: {Convert.ToBase64String(payload.Bytes)}");
+        parts.Add($"Original: {images.PrimaryImage.Payload.OriginalByteCount} bytes.");
+        parts.Add($"Final: {images.PrimaryImage.Payload.FinalByteCount} bytes.");
+        parts.Add($"Saved: {images.PrimaryImage.Payload.BytesSaved} bytes ({images.PrimaryImage.Payload.SavingsRatio:P1}).");
+        parts.Add($"Resolution: {images.PrimaryImage.Payload.Width}x{images.PrimaryImage.Payload.Height}.");
+        parts.Add($"Media type: {images.PrimaryImage.Payload.MediaType}.");
+        parts.Add($"Base64: {Convert.ToBase64String(images.PrimaryImage.Payload.Bytes)}");
 
-        if (mouseDetailPayload is not null)
+        foreach (ScreenshotToolImage supplementalImage in images.SupplementalImages)
         {
-            parts.Add($"Mouse detail media type: {mouseDetailPayload.MediaType}.");
-            parts.Add($"{MouseDetailBase64Marker} {Convert.ToBase64String(mouseDetailPayload.Bytes)}");
+            parts.Add($"Supplemental image [{supplementalImage.Label}] media type: {supplementalImage.Payload.MediaType}.");
+            parts.Add($"Supplemental image [{supplementalImage.Label}] base64: {Convert.ToBase64String(supplementalImage.Payload.Bytes)}");
         }
 
         return string.Join(" ", parts);
+    }
+
+    private static void AddScreenshotPredictionParts(List<string> parts, ScreenshotPrediction? prediction)
+    {
+        if (prediction is not ScreenshotPrediction value)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(value.ToolName))
+            parts.Add($"Predicted next tool: {value.ToolName}.");
+        if (!string.IsNullOrWhiteSpace(value.Action))
+            parts.Add($"Predicted next action: {value.Action}.");
+        if (!string.IsNullOrWhiteSpace(value.TargetLabel))
+            parts.Add($"Predicted target/button: {FormatWindowTitle(value.TargetLabel)}.");
+    }
+
+    private static void AddScreenshotTargetingParts(List<string> parts, ScreenshotAnnotationData annotation, ScreenshotResultContext context)
+    {
+        if (context.IntendedElementRegion is ScreenshotHighlightedRegion highlightedRegion)
+        {
+            parts.Add($"Highlighted AX element: X={highlightedRegion.Bounds.X}, Y={highlightedRegion.Bounds.Y}, Width={highlightedRegion.Bounds.Width}, Height={highlightedRegion.Bounds.Height}, IntersectsCapture={annotation.IntendedElementRegionIntersectsCapture}, Label={FormatWindowTitle(highlightedRegion.Label)}.");
+            if (context.IntendedClickTarget is ScreenshotClickTarget axCenterClickTarget)
+                parts.Add($"AX-derived click target: X={axCenterClickTarget.X}, Y={axCenterClickTarget.Y}, InsideCapture={annotation.IntendedClickIsInsideCapture}, Label={FormatWindowTitle(axCenterClickTarget.Label)}. Use the center point of the AX element as the click position.");
+
+            return;
+        }
+
+        if (context.IntendedClickTarget is ScreenshotClickTarget clickTarget)
+            parts.Add($"Intended click target: X={clickTarget.X}, Y={clickTarget.Y}, InsideCapture={annotation.IntendedClickIsInsideCapture}, Label={FormatWindowTitle(clickTarget.Label)}. Use the highlighted target marker to validate the click before you press click or double_click.");
     }
 
     private static string FormatWindowTitle(string? value)
@@ -494,6 +593,8 @@ internal sealed class DesktopToolExecutor
     private readonly record struct ScreenshotResultContext(
         string Target,
         string Purpose,
+        string VisualStyle,
+        ScreenshotPrediction? Prediction,
         WindowBounds CaptureBounds,
         int CursorX,
         int CursorY,
@@ -503,6 +604,18 @@ internal sealed class DesktopToolExecutor
         WindowHitTestResult? WindowUnderCursor,
         bool MarksRequested,
         IReadOnlyList<ScreenshotMark> Marks);
+
+    private readonly record struct ScreenshotToolImages(ScreenshotToolImage PrimaryImage, IReadOnlyList<ScreenshotToolImage> SupplementalImages)
+    {
+        public ScreenshotToolImages(ScreenshotPayload primaryPayload, IReadOnlyList<ScreenshotToolImage> supplementalImages)
+            : this(new ScreenshotToolImage("main", primaryPayload), supplementalImages)
+        {
+        }
+    }
+
+    private readonly record struct ScreenshotToolImage(string Label, ScreenshotPayload Payload);
+
+    private readonly record struct ScreenshotPrediction(string? ToolName, string? Action, string? TargetLabel);
 
     private (bool Requested, IReadOnlyList<ScreenshotMark> Marks) BuildScreenshotMarks(Dictionary<string, JsonElement> args, WindowBounds captureBounds, byte[] screenshotBytes)
     {
@@ -643,6 +756,17 @@ internal sealed class DesktopToolExecutor
             return true;
         }
 
+        if (TryGetIntendedElementRegion(args) is ScreenshotHighlightedRegion intendedElement)
+        {
+            x = intendedElement.Bounds.X + (intendedElement.Bounds.Width / 2);
+            y = intendedElement.Bounds.Y + (intendedElement.Bounds.Height / 2);
+            descriptor = string.IsNullOrWhiteSpace(intendedElement.Label)
+                ? "AX element center"
+                : $"AX element center ({intendedElement.Label})";
+            error = string.Empty;
+            return true;
+        }
+
         x = DesktopToolDefinitions.GetInt(args, "x");
         y = DesktopToolDefinitions.GetInt(args, "y");
         descriptor = "explicit coordinates";
@@ -658,21 +782,6 @@ internal sealed class DesktopToolExecutor
         int bottom = Math.Min(captureBounds.Y + captureBounds.Height, bounds.Y + bounds.Height);
         return right > left && bottom > top;
     }
-
-    private static int GetScreenshotRulerMajorStep(int width, int height)
-    {
-        int reference = Math.Min(width, height);
-        if (reference >= 1800)
-            return 200;
-
-        if (reference >= 900)
-            return 100;
-
-        return 50;
-    }
-
-    private static int GetScreenshotRulerMinorStep(int width, int height)
-        => Math.Max(GetScreenshotRulerMajorStep(width, height) / 2, 25);
 
     private string GetScreenInfo()
     {

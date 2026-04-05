@@ -24,4 +24,10 @@
     <ProjectReference Include="..\..\src\AIDeskAssistant\AIDeskAssistant.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Assets/**/*.png">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -6,6 +6,7 @@ internal readonly record struct ScreenshotAnnotationData(
     WindowBounds CaptureBounds,
     int CursorX,
     int CursorY,
+    string VisualStyle = ScreenshotVisualStyles.Standard,
     WindowBounds? SuggestedContentArea = null,
     ScreenshotClickTarget? IntendedClickTarget = null,
     ScreenshotHighlightedRegion? IntendedElementRegion = null,
@@ -82,6 +83,12 @@ internal readonly record struct ScreenshotAnnotationData(
             width,
             height);
     }
+}
+
+internal static class ScreenshotVisualStyles
+{
+    public const string Standard = "standard";
+    public const string SchematicTarget = "schematic_target";
 }
 
 internal readonly record struct ScreenshotClickTarget(int X, int Y, string? Label = null);

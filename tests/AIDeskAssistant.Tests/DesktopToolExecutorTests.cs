@@ -120,7 +120,7 @@ internal sealed class FakeWindowService : IWindowService
     public bool FocusWindowResult = true;
     public int FocusWindowCallCount;
     public string? ListWindowsExceptionMessage;
-    public string? GetFrontmostApplicationExceptionMessage;
+    public string GetFrontmostApplicationExceptionMessage = string.Empty;
 
     public WindowBounds GetActiveWindowBounds() => Bounds;
 
@@ -250,15 +250,13 @@ public sealed class DesktopToolExecutorTests
 
         Assert.Contains("Base64:", result);
         Assert.Contains("Window under cursor: App=Microsoft Word, Title=Document1, X=0, Y=0, Width=840, Height=640.", result);
-        Assert.Contains("Mouse detail bounds:", result);
-        Assert.Contains("Mouse detail media type:", result);
-        Assert.Contains("Mouse detail base64:", result);
         Assert.Contains("Capture bounds: X=0, Y=0, Width=1920, Height=1080.", result);
-        Assert.Contains("Corner pixels: TL=(0,0), TR=(1919,0), BL=(0,1079), BR=(1919,1079).", result);
-        Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
-        Assert.Contains("Mouse detail bounds: X=490, Y=330, Width=300, Height=300.", result);
-        Assert.Contains("Coordinate raster: major lines every", result);
-        Assert.Contains("minor lines every", result);
+        Assert.DoesNotContain("Corner pixels:", result);
+        Assert.DoesNotContain("Cursor:", result);
+        Assert.DoesNotContain("Mouse detail bounds:", result);
+        Assert.DoesNotContain("Mouse detail media type:", result);
+        Assert.DoesNotContain("Mouse detail base64:", result);
+        Assert.DoesNotContain("Coordinate raster:", result);
         Assert.Contains("Original:", result);
         Assert.Contains("Final:", result);
         Assert.Equal(default, _screenshot.LastOptions);
@@ -267,20 +265,44 @@ public sealed class DesktopToolExecutorTests
     [Fact]
     public void Execute_TakeScreenshotActiveWindow_UsesWindowBoundsAndPurpose()
     {
-        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"padding\":20,\"intended_click_x\":420,\"intended_click_y\":360,\"intended_click_label\":\"Word document body\",\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":28,\"intended_element_label\":\"Save button\"}");
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"verify word content\",\"predicted_tool\":\"click\",\"predicted_action\":\"click the save button\",\"predicted_target_label\":\"Save button\",\"padding\":20,\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":28,\"intended_element_label\":\"Save button\"}");
 
         Assert.Equal(new WindowBounds(0, 0, 840, 640), _screenshot.LastOptions.Bounds);
         Assert.Contains("Target: active_window.", result);
+        Assert.Contains("Visual style: standard.", result);
         Assert.Contains("Purpose: verify word content.", result);
+        Assert.Contains("Predicted next tool: click.", result);
+        Assert.Contains("Predicted next action: click the save button.", result);
+        Assert.Contains("Predicted target/button: Save button.", result);
         Assert.Contains("Capture bounds: X=0, Y=0, Width=840, Height=640.", result);
-        Assert.Contains("Corner pixels: TL=(0,0), TR=(839,0), BL=(0,639), BR=(839,639).", result);
-        Assert.Contains("Cursor: X=640, Y=480, InsideCapture=True.", result);
         Assert.Contains("Window under cursor: App=Microsoft Word, Title=Document1, X=0, Y=0, Width=840, Height=640.", result);
         Assert.Contains("Likely content area: X=34, Y=90, Width=772, Height=518.", result);
-        Assert.Contains("Intended click target: X=420, Y=360, InsideCapture=True, Label=Word document body.", result);
         Assert.Contains("Highlighted AX element: X=390, Y=330, Width=80, Height=28, IntersectsCapture=True, Label=Save button.", result);
-        Assert.Contains("includes a 100 px coordinate raster with x/y labels", result);
-        Assert.Contains("Coordinate raster: major lines every 50 px with minor lines every 25 px.", result);
+        Assert.Contains("AX-derived click target: X=430, Y=344, InsideCapture=True, Label=Save button.", result);
+        Assert.Contains("Derived schematic target view included:", result);
+        Assert.Contains("Supplemental image [schematic-target] media type: image/", result);
+        Assert.Contains("Supplemental image [schematic-target] base64:", result);
+        Assert.DoesNotContain("Coordinate raster:", result);
+    }
+
+    [Fact]
+    public void Execute_TakeScreenshotSchematicTarget_DescribesSchematicView()
+    {
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"purpose\":\"validate calculator target\",\"visual_style\":\"schematic_target\",\"predicted_tool\":\"click\",\"predicted_action\":\"press calculator key 7\",\"predicted_target_label\":\"calculator_key=7\",\"intended_click_x\":420,\"intended_click_y\":360,\"intended_click_label\":\"calculator key 7\",\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":48,\"intended_element_label\":\"calculator_key=7\"}");
+
+        Assert.Contains("Visual style: schematic_target.", result);
+        Assert.Contains("Schematic target overview:", result);
+        Assert.Contains("Predicted target/button: calculator_key=7.", result);
+        Assert.Contains("Highlighted AX element: X=390, Y=330, Width=80, Height=48, IntersectsCapture=True, Label=calculator_key=7.", result);
+        Assert.Contains("AX-derived click target: X=430, Y=354, InsideCapture=True, Label=calculator_key=7.", result);
+    }
+
+    [Fact]
+    public void Execute_TakeScreenshotSchematicTargetWithoutTarget_ReturnsError()
+    {
+        string result = _sut.Execute("take_screenshot", "{\"target\":\"active_window\",\"visual_style\":\"schematic_target\"}");
+
+        Assert.Equal("[ERROR] visual_style 'schematic_target' requires intended_click coordinates or an intended_element region.", result);
     }
 
     [Fact]
@@ -345,6 +367,17 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_GetFrontmostUiElements_PreservesCalculatorKeyLabelsInSummary()
+    {
+        _uiAutomation.FrontmostUiSummary = "Frontmost app: Rechner\nFocused window: Rechner at x=861,y=367,w=230,h=408\nVisible UI elements:\n- AXButton | calculator_key=7 | x=871,y=554,w=48,h=48\n- AXButton | calculator_key=4 | x=871,y=608,w=48,h=48";
+
+        string result = _sut.Execute("get_frontmost_ui_elements", "{}");
+
+        Assert.Contains("calculator_key=7", result);
+        Assert.Contains("calculator_key=4", result);
+    }
+
+    [Fact]
     public void Execute_GetFrontmostApplication_UsesWindowService()
     {
         string result = _sut.Execute("get_frontmost_application", "{}");
@@ -373,12 +406,31 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_Click_WithIntendedElement_UsesAxElementCenter()
+    {
+        string result = _sut.Execute("click", "{\"button\":\"left\",\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":28,\"intended_element_label\":\"Save button\"}");
+
+        Assert.Equal((430, 344), _mouse.LastClickTarget);
+        Assert.Equal(MouseButton.Left, _mouse.LastClickButton);
+        Assert.Equal("Clicked Left button at (430, 344) via AX element center (Save button)", result);
+    }
+
+    [Fact]
     public void Execute_DoubleClick_UsesMouseService()
     {
         string result = _sut.Execute("double_click", "{\"x\":150,\"y\":250}");
 
         Assert.Equal((150, 250), _mouse.LastDoubleClickTarget);
         Assert.Equal("Double-clicked at (150, 250) via explicit coordinates", result);
+    }
+
+    [Fact]
+    public void Execute_DoubleClick_WithIntendedElement_UsesAxElementCenter()
+    {
+        string result = _sut.Execute("double_click", "{\"intended_element_x\":390,\"intended_element_y\":330,\"intended_element_width\":80,\"intended_element_height\":28,\"intended_element_label\":\"Save button\"}");
+
+        Assert.Equal((430, 344), _mouse.LastDoubleClickTarget);
+        Assert.Equal("Double-clicked at (430, 344) via AX element center (Save button)", result);
     }
 
     [Fact]
