@@ -75,6 +75,9 @@ internal sealed class AIService
         If a save dialog, open dialog, template picker, start screen, or any other modal appears, handle it explicitly before typing. Do not type through dialogs.
         For Microsoft Word and Microsoft Excel on macOS, if the task requires a new blank document or workbook, prefer press_key with 'cmd+n' after the app is frontmost instead of waiting on the start screen. Then verify with a screenshot that an editable blank document or workbook is open.
         For Microsoft Word and Microsoft Excel on macOS, do not keep sending 'cmd+n' in a loop. If one blank document or workbook is already open, use the frontmost one. Only retry 'cmd+n' when a follow-up screenshot clearly shows that no editable blank document or workbook was opened.
+        For plain-text Microsoft Word document creation, full-text updates, straightforward text replacement, or simple word-level formatting on macOS, prefer the dedicated word_create_document, word_set_document_text, word_replace_text, and word_format_text tools over fragile UI navigation when those tools can satisfy the request more directly.
+        Before attempting multi-step Word UI editing in realtime mode, explicitly check whether one of the dedicated Word tools can perform the requested document change more directly and more safely.
+        Because the dedicated Word text tools operate on plain document text or straightforward word-level formatting, use them primarily for those direct content changes and still verify the visible result in Word afterward with a screenshot or OCR.
         For Microsoft Excel on macOS, strongly prefer keyboard-first data entry and navigation. Use shortcuts like cmd+n, cmd+home, return, tab, and arrow keys before considering mouse clicks inside the grid. After editing visible cells, use read_screen_text on the relevant grid region to verify the actual values.
         For Microsoft Word on macOS, do not declare success after typing unless a follow-up screenshot shows visible document text or the status bar word count is no longer 0. If the document still looks blank, keep troubleshooting.
         For Microsoft Word verification, if a screenshot or OCR says the page is blank, the requested text is not visible, the desired result is not confirmed, or the word count is still 0, then the task is not complete and you must continue correcting.
@@ -121,6 +124,8 @@ internal sealed class AIService
     private readonly ChatClient          _client;
     private readonly DesktopToolExecutor _executor;
     private readonly AIDebugLogger?      _debugLogger;
+    private readonly string              _model;
+    private string                       _thinkingLevel;
     private readonly List<ChatMessage>   _history;
     private ScreenshotModelAttachment? _latestRetainedScreenshotAttachment;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
@@ -130,10 +135,26 @@ internal sealed class AIService
     public AIService(string apiKey, DesktopToolExecutor executor, string model = DefaultModel, AIDebugLogger? debugLogger = null)
     {
         _client   = new ChatClient(model, apiKey);
+        _model = model;
         _executor = executor;
         _debugLogger = debugLogger;
+        _thinkingLevel = ThinkingLevelPreference.Normalize(
+            Environment.GetEnvironmentVariable("AIDESK_THINKING_LEVEL")
+            ?? RealtimeVoicePreferenceStore.TryLoadThinkingLevel());
         _history  = new List<ChatMessage> { new SystemChatMessage(BuildSystemPrompt()) };
         _debugLogger?.LogHistoryEntry("system", BuildSystemPrompt());
+    }
+
+    public string CurrentThinkingLevel => _thinkingLevel;
+
+    public IReadOnlyList<string> GetAvailableThinkingLevels() => ThinkingLevelPreference.GetAvailableLevels();
+
+    public string SetThinkingLevel(string thinkingLevel)
+    {
+        _thinkingLevel = ThinkingLevelPreference.Normalize(thinkingLevel);
+        Environment.SetEnvironmentVariable("AIDESK_THINKING_LEVEL", _thinkingLevel);
+        RealtimeVoicePreferenceStore.SaveThinkingLevel(_thinkingLevel);
+        return _thinkingLevel;
     }
 
     /// <summary>
@@ -245,11 +266,13 @@ internal sealed class AIService
     internal static string BuildNegativeValidationDetectedInstruction(string validationSummary)
         => $"{NegativeValidationDetectedInstructionPrefix} {validationSummary}";
 
-    private static ChatCompletionOptions CreateChatCompletionOptions()
+    private ChatCompletionOptions CreateChatCompletionOptions()
     {
         var options = new ChatCompletionOptions();
         foreach (ChatTool tool in DesktopToolDefinitions.GetChatTools())
             options.Tools.Add(tool);
+
+        ThinkingLevelPreference.ApplyTo(options, _model, _thinkingLevel);
 
         return options;
     }

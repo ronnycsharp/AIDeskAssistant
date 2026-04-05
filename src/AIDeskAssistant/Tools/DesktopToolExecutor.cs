@@ -116,6 +116,10 @@ internal sealed class DesktopToolExecutor
                 "double_click" => DoubleClick(args),
                 "scroll" => Scroll(args),
                 "type_text" => TypeText(args),
+                "word_create_document" => WordCreateDocument(args),
+                "word_set_document_text" => WordSetDocumentText(args),
+                "word_replace_text" => WordReplaceText(args),
+                "word_format_text" => WordFormatText(args),
                 "press_key" => PressKey(args),
                 "open_application" => OpenApplication(args),
                 "focus_application" => FocusApplication(args),
@@ -884,6 +888,133 @@ internal sealed class DesktopToolExecutor
         string key = DesktopToolDefinitions.GetString(args, "key");
         _keyboard.PressKey(key);
         return $"Pressed key: {key}";
+    }
+
+    private string WordCreateDocument(Dictionary<string, JsonElement> args)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return Err("word_create_document is only supported on macOS.");
+
+        string text = DesktopToolDefinitions.GetString(args, "text");
+        bool activate = !args.ContainsKey("activate") || DesktopToolDefinitions.GetBool(args, "activate");
+
+        try
+        {
+            string documentName = RunWordCreateDocumentScript(text, activate);
+            return string.IsNullOrWhiteSpace(text)
+                ? $"Created Microsoft Word document: {documentName}"
+                : $"Created Microsoft Word document: {documentName}. Initial text length: {text.Length} characters.";
+        }
+        catch (Exception ex)
+        {
+            return Err($"Failed to create Word document: {ex.Message}");
+        }
+    }
+
+    private string WordSetDocumentText(Dictionary<string, JsonElement> args)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return Err("word_set_document_text is only supported on macOS.");
+
+        string text = DesktopToolDefinitions.GetString(args, "text");
+        if (string.IsNullOrEmpty(text))
+            return Err("text is required");
+
+        string documentName = DesktopToolDefinitions.GetString(args, "document_name").Trim();
+        bool append = DesktopToolDefinitions.GetBool(args, "append");
+        bool activate = !args.ContainsKey("activate") || DesktopToolDefinitions.GetBool(args, "activate");
+
+        try
+        {
+            string resolvedDocumentName = RunWordSetDocumentTextScript(documentName, text, append, activate);
+            return append
+                ? $"Appended plain text to Microsoft Word document: {resolvedDocumentName}. Added {text.Length} characters."
+                : $"Set plain text in Microsoft Word document: {resolvedDocumentName}. New text length: {text.Length} characters.";
+        }
+        catch (Exception ex)
+        {
+            return Err($"Failed to set Word document text: {ex.Message}");
+        }
+    }
+
+    private string WordReplaceText(Dictionary<string, JsonElement> args)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return Err("word_replace_text is only supported on macOS.");
+
+        string searchText = DesktopToolDefinitions.GetString(args, "search_text");
+        string replacementText = DesktopToolDefinitions.GetString(args, "replacement_text");
+        string documentName = DesktopToolDefinitions.GetString(args, "document_name").Trim();
+        bool replaceAll = DesktopToolDefinitions.GetBool(args, "replace_all");
+        bool activate = !args.ContainsKey("activate") || DesktopToolDefinitions.GetBool(args, "activate");
+
+        if (string.IsNullOrEmpty(searchText))
+            return Err("search_text is required");
+
+        try
+        {
+            string currentText = RunWordGetDocumentTextScript(documentName, activate, out string resolvedDocumentName);
+            int occurrenceCount = CountOccurrences(currentText, searchText);
+            if (occurrenceCount == 0)
+                return Err($"The text '{searchText}' was not found in Microsoft Word document: {resolvedDocumentName}.");
+
+            int replacements = replaceAll ? occurrenceCount : 1;
+            string updatedText = replaceAll
+                ? currentText.Replace(searchText, replacementText, StringComparison.Ordinal)
+                : ReplaceFirstOccurrence(currentText, searchText, replacementText);
+
+            RunWordSetDocumentTextScript(resolvedDocumentName, updatedText, append: false, activate: activate);
+            return replaceAll
+                ? $"Replaced {replacements} occurrence(s) of '{searchText}' in Microsoft Word document: {resolvedDocumentName}."
+                : $"Replaced the first occurrence of '{searchText}' in Microsoft Word document: {resolvedDocumentName}.";
+        }
+        catch (Exception ex)
+        {
+            return Err($"Failed to replace Word document text: {ex.Message}");
+        }
+    }
+
+    private string WordFormatText(Dictionary<string, JsonElement> args)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return Err("word_format_text is only supported on macOS.");
+
+        string searchText = DesktopToolDefinitions.GetString(args, "search_text");
+        string documentName = DesktopToolDefinitions.GetString(args, "document_name").Trim();
+        bool activate = !args.ContainsKey("activate") || DesktopToolDefinitions.GetBool(args, "activate");
+
+        bool hasBold = args.ContainsKey("bold");
+        bool hasItalic = args.ContainsKey("italic");
+        bool hasUnderline = args.ContainsKey("underline");
+
+        if (string.IsNullOrWhiteSpace(searchText))
+            return Err("search_text is required");
+
+        if (!hasBold && !hasItalic && !hasUnderline)
+            return Err("At least one formatting flag is required: bold, italic, or underline.");
+
+        try
+        {
+            (string resolvedDocumentName, int formattedCount) = RunWordFormatTextScript(
+                documentName,
+                searchText,
+                hasBold,
+                DesktopToolDefinitions.GetBool(args, "bold"),
+                hasItalic,
+                DesktopToolDefinitions.GetBool(args, "italic"),
+                hasUnderline,
+                DesktopToolDefinitions.GetBool(args, "underline"),
+                activate);
+
+            if (formattedCount == 0)
+                return Err($"The text '{searchText}' was not found in Microsoft Word document: {resolvedDocumentName}.");
+
+            return $"Applied formatting to {formattedCount} matching word(s) in Microsoft Word document: {resolvedDocumentName}.";
+        }
+        catch (Exception ex)
+        {
+            return Err($"Failed to format Word document text: {ex.Message}");
+        }
     }
 
     private string OpenApplication(Dictionary<string, JsonElement> args)
@@ -1698,6 +1829,244 @@ internal sealed class DesktopToolExecutor
 
         return normalizedActual.Contains(normalizedExpected, StringComparison.OrdinalIgnoreCase)
             || normalizedExpected.Contains(normalizedActual, StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static int CountOccurrences(string source, string value)
+    {
+        if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(value))
+            return 0;
+
+        int count = 0;
+        int index = 0;
+        while ((index = source.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            index += value.Length;
+        }
+
+        return count;
+    }
+
+    internal static string ReplaceFirstOccurrence(string source, string oldValue, string newValue)
+    {
+        if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(oldValue))
+            return source;
+
+        int index = source.IndexOf(oldValue, StringComparison.Ordinal);
+        if (index < 0)
+            return source;
+
+        return string.Concat(source.AsSpan(0, index), newValue, source.AsSpan(index + oldValue.Length));
+    }
+
+    internal static string BuildWordCreateDocumentScript()
+        => """
+        on run argv
+            set requestedText to ""
+            set shouldActivate to "true"
+            if (count of argv) >= 1 then set requestedText to item 1 of argv
+            if (count of argv) >= 2 then set shouldActivate to item 2 of argv
+
+            tell application "Microsoft Word"
+                if shouldActivate is "true" then activate
+                set docRef to make new document
+                if requestedText is not "" then
+                    set content of text object of docRef to requestedText
+                end if
+                return name of docRef
+            end tell
+        end run
+        """;
+
+    internal static string BuildWordSetDocumentTextScript()
+        => """
+        on run argv
+            set requestedDocumentName to item 1 of argv
+            set requestedText to item 2 of argv
+            set appendMode to item 3 of argv
+            set shouldActivate to item 4 of argv
+
+            tell application "Microsoft Word"
+                if shouldActivate is "true" then activate
+                if (count of documents) is 0 then error "No Microsoft Word document is open."
+
+                if requestedDocumentName is "" then
+                    set docRef to active document
+                else
+                    set matchingDocuments to every document whose name is requestedDocumentName
+                    if (count of matchingDocuments) is 0 then error "No Microsoft Word document found named '" & requestedDocumentName & "'."
+                    set docRef to item 1 of matchingDocuments
+                end if
+
+                if appendMode is "true" then
+                    set content of text object of docRef to (content of text object of docRef) & requestedText
+                else
+                    set content of text object of docRef to requestedText
+                end if
+
+                return name of docRef
+            end tell
+        end run
+        """;
+
+    internal static string BuildWordGetDocumentTextScript()
+        => """
+        on run argv
+            set requestedDocumentName to item 1 of argv
+            set shouldActivate to item 2 of argv
+
+            tell application "Microsoft Word"
+                if shouldActivate is "true" then activate
+                if (count of documents) is 0 then error "No Microsoft Word document is open."
+
+                if requestedDocumentName is "" then
+                    set docRef to active document
+                else
+                    set matchingDocuments to every document whose name is requestedDocumentName
+                    if (count of matchingDocuments) is 0 then error "No Microsoft Word document found named '" & requestedDocumentName & "'."
+                    set docRef to item 1 of matchingDocuments
+                end if
+
+                return (name of docRef) & linefeed & (content of text object of docRef)
+            end tell
+        end run
+        """;
+
+    internal static string BuildWordFormatTextScript()
+        => """
+        on run argv
+            set requestedDocumentName to item 1 of argv
+            set requestedSearchText to item 2 of argv
+            set hasBoldFlag to item 3 of argv
+            set boldValue to item 4 of argv
+            set hasItalicFlag to item 5 of argv
+            set italicValue to item 6 of argv
+            set hasUnderlineFlag to item 7 of argv
+            set underlineValue to item 8 of argv
+            set shouldActivate to item 9 of argv
+
+            tell application "Microsoft Word"
+                if shouldActivate is "true" then activate
+                if (count of documents) is 0 then error "No Microsoft Word document is open."
+
+                if requestedDocumentName is "" then
+                    set docRef to active document
+                else
+                    set matchingDocuments to every document whose name is requestedDocumentName
+                    if (count of matchingDocuments) is 0 then error "No Microsoft Word document found named '" & requestedDocumentName & "'."
+                    set docRef to item 1 of matchingDocuments
+                end if
+
+                set matchingWords to words of text object of docRef whose content contains requestedSearchText
+                set formattedCount to count of matchingWords
+
+                repeat with wordRange in matchingWords
+                    if hasBoldFlag is "true" then set bold of font object of wordRange to (boldValue is "true")
+                    if hasItalicFlag is "true" then set italic of font object of wordRange to (italicValue is "true")
+                    if hasUnderlineFlag is "true" then
+                        if underlineValue is "true" then
+                            set underline of font object of wordRange to underline single
+                        else
+                            set underline of font object of wordRange to underline none
+                        end if
+                    end if
+                end repeat
+
+                return (name of docRef) & linefeed & formattedCount
+            end tell
+        end run
+        """;
+
+    private string RunWordCreateDocumentScript(string text, bool activate)
+        => RunAppleScript(BuildWordCreateDocumentScript(), text, activate ? "true" : "false").Trim();
+
+    private string RunWordSetDocumentTextScript(string documentName, string text, bool append, bool activate)
+        => RunAppleScript(BuildWordSetDocumentTextScript(), documentName, text, append ? "true" : "false", activate ? "true" : "false").Trim();
+
+    private string RunWordGetDocumentTextScript(string documentName, bool activate, out string resolvedDocumentName)
+    {
+        string output = RunAppleScript(BuildWordGetDocumentTextScript(), documentName, activate ? "true" : "false");
+        string normalized = output.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        int lineBreakIndex = normalized.IndexOf('\n');
+        if (lineBreakIndex < 0)
+        {
+            resolvedDocumentName = normalized.Trim();
+            return string.Empty;
+        }
+
+        resolvedDocumentName = normalized[..lineBreakIndex].Trim();
+        return normalized[(lineBreakIndex + 1)..];
+    }
+
+    private (string DocumentName, int FormattedCount) RunWordFormatTextScript(
+        string documentName,
+        string searchText,
+        bool hasBold,
+        bool bold,
+        bool hasItalic,
+        bool italic,
+        bool hasUnderline,
+        bool underline,
+        bool activate)
+    {
+        string output = RunAppleScript(
+            BuildWordFormatTextScript(),
+            documentName,
+            searchText,
+            hasBold ? "true" : "false",
+            bold ? "true" : "false",
+            hasItalic ? "true" : "false",
+            italic ? "true" : "false",
+            hasUnderline ? "true" : "false",
+            underline ? "true" : "false",
+            activate ? "true" : "false");
+
+        string normalized = output.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        int lineBreakIndex = normalized.IndexOf('\n');
+        if (lineBreakIndex < 0)
+            throw new InvalidOperationException("Word format script returned an unexpected result.");
+
+        string resolvedDocumentName = normalized[..lineBreakIndex].Trim();
+        string countText = normalized[(lineBreakIndex + 1)..].Trim();
+        if (!int.TryParse(countText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int formattedCount))
+            throw new InvalidOperationException("Word format script returned an invalid formatted-count value.");
+
+        return (resolvedDocumentName, formattedCount);
+    }
+
+    private static string RunAppleScript(string script, params string[] arguments)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("osascript")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        psi.ArgumentList.Add("-");
+        foreach (string argument in arguments)
+            psi.ArgumentList.Add(argument ?? string.Empty);
+
+        using var process = System.Diagnostics.Process.Start(psi)
+            ?? throw new InvalidOperationException("Failed to start osascript.");
+
+        process.StandardInput.Write(script);
+        process.StandardInput.Close();
+
+        if (!process.WaitForExit(10_000))
+        {
+            process.Kill(entireProcessTree: true);
+            throw new InvalidOperationException("Timed out while running AppleScript.");
+        }
+
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd().Trim();
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? "AppleScript failed." : stderr);
+
+        return stdout;
     }
 
     private static string NormalizeApplicationName(string applicationName)

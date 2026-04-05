@@ -107,12 +107,15 @@ public sealed class RealtimeMenuBarServerTests
     [Fact]
     public void CreateVoiceSettingsPayload_EncodesCurrentAndAvailableVoices()
     {
-        object payload = RealtimeMenuBarServer.CreateVoiceSettingsPayload("marin", ["alloy", "marin", "verse"]);
+        object payload = RealtimeMenuBarServer.CreateVoiceSettingsPayload("marin", ["alloy", "marin", "verse"], "medium", ["default", "low", "medium", "high"]);
         JsonElement json = JsonSerializer.SerializeToElement(payload);
 
         Assert.Equal("marin", json.GetProperty("currentVoice").GetString());
         string[] availableVoices = json.GetProperty("availableVoices").EnumerateArray().Select(element => element.GetString()).OfType<string>().ToArray();
         Assert.Equal(["alloy", "marin", "verse"], availableVoices);
+        Assert.Equal("medium", json.GetProperty("currentThinkingLevel").GetString());
+        string[] availableThinkingLevels = json.GetProperty("availableThinkingLevels").EnumerateArray().Select(element => element.GetString()).OfType<string>().ToArray();
+        Assert.Equal(["default", "low", "medium", "high"], availableThinkingLevels);
     }
 
     [Fact]

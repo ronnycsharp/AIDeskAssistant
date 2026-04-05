@@ -49,6 +49,52 @@ public sealed class RealtimeVoicePreferenceStoreTests
     }
 
     [Fact]
+    public void SaveThinkingLevel_ThenTryLoadThinkingLevel_RoundTripsLevel()
+    {
+        string tempFile = CreateTempSettingsPath();
+        string? original = Environment.GetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE", tempFile);
+
+            RealtimeVoicePreferenceStore.SaveThinkingLevel("high");
+
+            string? thinkingLevel = RealtimeVoicePreferenceStore.TryLoadThinkingLevel();
+
+            Assert.Equal("high", thinkingLevel);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE", original);
+            DeleteIfExists(tempFile);
+        }
+    }
+
+    [Fact]
+    public void SaveVoice_PreservesExistingThinkingLevel()
+    {
+        string tempFile = CreateTempSettingsPath();
+        string? original = Environment.GetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE", tempFile);
+
+            RealtimeVoicePreferenceStore.SaveThinkingLevel("medium");
+            RealtimeVoicePreferenceStore.SaveVoice("marin");
+
+            Assert.Equal("marin", RealtimeVoicePreferenceStore.TryLoadVoice());
+            Assert.Equal("medium", RealtimeVoicePreferenceStore.TryLoadThinkingLevel());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_REALTIME_SETTINGS_FILE", original);
+            DeleteIfExists(tempFile);
+        }
+    }
+
+    [Fact]
     public void TryLoadVoice_WithInvalidJson_ReturnsNull()
     {
         string tempFile = CreateTempSettingsPath();

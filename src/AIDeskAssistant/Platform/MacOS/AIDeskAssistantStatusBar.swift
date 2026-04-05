@@ -27,10 +27,16 @@ struct AudioLiveStartResponse: Decodable {
 struct VoiceSettingsResponse: Decodable {
     let currentVoice: String
     let availableVoices: [String]
+    let currentThinkingLevel: String
+    let availableThinkingLevels: [String]
 }
 
 struct VoiceSelectionRequest: Encodable {
     let voice: String
+}
+
+struct ThinkingSelectionRequest: Encodable {
+    let thinkingLevel: String
 }
 
 struct TokenUsage: Decodable {
@@ -949,6 +955,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
     private let backgroundView = NSVisualEffectView(frame: .zero)
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let thinkingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let textScrollView = NSScrollView(frame: .zero)
     private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -991,7 +998,9 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var playbackEngineConfigured = false
     private var accumulatedResponseText = ""
     private var availableVoices: [String] = []
+    private var availableThinkingLevels: [String] = []
     private var isUpdatingVoiceSelection = false
+    private var isUpdatingThinkingSelection = false
     private var isBusy = false
     private var pendingPlaybackChunkCount = 0
     private var pendingPlaybackDurationSeconds = 0.0
@@ -1043,6 +1052,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         voicePopup.action = #selector(changeVoice(_:))
         voicePopup.bezelStyle = .rounded
         voicePopup.contentTintColor = Self.primaryTextColor
+
+        thinkingPopup.target = self
+        thinkingPopup.action = #selector(changeThinking(_:))
+        thinkingPopup.bezelStyle = .rounded
+        thinkingPopup.contentTintColor = Self.primaryTextColor
+        thinkingPopup.toolTip = "Thinking-Level fuer unterstuetzte Chat-Modelle"
 
         textScrollView.borderType = .noBorder
         textScrollView.drawsBackground = false
@@ -1129,6 +1144,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         quitButton.toolTip = "AIDesk beenden"
 
         backgroundView.addSubview(voicePopup)
+        backgroundView.addSubview(thinkingPopup)
         backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
         backgroundView.addSubview(usageLabel)
@@ -1233,6 +1249,25 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
 
         Task { [weak self] in
             await self?.submitVoiceSelection(selectedVoice)
+        }
+    }
+
+    @objc private func changeThinking(_ sender: Any?) {
+        if isUpdatingThinkingSelection {
+            return
+        }
+
+        let index = thinkingPopup.indexOfSelectedItem
+        guard index >= 0, index < availableThinkingLevels.count else {
+            return
+        }
+
+        let selectedThinkingLevel = availableThinkingLevels[index]
+        setStatus("Thinking-Level wechselt zu \(Self.displayName(forThinkingLevel: selectedThinkingLevel)) ...")
+        thinkingPopup.isEnabled = false
+
+        Task { [weak self] in
+            await self?.submitThinkingSelection(selectedThinkingLevel)
         }
     }
 
@@ -2103,7 +2138,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let statusY = textY - 28
         let bottomRowY = Self.bottomInset
 
-        voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: 170, height: 30)
+        let voiceWidth: CGFloat = 102
+        let thinkingWidth: CGFloat = 116
+        voicePopup.frame = NSRect(x: Self.sideInset, y: topRowY, width: voiceWidth, height: 30)
+        thinkingPopup.frame = NSRect(x: voicePopup.frame.maxX + 8, y: topRowY, width: thinkingWidth, height: 30)
         quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
         quitSeparator.frame = NSRect(x: quitButton.frame.minX - 12, y: topRowY + 4, width: 1, height: 22)
         cancelButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
@@ -2218,7 +2256,37 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func applyVoiceSettings(_ settings: VoiceSettingsResponse, announceChange: Bool) {
+    private func submitThinkingSelection(_ thinkingLevel: String) async {
+        do {
+            var request = URLRequest(url: serverURL.appendingPathComponent("thinking"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(ThinkingSelectionRequest(thinkingLevel: thinkingLevel))
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Thinking-Level konnte nicht gesetzt werden"
+                await MainActor.run { [weak self] in
+                    self?.setStatus(errorMessage)
+                    self?.thinkingPopup.isEnabled = !(self?.isBusy ?? false)
+                }
+                return
+            }
+
+            let settings = try JSONDecoder().decode(VoiceSettingsResponse.self, from: data)
+            await MainActor.run { [weak self] in
+                self?.applyVoiceSettings(settings, announceChange: false, announceThinkingChange: true)
+            }
+        } catch {
+            diagnosticsLogger.log("Thinking selection failed: \(error.localizedDescription)")
+            await MainActor.run { [weak self] in
+                self?.setStatus("Thinking-Level konnte nicht gesetzt werden")
+                self?.thinkingPopup.isEnabled = !(self?.isBusy ?? false)
+            }
+        }
+    }
+
+    private func applyVoiceSettings(_ settings: VoiceSettingsResponse, announceChange: Bool, announceThinkingChange: Bool = false) {
         availableVoices = settings.availableVoices
         isUpdatingVoiceSelection = true
         voicePopup.removeAllItems()
@@ -2231,8 +2299,22 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         isUpdatingVoiceSelection = false
         voicePopup.isEnabled = !isBusy
 
+        availableThinkingLevels = settings.availableThinkingLevels
+        isUpdatingThinkingSelection = true
+        thinkingPopup.removeAllItems()
+        thinkingPopup.addItems(withTitles: settings.availableThinkingLevels.map(Self.displayName(forThinkingLevel:)))
+
+        if let index = settings.availableThinkingLevels.firstIndex(of: settings.currentThinkingLevel) {
+            thinkingPopup.selectItem(at: index)
+        }
+
+        isUpdatingThinkingSelection = false
+        thinkingPopup.isEnabled = !isBusy && !availableThinkingLevels.isEmpty
+
         if announceChange {
             setStatus("Stimme aktiv: \(Self.displayName(forVoiceId: settings.currentVoice))")
+        } else if announceThinkingChange {
+            setStatus("Thinking-Level aktiv: \(Self.displayName(forThinkingLevel: settings.currentThinkingLevel))")
         }
     }
 
@@ -2242,6 +2324,19 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
 
         return String(firstCharacter).uppercased() + voiceId.dropFirst()
+    }
+
+    private static func displayName(forThinkingLevel thinkingLevel: String) -> String {
+        switch thinkingLevel.lowercased() {
+        case "low":
+            return "Thinking: Low"
+        case "medium":
+            return "Thinking: Medium"
+        case "high":
+            return "Thinking: High"
+        default:
+            return "Thinking: Auto"
+        }
     }
 
     private func presentUsage(_ usage: TokenUsage?) {
@@ -2300,6 +2395,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         isBusy = busy
         cancelButton.isEnabled = busy
         voicePopup.isEnabled = !busy && !availableVoices.isEmpty
+        thinkingPopup.isEnabled = !busy && !availableThinkingLevels.isEmpty
         if busy {
             activityIndicator.startAnimation(nil)
         } else {

@@ -26,6 +26,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     private readonly SemaphoreSlim _turnLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
     private string _voice;
+    private string _thinkingLevel;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
     private RealtimeSessionClient? _session;
@@ -47,12 +48,17 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             ?? RealtimeVoicePreferenceStore.TryLoadVoice()
             ?? "alloy";
         _voice = NormalizeVoiceId(configuredVoice);
+        _thinkingLevel = ThinkingLevelPreference.Normalize(
+            Environment.GetEnvironmentVariable("AIDESK_THINKING_LEVEL")
+            ?? RealtimeVoicePreferenceStore.TryLoadThinkingLevel());
+        _screenshotAnalysisService?.SetThinkingLevel(_thinkingLevel);
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
         _debugLogger?.LogHistoryEntry("system", AIService.BuildSystemPrompt());
         MenuBarActivityState.Reset("Bereit", "AIDesk ist bereit.");
     }
 
     public string CurrentVoice => _voice;
+    public string CurrentThinkingLevel => _thinkingLevel;
 
     public IReadOnlyList<string> GetAvailableVoices()
     {
@@ -62,6 +68,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
         return [currentVoice, .. BuiltInVoiceIds];
     }
+
+    public IReadOnlyList<string> GetAvailableThinkingLevels()
+        => ThinkingLevelPreference.GetAvailableLevels();
 
     public async Task<string> SetVoiceAsync(string voiceId, CancellationToken ct = default)
     {
@@ -86,6 +95,25 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             {
                 _turnLock.Release();
             }
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    public async Task<string> SetThinkingLevelAsync(string thinkingLevel, CancellationToken ct = default)
+    {
+        string normalizedThinkingLevel = ThinkingLevelPreference.Normalize(thinkingLevel);
+
+        await _sessionLock.WaitAsync(ct);
+        try
+        {
+            _thinkingLevel = normalizedThinkingLevel;
+            Environment.SetEnvironmentVariable("AIDESK_THINKING_LEVEL", normalizedThinkingLevel);
+            RealtimeVoicePreferenceStore.SaveThinkingLevel(normalizedThinkingLevel);
+            _screenshotAnalysisService?.SetThinkingLevel(normalizedThinkingLevel);
+            return normalizedThinkingLevel;
         }
         finally
         {

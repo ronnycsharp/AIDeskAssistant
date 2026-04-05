@@ -26,6 +26,10 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("double_click",       names);
         Assert.Contains("scroll",             names);
         Assert.Contains("type_text",          names);
+        Assert.Contains("word_create_document", names);
+        Assert.Contains("word_set_document_text", names);
+        Assert.Contains("word_replace_text", names);
+        Assert.Contains("word_format_text", names);
         Assert.Contains("press_key",          names);
         Assert.Contains("open_application",   names);
         Assert.Contains("focus_application",  names);
@@ -151,6 +155,10 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("wait_for_ui_element", allDescriptions);
         Assert.Contains("assert_state", allDescriptions);
         Assert.Contains("read_screen_text", allDescriptions);
+        Assert.Contains("word_create_document", allDescriptions);
+        Assert.Contains("word_set_document_text", allDescriptions);
+        Assert.Contains("word_replace_text", allDescriptions);
+        Assert.Contains("word_format_text", allDescriptions);
     }
 
     [Fact]

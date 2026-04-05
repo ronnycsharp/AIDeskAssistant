@@ -100,7 +100,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
 
             if (context.Request.HttpMethod == "GET" && path == "/voices")
             {
-                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(_assistant.CurrentVoice, _assistant.GetAvailableVoices()), ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(_assistant.CurrentVoice, _assistant.GetAvailableVoices(), _assistant.CurrentThinkingLevel, _assistant.GetAvailableThinkingLevels()), ct);
                 return;
             }
 
@@ -114,7 +114,21 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 }
 
                 string currentVoice = await _assistant.SetVoiceAsync(request.Voice, ct);
-                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(currentVoice, _assistant.GetAvailableVoices()), ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(currentVoice, _assistant.GetAvailableVoices(), _assistant.CurrentThinkingLevel, _assistant.GetAvailableThinkingLevels()), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/thinking")
+            {
+                ThinkingRequest? request = await JsonSerializer.DeserializeAsync<ThinkingRequest>(context.Request.InputStream, JsonOptions, ct);
+                if (request is null || string.IsNullOrWhiteSpace(request.ThinkingLevel))
+                {
+                    await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new { error = "Thinking level is required." }, ct);
+                    return;
+                }
+
+                string currentThinkingLevel = await _assistant.SetThinkingLevelAsync(request.ThinkingLevel, ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(_assistant.CurrentVoice, _assistant.GetAvailableVoices(), currentThinkingLevel, _assistant.GetAvailableThinkingLevels()), ct);
                 return;
             }
 
@@ -331,10 +345,12 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         };
     }
 
-    internal static object CreateVoiceSettingsPayload(string currentVoice, IReadOnlyList<string> availableVoices) => new
+    internal static object CreateVoiceSettingsPayload(string currentVoice, IReadOnlyList<string> availableVoices, string currentThinkingLevel, IReadOnlyList<string> availableThinkingLevels) => new
     {
         currentVoice,
         availableVoices,
+        currentThinkingLevel,
+        availableThinkingLevels,
     };
 
     internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
@@ -434,5 +450,10 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     private sealed class VoiceRequest
     {
         public string Voice { get; set; } = string.Empty;
+    }
+
+    private sealed class ThinkingRequest
+    {
+        public string ThinkingLevel { get; set; } = string.Empty;
     }
 }

@@ -16,10 +16,26 @@ internal sealed class ScreenshotAnalysisService : IScreenshotAnalysisService
         """;
 
     private readonly ChatClient _client;
+    private readonly string _model;
+    private string _thinkingLevel;
 
     public ScreenshotAnalysisService(string apiKey, string model)
     {
         _client = new ChatClient(model, apiKey);
+        _model = model;
+        _thinkingLevel = ThinkingLevelPreference.Normalize(
+            Environment.GetEnvironmentVariable("AIDESK_THINKING_LEVEL")
+            ?? RealtimeVoicePreferenceStore.TryLoadThinkingLevel());
+    }
+
+    public string CurrentThinkingLevel => _thinkingLevel;
+
+    public IReadOnlyList<string> GetAvailableThinkingLevels() => ThinkingLevelPreference.GetAvailableLevels();
+
+    public string SetThinkingLevel(string thinkingLevel)
+    {
+        _thinkingLevel = ThinkingLevelPreference.Normalize(thinkingLevel);
+        return _thinkingLevel;
     }
 
     public async Task<string?> AnalyzeAsync(ScreenshotModelAttachment attachment, CancellationToken ct = default)
@@ -34,9 +50,12 @@ internal sealed class ScreenshotAnalysisService : IScreenshotAnalysisService
             parts.Add(ChatMessageContentPart.CreateImagePart(BinaryData.FromBytes(supplementalImage.Bytes), supplementalImage.MediaType, ChatImageDetailLevel.High));
 
         UserChatMessage userMessage = new(parts.ToArray());
+        ChatCompletionOptions options = new();
+        ThinkingLevelPreference.ApplyTo(options, _model, _thinkingLevel);
 
         ChatCompletion completion = await _client.CompleteChatAsync(
             [new SystemChatMessage(SystemPrompt), userMessage],
+            options,
             cancellationToken: ct);
 
         string analysis = string.Concat(completion.Content.Select(static part => part.Text)).Trim();

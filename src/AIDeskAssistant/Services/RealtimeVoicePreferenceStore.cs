@@ -14,19 +14,15 @@ internal static class RealtimeVoicePreferenceStore
 
     public static string? TryLoadVoice()
     {
-        if (!File.Exists(SettingsFilePath))
-            return null;
+        SettingsFile? settings = TryReadSettings();
+        string? voice = settings?.Voice?.Trim();
+        return string.IsNullOrWhiteSpace(voice) ? null : voice;
+    }
 
-        try
-        {
-            VoicePreferenceFile? settings = JsonSerializer.Deserialize<VoicePreferenceFile>(File.ReadAllText(SettingsFilePath), JsonOptions);
-            string? voice = settings?.Voice?.Trim();
-            return string.IsNullOrWhiteSpace(voice) ? null : voice;
-        }
-        catch
-        {
-            return null;
-        }
+    public static string? TryLoadThinkingLevel()
+    {
+        SettingsFile? settings = TryReadSettings();
+        return settings is null ? null : ThinkingLevelPreference.Normalize(settings.ThinkingLevel);
     }
 
     public static void SaveVoice(string voice)
@@ -36,18 +32,43 @@ internal static class RealtimeVoicePreferenceStore
 
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsFilePath)!);
 
-        VoicePreferenceFile settings = new()
-        {
-            Voice = voice.Trim(),
-            UpdatedAtUtc = DateTimeOffset.UtcNow,
-        };
+        SettingsFile settings = TryReadSettings() ?? new SettingsFile();
+        settings.Voice = voice.Trim();
+        settings.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
         File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(settings, JsonOptions));
     }
 
-    private sealed class VoicePreferenceFile
+    public static void SaveThinkingLevel(string thinkingLevel)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsFilePath)!);
+
+        SettingsFile settings = TryReadSettings() ?? new SettingsFile();
+        settings.ThinkingLevel = ThinkingLevelPreference.Normalize(thinkingLevel);
+        settings.UpdatedAtUtc = DateTimeOffset.UtcNow;
+
+        File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(settings, JsonOptions));
+    }
+
+    private static SettingsFile? TryReadSettings()
+    {
+        if (!File.Exists(SettingsFilePath))
+            return null;
+
+        try
+        {
+            return JsonSerializer.Deserialize<SettingsFile>(File.ReadAllText(SettingsFilePath), JsonOptions);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private sealed class SettingsFile
     {
         public string Voice { get; set; } = string.Empty;
+        public string ThinkingLevel { get; set; } = ThinkingLevelPreference.Default;
         public DateTimeOffset UpdatedAtUtc { get; set; }
     }
 }

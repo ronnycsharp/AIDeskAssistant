@@ -47,6 +47,9 @@ public sealed class AIServiceTests
         Assert.Contains("Never type words like 'up', 'down', 'left', or 'right' into a cell", prompt);
         Assert.Contains("press_key with 'cmd+n'", prompt);
         Assert.Contains("do not keep sending 'cmd+n' in a loop", prompt);
+        Assert.Contains("word_create_document, word_set_document_text, word_replace_text, and word_format_text", prompt);
+        Assert.Contains("Before attempting multi-step Word UI editing in realtime mode", prompt);
+        Assert.Contains("direct content changes and still verify the visible result in Word afterward", prompt);
         Assert.Contains("the page is blank, the requested text is not visible, the desired result is not confirmed, or the word count is still 0", prompt);
         Assert.Contains("do not use the Find/Search UI as the replacement target", prompt);
         Assert.Contains("cmd+f or cmd+g may highlight a match, but that is not proof", prompt);

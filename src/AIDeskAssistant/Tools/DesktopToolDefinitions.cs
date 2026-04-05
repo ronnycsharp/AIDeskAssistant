@@ -334,6 +334,125 @@ internal static class DesktopToolDefinitions
         ),
 
           new(
+            "word_create_document",
+            "On macOS, creates a new Microsoft Word document through Word's native AppleScript interface. Prefer this for plain-text Word document creation instead of fragile UI navigation through the start screen.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Optional initial plain-text document content to write immediately after creating the document."
+                },
+                "activate": {
+                  "type": "boolean",
+                  "description": "When true, activates Microsoft Word before creating the document. Defaults to true."
+                }
+              }
+            }
+            """)
+        ),
+
+          new(
+            "word_set_document_text",
+            "On macOS, sets or appends plain text in a Microsoft Word document through Word's native AppleScript interface. Prefer this for plain-text document content updates when formatting preservation is not required.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Plain text to write into the target Word document."
+                },
+                "document_name": {
+                  "type": "string",
+                  "description": "Optional Word document name. When omitted, the active document is used."
+                },
+                "append": {
+                  "type": "boolean",
+                  "description": "When true, appends the text to the current document content instead of replacing it."
+                },
+                "activate": {
+                  "type": "boolean",
+                  "description": "When true, activates Microsoft Word before writing. Defaults to true."
+                }
+              },
+              "required": ["text"]
+            }
+            """)
+        ),
+
+          new(
+            "word_replace_text",
+            "On macOS, replaces plain text inside a Microsoft Word document through Word's native AppleScript interface. Prefer this over search-panel UI automation for straightforward Word text replacement tasks.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "search_text": {
+                  "type": "string",
+                  "description": "Plain text to search for in the target Word document."
+                },
+                "replacement_text": {
+                  "type": "string",
+                  "description": "Plain text that replaces the matched search text."
+                },
+                "document_name": {
+                  "type": "string",
+                  "description": "Optional Word document name. When omitted, the active document is used."
+                },
+                "replace_all": {
+                  "type": "boolean",
+                  "description": "When true, replace every occurrence. Otherwise only the first occurrence is replaced."
+                },
+                "activate": {
+                  "type": "boolean",
+                  "description": "When true, activates Microsoft Word before replacing. Defaults to true."
+                }
+              },
+              "required": ["search_text", "replacement_text"]
+            }
+            """)
+        ),
+
+          new(
+            "word_format_text",
+            "On macOS, applies simple formatting like bold, italic, or underline to matching Microsoft Word words through Word's native AppleScript interface. Prefer this for straightforward word-level formatting instead of fragile selection-based UI automation.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "search_text": {
+                  "type": "string",
+                  "description": "Word text to match for formatting. This tool is best for straightforward word-level matches."
+                },
+                "document_name": {
+                  "type": "string",
+                  "description": "Optional Word document name. When omitted, the active document is used."
+                },
+                "bold": {
+                  "type": "boolean",
+                  "description": "Optional bold state to apply to matching words."
+                },
+                "italic": {
+                  "type": "boolean",
+                  "description": "Optional italic state to apply to matching words."
+                },
+                "underline": {
+                  "type": "boolean",
+                  "description": "Optional underline state to apply to matching words."
+                },
+                "activate": {
+                  "type": "boolean",
+                  "description": "When true, activates Microsoft Word before formatting. Defaults to true."
+                }
+              },
+              "required": ["search_text"]
+            }
+            """)
+        ),
+
+          new(
             "press_key",
             "Presses a keyboard key or key combination such as 'enter', 'ctrl+c', 'alt+F4', 'cmd+space'. Use this for enter, return, tab, escape, arrows, delete, and shortcuts instead of typing those words with type_text.",
             BinaryData.FromString("""

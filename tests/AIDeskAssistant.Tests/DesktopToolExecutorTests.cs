@@ -422,6 +422,64 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void CountOccurrences_ReturnsExpectedCount()
+    {
+        int count = DesktopToolExecutor.CountOccurrences("alpha beta alpha gamma alpha", "alpha");
+
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public void ReplaceFirstOccurrence_ReplacesOnlyFirstMatch()
+    {
+        string updated = DesktopToolExecutor.ReplaceFirstOccurrence("alpha beta alpha", "alpha", "omega");
+
+        Assert.Equal("omega beta alpha", updated);
+    }
+
+    [Fact]
+    public void BuildWordCreateDocumentScript_UsesNewDocumentAndArgv()
+    {
+        string script = DesktopToolExecutor.BuildWordCreateDocumentScript();
+
+        Assert.Contains("on run argv", script);
+        Assert.Contains("set docRef to make new document", script);
+        Assert.Contains("set content of text object of docRef to requestedText", script);
+        Assert.Contains("return name of docRef", script);
+    }
+
+    [Fact]
+    public void BuildWordSetDocumentTextScript_ResolvesDocumentByNameOrActiveDocument()
+    {
+        string script = DesktopToolExecutor.BuildWordSetDocumentTextScript();
+
+        Assert.Contains("if requestedDocumentName is \"\" then", script);
+        Assert.Contains("set docRef to active document", script);
+        Assert.Contains("set matchingDocuments to every document whose name is requestedDocumentName", script);
+        Assert.Contains("set content of text object of docRef", script);
+    }
+
+    [Fact]
+    public void BuildWordGetDocumentTextScript_ReturnsDocumentNameAndContent()
+    {
+        string script = DesktopToolExecutor.BuildWordGetDocumentTextScript();
+
+        Assert.Contains("return (name of docRef) & linefeed & (content of text object of docRef)", script);
+    }
+
+    [Fact]
+    public void BuildWordFormatTextScript_FormatsMatchingWords()
+    {
+        string script = DesktopToolExecutor.BuildWordFormatTextScript();
+
+        Assert.Contains("set matchingWords to words of text object of docRef whose content contains requestedSearchText", script);
+        Assert.Contains("set bold of font object of wordRange", script);
+        Assert.Contains("set italic of font object of wordRange", script);
+        Assert.Contains("set underline of font object of wordRange to underline single", script);
+        Assert.Contains("return (name of docRef) & linefeed & formattedCount", script);
+    }
+
+    [Fact]
     public void Execute_TypeText_UsesKeyboardService()
     {
         string result = _sut.Execute("type_text", "{\"text\":\"Hello\"}");
