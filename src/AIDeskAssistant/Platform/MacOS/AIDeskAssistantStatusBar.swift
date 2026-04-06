@@ -113,7 +113,8 @@ final class WakeWordEngine {
     private var recognitionTask: SFSpeechRecognitionTask?
     private let engine = AVAudioEngine()
     private var targetPhrase = ""
-    private var onDetected: (() -> Void)?
+    var onDetected: (() -> Void)?
+    var onUnsupported: ((String) -> Void)?
     private var restartTimer: Timer?
     private var isActive = false
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
@@ -146,6 +147,7 @@ final class WakeWordEngine {
         restartTimer = nil
         tearDown()
         onDetected = nil
+        onUnsupported = nil
     }
 
     private func startRecognitionSession() {
@@ -163,13 +165,19 @@ final class WakeWordEngine {
             return
         }
 
+        guard recognizer.supportsOnDeviceRecognition else {
+            diagnosticsLogger.log("Wake word: on-device recognition not supported on this device – offline detection unavailable")
+            DispatchQueue.main.async { [weak self] in
+                self?.onUnsupported?("Wakeword: On-Device-Erkennung wird auf diesem Gerät nicht unterstützt.")
+            }
+            return
+        }
+
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let request = recognitionRequest else { return }
 
         request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.requiresOnDeviceRecognition = true
         request.contextualStrings = [targetPhrase]
 
         let inputNode = engine.inputNode
@@ -1085,6 +1093,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
     private static let defaultTextHeight: CGFloat = 36
     private static let maximumTextHeight: CGFloat = 108
     private static let maximumStatusLength = 240
+    private static let defaultWakeWord = "Hey Jarvis"
     private static let primaryTextColor = NSColor(calibratedRed: 0.12, green: 0.14, blue: 0.17, alpha: 0.96)
     private static let secondaryTextColor = NSColor(calibratedRed: 0.25, green: 0.29, blue: 0.35, alpha: 0.92)
     private static let accentTextColor = NSColor(calibratedRed: 0.09, green: 0.38, blue: 0.60, alpha: 0.98)
@@ -1158,7 +1167,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
     private var isBusy = false
     private var wakeWordEngine: WakeWordEngine?
     private var isWakeWordEnabled = false
-    private var currentWakeWord = "Hey Jarvis"
+    private var currentWakeWord = StatusBarViewController.defaultWakeWord
     private var isUpdatingWakeWordCheckbox = false
     private var activityPollTimer: Timer?
     private var pendingPlaybackChunkCount = 0
@@ -2604,13 +2613,13 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
             stopWakeWordListening()
         }
         Task { [weak self] in
-            await self?.submitWakeWordUpdate(enabled: enabled, wakeWord: self?.currentWakeWord ?? "Hey Jarvis")
+            await self?.submitWakeWordUpdate(enabled: enabled, wakeWord: self?.currentWakeWord ?? Self.defaultWakeWord)
         }
     }
 
     private func applyWakeWordSettings(_ settings: WakeWordSettingsResponse) {
         currentWakeWord = settings.wakeWord.trimmingCharacters(in: .whitespaces).isEmpty
-            ? "Hey Jarvis"
+            ? Self.defaultWakeWord
             : settings.wakeWord
         isUpdatingWakeWordCheckbox = true
         wakeWordCheckbox.state = settings.enabled ? .on : .off
@@ -2678,6 +2687,17 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
         }
         if wakeWordEngine == nil {
             wakeWordEngine = WakeWordEngine(diagnosticsLogger: diagnosticsLogger)
+        }
+        wakeWordEngine?.onUnsupported = { [weak self] message in
+            guard let self else { return }
+            self.isWakeWordEnabled = false
+            self.isUpdatingWakeWordCheckbox = true
+            self.wakeWordCheckbox.state = .off
+            self.isUpdatingWakeWordCheckbox = false
+            self.setStatus(message)
+            Task { [weak self] in
+                await self?.submitWakeWordUpdate(enabled: false, wakeWord: self?.currentWakeWord ?? Self.defaultWakeWord)
+            }
         }
         wakeWordEngine?.startListening(phrase: currentWakeWord) { [weak self] in
             self?.onWakeWordDetected()
