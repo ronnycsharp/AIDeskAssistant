@@ -395,7 +395,7 @@ static void PrintHelp()
           "args": ["run", "--project", "<path-to-AIDeskAssistant.csproj>", "--", "--mcp"],
           "env": {
             "OPENAI_API_KEY": "sk-...",
-            "AIDESK_LANGUAGE": "de"
+            "AIDESK_LANGUAGE": "de"  // "de" = German (default), "en" = English
           }
         }
       }

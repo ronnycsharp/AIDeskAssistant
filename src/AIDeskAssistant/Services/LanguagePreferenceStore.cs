@@ -68,7 +68,9 @@ internal static class LanguagePreferenceStore
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsFilePath)!);
+            string? dir = Path.GetDirectoryName(SettingsFilePath);
+            if (dir is null) return;
+            Directory.CreateDirectory(dir);
             SettingsFile settings = TryReadSettingsFile() ?? new SettingsFile();
             settings.Language = language;
             settings.UpdatedAtUtc = DateTimeOffset.UtcNow;
