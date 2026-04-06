@@ -182,6 +182,51 @@ This creates a local session folder under `.aidesk-debug/` with tool traces, scr
 | `AIDESK_MENU_BAR_RMS_CALIBRATION_SECONDS` | `0.35` | Initial calibration period for background RMS |
 | `AIDESK_MENU_BAR_NOISE_FLOOR_MULTIPLIER` | `2.5` | Adaptive multiplier for speech threshold calculation |
 | `AIDESK_MENU_BAR_NOISE_FLOOR_PADDING` | `0.002` | Additional safety margin for adaptive speech threshold |
+| `AIDESK_MENU_BAR_PORT` | random | Fixed TCP port for the local HTTP server (required for Siri Shortcut integration) |
+| `AIDESK_MENU_BAR_PORT_FILE` | `~/AppData/AIDeskAssistant/menu-bar-port.txt` | File where the active port is written on startup |
+
+## Siri Shortcut ("Hey Siri, starte AIDesk")
+
+You can trigger AIDesk with a voice command via Siri Shortcuts without any third-party wake-word library.
+
+### How it works
+
+1. On startup, the AIDesk menu bar host writes its HTTP port to a file (`AIDESK_MENU_BAR_PORT_FILE`).
+2. A Siri Shortcut calls `POST http://127.0.0.1:<port>/start-recording`.
+3. The macOS menu bar app polls `GET /recording-request` every 0.5 s and starts recording as soon as a pending request is found.
+
+Because localhost never leaves the machine this works fully offline.
+
+### Setup
+
+#### 1. Choose a fixed port (recommended)
+
+Set a fixed port so the Shortcut URL stays stable across restarts:
+
+```bash
+# Add to your .env or shell profile
+AIDESK_MENU_BAR_PORT=51515
+```
+
+Without this, a random port is used and the port file must be read each time.
+
+#### 2. Create the Shortcut
+
+Open **Shortcuts.app** on macOS (or iOS/iPadOS if you want it on your phone too) and create a new Shortcut with the following action:
+
+| Field | Value |
+|-------|-------|
+| Action | **Get Contents of URL** |
+| URL | `http://127.0.0.1:51515/start-recording` |
+| Method | `POST` |
+
+Name the Shortcut **"Starte AIDesk"** (or any phrase you like).
+
+#### 3. Add it to Siri
+
+In the Shortcut's detail view tap **Add to Siri** and record the phrase, e.g. _"Starte AIDesk"_.
+
+From then on, saying **"Hey Siri, starte AIDesk"** will POST to the local server and AIDesk will begin listening.
 
 ## Available Desktop Tools
 

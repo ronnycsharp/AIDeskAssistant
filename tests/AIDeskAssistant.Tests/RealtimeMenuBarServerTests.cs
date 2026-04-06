@@ -157,3 +157,124 @@ public sealed class RealtimeMenuBarServerTests
         }
     }
 }
+
+public sealed class RealtimeMenuBarServerStartRecordingTests : IAsyncDisposable
+{
+    private readonly RealtimeMenuBarServer _server;
+    private readonly HttpClient _client = new();
+
+    public RealtimeMenuBarServerStartRecordingTests()
+    {
+        _server = new RealtimeMenuBarServer(new StubMenuBarAssistantService());
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _server.DisposeAsync();
+        _client.Dispose();
+    }
+
+    [Fact]
+    public async Task PostStartRecording_SetsPendingFlag()
+    {
+        await _server.StartAsync();
+
+        HttpResponseMessage startResponse = await _client.PostAsync(_server.BaseUri + "start-recording", null);
+        Assert.Equal(System.Net.HttpStatusCode.OK, startResponse.StatusCode);
+
+        HttpResponseMessage pollResponse = await _client.GetAsync(_server.BaseUri + "recording-request");
+        Assert.Equal(System.Net.HttpStatusCode.OK, pollResponse.StatusCode);
+        string json = await pollResponse.Content.ReadAsStringAsync();
+        using JsonDocument doc = JsonDocument.Parse(json);
+        Assert.True(doc.RootElement.GetProperty("pending").GetBoolean());
+    }
+
+    [Fact]
+    public async Task GetRecordingRequest_ClearsFlagAfterReading()
+    {
+        await _server.StartAsync();
+
+        await _client.PostAsync(_server.BaseUri + "start-recording", null);
+
+        // First read consumes the flag.
+        HttpResponseMessage first = await _client.GetAsync(_server.BaseUri + "recording-request");
+        using JsonDocument firstDoc = JsonDocument.Parse(await first.Content.ReadAsStringAsync());
+        Assert.True(firstDoc.RootElement.GetProperty("pending").GetBoolean());
+
+        // Second read sees no pending request.
+        HttpResponseMessage second = await _client.GetAsync(_server.BaseUri + "recording-request");
+        using JsonDocument secondDoc = JsonDocument.Parse(await second.Content.ReadAsStringAsync());
+        Assert.False(secondDoc.RootElement.GetProperty("pending").GetBoolean());
+    }
+
+    [Fact]
+    public async Task GetRecordingRequest_ReturnsFalseWhenNoPendingRequest()
+    {
+        await _server.StartAsync();
+
+        HttpResponseMessage response = await _client.GetAsync(_server.BaseUri + "recording-request");
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        using JsonDocument doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.False(doc.RootElement.GetProperty("pending").GetBoolean());
+    }
+
+    [Fact]
+    public async Task StartAsync_WritesPortFile()
+    {
+        string tempFile = Path.Combine(Path.GetTempPath(), "AIDeskAssistant.Tests", $"port-{Guid.NewGuid():N}.txt");
+        string? original = Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE");
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE", tempFile);
+            await _server.StartAsync();
+
+            Assert.True(File.Exists(tempFile));
+            string content = File.ReadAllText(tempFile).Trim();
+            Assert.True(int.TryParse(content, out int port) && port > 0);
+            Assert.Equal(_server.BaseUri.Port, port);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE", original);
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
+    public void PortFilePath_UsesEnvOverride()
+    {
+        string? original = Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE");
+        try
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE", "/tmp/custom-port.txt");
+            Assert.Equal("/tmp/custom-port.txt", RealtimeMenuBarServer.PortFilePath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE", original);
+        }
+    }
+
+    private sealed class StubMenuBarAssistantService : IMenuBarAssistantService
+    {
+        public string CurrentVoice => "alloy";
+        public string CurrentThinkingLevel => "auto";
+        public bool WakeWordEnabled => false;
+        public string CurrentWakeWord => "Hey Jarvis";
+        public IReadOnlyList<string> GetAvailableVoices() => [];
+        public IReadOnlyList<string> GetAvailableThinkingLevels() => [];
+        public Task<string> SetVoiceAsync(string voiceId, CancellationToken ct = default) => Task.FromResult(voiceId);
+        public Task<string> SetThinkingLevelAsync(string thinkingLevel, CancellationToken ct = default) => Task.FromResult(thinkingLevel);
+        public Task<(bool Enabled, string WakeWord)> SetWakeWordAsync(bool enabled, string wakeWord, CancellationToken ct = default) => Task.FromResult((enabled, wakeWord));
+        public Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default) => Task.FromResult(new RealtimeAssistantTurnResult(text, null));
+        public async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamTextAsync(string text, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default) { await Task.CompletedTask; yield break; }
+        public Task<RealtimeAssistantTurnResult> SendWaveAudioAsync(byte[] waveBytes, CancellationToken ct = default) => Task.FromResult(new RealtimeAssistantTurnResult(string.Empty, null));
+        public async IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamWaveAudioAsync(byte[] waveBytes, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default) { await Task.CompletedTask; yield break; }
+        public Task<string> StartLiveAudioInputAsync(CancellationToken ct = default) => Task.FromResult(Guid.NewGuid().ToString("N"));
+        public Task AppendLiveAudioChunkAsync(string sessionId, byte[] pcmBytes, CancellationToken ct = default) => Task.CompletedTask;
+        public async IAsyncEnumerable<RealtimeAssistantStreamEvent> CommitLiveAudioInputAsync(string sessionId, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default) { await Task.CompletedTask; yield break; }
+        public Task<bool> CancelLiveAudioInputAsync(string sessionId, CancellationToken ct = default) => Task.FromResult(true);
+        public Task<bool> CancelActiveTurnAsync(CancellationToken ct = default) => Task.FromResult(false);
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}

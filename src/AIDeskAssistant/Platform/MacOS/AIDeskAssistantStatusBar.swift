@@ -50,6 +50,10 @@ struct WakeWordUpdateRequest: Encodable {
     let wakeWord: String
 }
 
+struct RecordingRequestResponse: Decodable {
+    let pending: Bool
+}
+
 struct TokenUsage: Decodable {
     let inputTokens: Int?
     let inputTextTokens: Int?
@@ -2532,6 +2536,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
         refreshActivityStatus()
         activityPollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             self?.refreshActivityStatus()
+            self?.checkRecordingRequest()
         }
     }
 
@@ -2547,6 +2552,27 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
             toolStatusLabel.stringValue = "Tool: \(activeTool)"
         } else {
             toolStatusLabel.stringValue = "Tool: -"
+        }
+    }
+
+    private func checkRecordingRequest() {
+        guard liveAudioSessionId == nil, !isBusy else { return }
+
+        Task { [weak self] in
+            guard let self else { return }
+            guard let url = URL(string: "\(self.serverURL.absoluteString)recording-request") else { return }
+            guard let (data, response) = try? await self.hostSession.data(from: url),
+                  let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let json = try? JSONDecoder().decode(RecordingRequestResponse.self, from: data),
+                  json.pending else { return }
+
+            await MainActor.run { [weak self] in
+                guard let self, self.liveAudioSessionId == nil, !self.isBusy else { return }
+                self.diagnosticsLogger.log("Recording request received via /recording-request (Siri Shortcut)")
+                self.stopWakeWordListening()
+                self.startRecording(autoFollowUp: false, interruptCurrentWork: false)
+            }
         }
     }
 

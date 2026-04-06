@@ -17,6 +17,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     private readonly HttpListener _listener = new();
     private readonly CancellationTokenSource _cts = new();
     private Task? _serverTask;
+    private int _recordingRequestPending = 0; // 0 = none, 1 = pending; accessed with Interlocked
 
     public RealtimeMenuBarServer(IMenuBarAssistantService assistant)
     {
@@ -28,14 +29,43 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     internal static string DiagnosticsLogFilePath => Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_SERVER_LOG_FILE")
         ?? Path.Combine(Path.GetTempPath(), "AIDeskAssistant", "menu-bar-host.log");
 
+    internal static string PortFilePath => Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_PORT_FILE")
+        ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "AIDeskAssistant",
+            "menu-bar-port.txt");
+
     public Task StartAsync(CancellationToken ct = default)
     {
-        int port = GetFreePort();
+        int port = ResolvePort();
         BaseUri = new Uri($"http://127.0.0.1:{port}/");
         _listener.Prefixes.Add(BaseUri.AbsoluteUri);
         _listener.Start();
+        WritePortFile(port);
         _serverTask = Task.Run(() => AcceptLoopAsync(_cts.Token), ct);
         return Task.CompletedTask;
+    }
+
+    private static int ResolvePort()
+    {
+        string? configured = Environment.GetEnvironmentVariable("AIDESK_MENU_BAR_PORT");
+        if (!string.IsNullOrWhiteSpace(configured) && int.TryParse(configured.Trim(), out int parsed) && parsed > 0 && parsed <= 65535)
+            return parsed;
+        return GetFreePort();
+    }
+
+    private static void WritePortFile(int port)
+    {
+        try
+        {
+            string path = PortFilePath;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, port.ToString());
+        }
+        catch
+        {
+            // Non-fatal: Siri Shortcut integration is optional.
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -239,6 +269,20 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 string wakeWord = string.IsNullOrWhiteSpace(request.WakeWord) ? _assistant.CurrentWakeWord : request.WakeWord;
                 (bool newEnabled, string newWakeWord) = await _assistant.SetWakeWordAsync(enabled, wakeWord, ct);
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateWakeWordPayload(newEnabled, newWakeWord), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/start-recording")
+            {
+                Interlocked.Exchange(ref _recordingRequestPending, 1);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { ok = true }, ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "GET" && path == "/recording-request")
+            {
+                bool pending = Interlocked.Exchange(ref _recordingRequestPending, 0) == 1;
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, new { pending }, ct);
                 return;
             }
 
