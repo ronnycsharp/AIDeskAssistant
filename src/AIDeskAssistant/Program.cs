@@ -1,10 +1,12 @@
 using AIDeskAssistant;
+using AIDeskAssistant.Mcp;
 using AIDeskAssistant.Platform.MacOS;
 using AIDeskAssistant.Services;
 using AIDeskAssistant.Tools;
 
 bool menuBarStatusRequested = args.Contains("--menu-bar-status", StringComparer.OrdinalIgnoreCase);
 bool menuBarStopRequested = args.Contains("--menu-bar-stop", StringComparer.OrdinalIgnoreCase);
+bool mcpRequested = args.Contains("--mcp", StringComparer.OrdinalIgnoreCase);
 
 if (menuBarStatusRequested)
 {
@@ -19,6 +21,62 @@ if (menuBarStopRequested)
     Console.WriteLine(message);
     Console.ResetColor();
     return stopped ? 0 : 1;
+}
+
+// ── MCP server mode ──────────────────────────────────────────────────────────
+// In MCP mode stdout is owned by the protocol – suppress the banner and skip the
+// interactive REPL.  All diagnostic output goes to stderr.
+if (mcpRequested)
+{
+    string? mcpEnvFilePath = EnvironmentFileLoader.LoadFromStandardLocations();
+
+    // --api-key <value> can override the environment variable.
+    string? cliApiKey = GetNamedArg(args, "--api-key");
+    if (!string.IsNullOrWhiteSpace(cliApiKey))
+        Environment.SetEnvironmentVariable("OPENAI_API_KEY", cliApiKey);
+
+    string apiKeyMcp = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+    if (string.IsNullOrWhiteSpace(apiKeyMcp))
+    {
+        Console.Error.WriteLine("[AIDeskAssistant MCP] No API key found. " +
+            "Set OPENAI_API_KEY in the environment or pass --api-key <key>.");
+        return 1;
+    }
+
+    IScreenshotService screenshotServiceMcp;
+    IMouseService      mouseServiceMcp;
+    IKeyboardService   keyboardServiceMcp;
+    ITerminalService   terminalServiceMcp;
+    IWindowService     windowServiceMcp;
+    IUiAutomationService uiAutomationServiceMcp;
+    ITextRecognitionService textRecognitionServiceMcp;
+
+    try
+    {
+        screenshotServiceMcp    = PlatformServiceFactory.CreateScreenshotService();
+        mouseServiceMcp         = PlatformServiceFactory.CreateMouseService();
+        keyboardServiceMcp      = PlatformServiceFactory.CreateKeyboardService();
+        terminalServiceMcp      = PlatformServiceFactory.CreateTerminalService();
+        windowServiceMcp        = PlatformServiceFactory.CreateWindowService();
+        uiAutomationServiceMcp  = PlatformServiceFactory.CreateUiAutomationService();
+        textRecognitionServiceMcp = PlatformServiceFactory.CreateTextRecognitionService();
+    }
+    catch (PlatformNotSupportedException ex)
+    {
+        Console.Error.WriteLine($"[AIDeskAssistant MCP] Platform error: {ex.Message}");
+        return 1;
+    }
+
+    var executorMcp = new DesktopToolExecutor(
+        screenshotServiceMcp, mouseServiceMcp, keyboardServiceMcp,
+        terminalServiceMcp, windowServiceMcp, uiAutomationServiceMcp,
+        textRecognitionServiceMcp);
+
+    Console.Error.WriteLine($"[AIDeskAssistant MCP] Starting MCP server (stdio). Language: {LanguagePreferenceStore.CurrentDisplayName} ({LanguagePreferenceStore.Current}).");
+    if (!string.IsNullOrWhiteSpace(mcpEnvFilePath))
+        Console.Error.WriteLine($"[AIDeskAssistant MCP] Loaded environment from: {mcpEnvFilePath}");
+
+    return await McpServerRunner.RunAsync(executorMcp, args);
 }
 
 // ── Banner ──────────────────────────────────────────────────────────────────
@@ -177,6 +235,7 @@ var chatAssistant = new AIService(apiKey, executor, model, debugLogger);
 // ── REPL ─────────────────────────────────────────────────────────────────────
 Console.ForegroundColor = ConsoleColor.Green;
 Console.WriteLine($"Ready! Using model: {model}");
+Console.WriteLine($"Language: {LanguagePreferenceStore.CurrentDisplayName} ({LanguagePreferenceStore.Current}) — change with AIDESK_LANGUAGE env var");
 Console.WriteLine($"Agent tool rounds limit: {maxToolRounds}");
 if (!string.IsNullOrWhiteSpace(envFilePath))
     Console.WriteLine($"Loaded environment from: {envFilePath}");
@@ -309,6 +368,7 @@ static void PrintHelp()
     OPENAI_MODEL     Model to use (default: gpt-4o)
     OPENAI_REALTIME_MODEL  Model to use for --menu-bar mode (default: gpt-realtime)
     AIDESK_MAX_TOOL_ROUNDS  Maximum agent tool rounds per task (default: 60)
+    AIDESK_LANGUAGE  Interaction language: 'de' (German, default) or 'en' (English)
     AIDESK_DEBUG_MODEL_IO  Enable model I/O debug logging (1/true/yes/on)
     AIDESK_DEBUG_DIR  Optional directory for debug sessions (default: ./.aidesk-debug)
     AIDESK_MENU_BAR_STATUS_FILE  Optional path for menu bar status tracking
@@ -316,11 +376,37 @@ static void PrintHelp()
 
     Startup Modes
     ─────────────────────────────────────────────────────────────────────────────
+    --mcp            Start as an MCP server (stdio) for VS Code / Claude Desktop
+    --api-key <key>  Provide the OpenAI API key as a command-line argument (MCP mode)
     --menu-bar       Start the macOS menu bar assistant in the background
     --menu-bar-host  Internal foreground host used by --menu-bar
     --menu-bar-status  Show whether the macOS menu bar host is currently running
     --menu-bar-stop  Stop the currently running macOS menu bar host
     --debug-model-io Enable model I/O debug logging for this CLI run
+
+    MCP Configuration (VS Code mcp.json / Claude Desktop config)
+    ─────────────────────────────────────────────────────────────────────────────
+    Example VS Code .vscode/mcp.json entry:
+    {
+      "servers": {
+        "aidesk": {
+          "type": "stdio",
+          "command": "dotnet",
+          "args": ["run", "--project", "<path-to-AIDeskAssistant.csproj>", "--", "--mcp"],
+          "env": {
+            "OPENAI_API_KEY": "sk-...",
+            "AIDESK_LANGUAGE": "de"
+          }
+        }
+      }
+    }
+
+    MCP Tools exposed in --mcp mode
+    ─────────────────────────────────────────────────────────────────────────────
+    Desktop:  take_screenshot, click, type_text, move_mouse, press_key,
+              open_application, run_command, get_frontmost_ui_elements, ...
+    Speech:   speak_text, get_voices, set_voice
+    Config:   set_language, get_language, get_config
 
     Example Commands
     ─────────────────────────────────────────────────────────────────────────────
@@ -344,6 +430,17 @@ static void PrintHelp()
 /// <summary>Parses a positive integer environment variable or returns a fallback value.</summary>
 static int TryGetPositiveInt(string? value, int defaultValue)
     => int.TryParse(value, out var parsed) && parsed > 0 ? parsed : defaultValue;
+
+/// <summary>Returns the value following a named argument, e.g. "--api-key sk-xxx".</summary>
+static string? GetNamedArg(string[] arguments, string name)
+{
+    for (int i = 0; i < arguments.Length - 1; i++)
+    {
+        if (string.Equals(arguments[i], name, StringComparison.OrdinalIgnoreCase))
+            return arguments[i + 1];
+    }
+    return null;
+}
 
 static void PrintMenuBarStatus(MenuBarRuntimeStatus status)
 {

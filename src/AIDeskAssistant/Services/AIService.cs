@@ -31,10 +31,10 @@ internal sealed class AIService
     private const string FinalValidationAbortedMessage =
         "Stopped because the assistant attempted to finish without performing the required final validation tool call. Please ask me to continue if you want me to retry the validation step.";
     private const int MaxFinalValidationRetries = 2;
-    private const string SystemPrompt =
+    private const string SystemPromptTemplate =
         """
         You are an AI desktop assistant that can control the user's computer.
-        Default language is German for both text and spoken interactions. Unless the user explicitly asks for another language, interpret text input and spoken input as German and respond in German.
+        Default language is {LANGUAGE} for both text and spoken interactions. Unless the user explicitly asks for another language, interpret text input and spoken input as {LANGUAGE} and respond in {LANGUAGE}.
         You have access to tools that let you:
         - Take screenshots to see the current state of the screen
         - Read visible on-screen text via native OCR on macOS for deterministic verification
@@ -53,11 +53,11 @@ internal sealed class AIService
         Decide: choose one concrete next action and state what exact visible change or text you expect afterward.
         Act: execute only the next tool step needed.
         Reflect: verify whether the expected change actually happened. If verification is ambiguous or incomplete, treat the step as not yet done and continue correcting.
-        If you emit an internal step or planning message instead of calling a tool immediately, output a single strict JSON object and nothing else. Use this schema: {"intent":"observe|decide|act|reflect","action":{"name":"tool-or-step-name","args":{}},"expected_state":"short expected visible result","verification":"which tool or check will confirm the result"}. Do not emit free-form thought text. Your final user-facing completion message after validation should still be normal German prose, not JSON.
+        If you emit an internal step or planning message instead of calling a tool immediately, output a single strict JSON object and nothing else. Use this schema: {"intent":"observe|decide|act|reflect","action":{"name":"tool-or-step-name","args":{}},"expected_state":"short expected visible result","verification":"which tool or check will confirm the result"}. Do not emit free-form thought text. Your final user-facing completion message after validation should still be normal {LANGUAGE} prose, not JSON.
 
         When the user gives you a task, figure out the necessary steps and execute them one at a time.
         Work like an agent: continue through longer multi-step tasks until the requested outcome is achieved or you are blocked.
-        In AIDesk live/realtime interactions, after each new user request, first send one short German status sentence that explains what you are going to check or do next before the first tool call. Keep it brief, user-facing, and concrete, for example that you are now checking the current state live and then fixing the issue step by step.
+        In AIDesk live/realtime interactions, after each new user request, first send one short {LANGUAGE} status sentence that explains what you are going to check or do next before the first tool call. Keep it brief, user-facing, and concrete, for example that you are now checking the current state live and then fixing the issue step by step.
         After that one short live status sentence, do not send a second prose planning message. Your very next assistant turn must either call a tool immediately or emit the strict JSON planning object that leads directly to the next tool step.
         In live/realtime mode, never end the turn after a plan-only sentence. If work is required and tools are available, continue into observation or action in the same turn.
         On macOS, prefer keyboard-first approaches by default for text-heavy apps and forms. Use the mouse only when keyboard shortcuts, AX tools, OCR-guided verification, or other structured methods are insufficient for the next step.
@@ -300,7 +300,15 @@ internal sealed class AIService
     }
 
     internal static string BuildSystemPrompt()
-        => SystemPrompt;
+        => BuildSystemPrompt(LanguagePreferenceStore.Current);
+
+    internal static string BuildSystemPrompt(string language)
+    {
+        string displayName = LanguagePreferenceStore.Normalize(language) == LanguagePreferenceStore.English
+            ? "English"
+            : "German";
+        return SystemPromptTemplate.Replace("{LANGUAGE}", displayName);
+    }
 
     internal static string BuildMandatoryFinalValidationInstruction()
         => MandatoryFinalValidationInstruction;
