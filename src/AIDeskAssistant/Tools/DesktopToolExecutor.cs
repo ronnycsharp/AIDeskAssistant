@@ -106,6 +106,7 @@ internal sealed class DesktopToolExecutor
                 "take_screenshot" => TakeScreenshot(args),
                 "get_screen_info" => GetScreenInfo(),
                 "read_screen_text" => ReadScreenText(args),
+                "find_text_on_screen" => FindTextOnScreen(args),
                 "get_frontmost_ui_elements" => GetFrontmostUiElements(),
                 "get_frontmost_application" => GetFrontmostApplication(),
                 "list_windows" => ListWindows(),
@@ -264,6 +265,48 @@ internal sealed class DesktopToolExecutor
         catch (Exception ex)
         {
             return Err($"Failed to read screen text: {ex.Message}");
+        }
+    }
+
+    private string FindTextOnScreen(Dictionary<string, JsonElement> args)
+    {
+        string searchText = DesktopToolDefinitions.GetString(args, "text").Trim();
+        if (string.IsNullOrWhiteSpace(searchText))
+            return Err("text is required");
+
+        string target = DesktopToolDefinitions.GetString(args, "target", ActiveWindowScreenshotTarget)
+            .Trim()
+            .ToLowerInvariant();
+        string purpose = DesktopToolDefinitions.GetString(args, PurposeArg).Trim();
+        int padding = Math.Clamp(DesktopToolDefinitions.GetInt(args, "padding", 16), 0, 200);
+        int maxResults = Math.Clamp(DesktopToolDefinitions.GetInt(args, "max_results", 10), 1, 40);
+
+        if (!TryResolveScreenshotCaptureOptions(target, padding, out ScreenshotCaptureOptions options, out WindowBounds? captureBounds, out string error))
+            return error;
+
+        try
+        {
+            ScreenInfo screenInfo = _screenshot.GetScreenInfo();
+            WindowBounds resolvedCaptureBounds = captureBounds ?? new WindowBounds(0, 0, screenInfo.Width, screenInfo.Height);
+            byte[] screenshot = _screenshot.TakeScreenshot(options);
+            WindowBounds? requestedRegion = TryGetRequestedRegion(args);
+            if (requestedRegion is null && TryGetOptionalInt(args, "mark_id", out int requestedMarkId))
+            {
+                if (!TryGetLatestScreenshotMark(requestedMarkId, out ScreenshotMark requestedMark, out string markError))
+                    return markError;
+
+                requestedRegion = requestedMark.Bounds;
+            }
+
+            WindowBounds effectiveRegion = ResolveEffectiveOcrRegion(requestedRegion, resolvedCaptureBounds);
+            byte[] croppedImageBytes = CropScreenshotToRegion(screenshot, resolvedCaptureBounds, effectiveRegion);
+            TextRecognitionResult ocrResult = _textRecognition.RecognizeText(croppedImageBytes);
+
+            return BuildFindTextOnScreenToolResult(target, purpose, searchText, resolvedCaptureBounds, effectiveRegion, ocrResult, maxResults);
+        }
+        catch (Exception ex)
+        {
+            return Err($"Failed to find text on screen: {ex.Message}");
         }
     }
 
@@ -485,6 +528,50 @@ internal sealed class DesktopToolExecutor
         parts.Add("Recognized lines:");
         parts.AddRange(result.Lines.Select((line, index) =>
             $"[{index}] Text={line.Text}, Confidence={line.Confidence.ToString("F2", CultureInfo.InvariantCulture)}, X={line.Bounds.X}, Y={line.Bounds.Y}, Width={line.Bounds.Width}, Height={line.Bounds.Height}"));
+        return string.Join(Environment.NewLine, parts);
+    }
+
+    private static string BuildFindTextOnScreenToolResult(
+        string target,
+        string purpose,
+        string searchText,
+        WindowBounds captureBounds,
+        WindowBounds searchRegion,
+        TextRecognitionResult result,
+        int maxResults)
+    {
+        var parts = new List<string>
+        {
+            $"Text search completed. Target: {target}.",
+            $"Search text: {searchText}.",
+            $"Capture bounds: X={captureBounds.X}, Y={captureBounds.Y}, Width={captureBounds.Width}, Height={captureBounds.Height}.",
+            $"Search region: X={searchRegion.X}, Y={searchRegion.Y}, Width={searchRegion.Width}, Height={searchRegion.Height}.",
+        };
+
+        if (!string.IsNullOrWhiteSpace(purpose))
+            parts.Add($"Purpose: {purpose}.");
+
+        IReadOnlyList<TextRecognitionLine> matches = result.Lines
+            .Where(line => !string.IsNullOrWhiteSpace(line.Text)
+                && line.Text.Contains(searchText, StringComparison.OrdinalIgnoreCase))
+            .Take(maxResults)
+            .ToArray();
+
+        if (matches.Count == 0)
+        {
+            parts.Add("Matches: none.");
+            return string.Join(" ", parts);
+        }
+
+        parts.Add($"Matches found: {matches.Count}.");
+        parts.Add("Matches:");
+        parts.AddRange(matches.Select((line, index) =>
+        {
+            int centerX = searchRegion.X + line.Bounds.X + (line.Bounds.Width / 2);
+            int centerY = searchRegion.Y + line.Bounds.Y + (line.Bounds.Height / 2);
+            return $"[{index}] Text={line.Text}, Confidence={line.Confidence.ToString("F2", CultureInfo.InvariantCulture)}, X={searchRegion.X + line.Bounds.X}, Y={searchRegion.Y + line.Bounds.Y}, Width={line.Bounds.Width}, Height={line.Bounds.Height}, CenterX={centerX}, CenterY={centerY}";
+        }));
+
         return string.Join(Environment.NewLine, parts);
     }
 

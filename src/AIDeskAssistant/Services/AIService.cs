@@ -25,7 +25,7 @@ internal sealed class AIService
     private const string MandatoryFinalValidationInstruction =
         "Mandatory final validation loop: do not answer the user yet. Re-verify the current desktop state from the live UI. If you changed the UI, take a fresh validation screenshot and confirm the requested outcome is actually visible now. If the task involves files or terminal output, run one concrete verification step against the current state. If validation fails, continue working instead of claiming success. You must use at least one concrete validation tool call after this instruction before you may send the final user-facing completion message.";
     private const string FinalValidationMissingEvidenceInstruction =
-        "You still have not performed a concrete final verification tool call from the current live state. Do not answer the user yet. Call a validation tool now, such as take_screenshot, read_screen_text, assert_state, get_frontmost_application, get_frontmost_ui_elements, list_windows, get_focused_ui_element, wait_for_window, wait_for_ui_element, get_active_window_bounds, or run_command for file/terminal verification. Only after that validation tool result confirms the outcome may you send the final completion message.";
+        "You still have not performed a concrete final verification tool call from the current live state. Do not answer the user yet. Call a validation tool now, such as take_screenshot, read_screen_text, find_text_on_screen, assert_state, get_frontmost_application, get_frontmost_ui_elements, list_windows, get_focused_ui_element, wait_for_window, wait_for_ui_element, get_active_window_bounds, or run_command for file/terminal verification. Only after that validation tool result confirms the outcome may you send the final completion message.";
     private const string NegativeValidationDetectedInstructionPrefix =
         "The latest verification result showed that the requested outcome is still not confirmed. Do not answer the user with success and do not ask an optional follow-up question. Continue autonomously with the next corrective or verification step. Latest failed verification summary:";
     private const string FinalValidationAbortedMessage =
@@ -68,7 +68,7 @@ internal sealed class AIService
         For macOS Calculator tasks with a specified operand such as 49, first make sure that exact operand is visibly present in the Calculator display before applying the requested operation. If a stale value is visible, clear it and enter the requested operand explicitly instead of reusing the old display state.
         For special Calculator functions such as square root, decide autonomously whether the current mode is sufficient or whether you first need to switch Calculator mode. Do not rely on undocumented shortcuts without validating them from the live app state. Before declaring success, verify from the Calculator UI that the requested operation was actually staged or executed inside Calculator, for example through an intermediate expression such as √(49) or another visible in-app confirmation.
         For desktop application workflows such as Mail, Calendar, Word, Excel, Outlook, Finder, or Blender on macOS, prefer visible UI-based launching and focusing when possible. Use click_dock_application to open or foreground Dock apps like a human user would, then verify the app is frontmost before typing or clicking inside it.
-        When a task depends on specific visible text, numbers, spreadsheet values, dialog labels, or filenames, prefer read_screen_text on macOS to verify the current state instead of inferring success from the screenshot alone.
+        When a task depends on specific visible text, numbers, spreadsheet values, dialog labels, or filenames, prefer read_screen_text on macOS to verify the current state instead of inferring success from the screenshot alone. When you need clickable coordinates for visible text, prefer find_text_on_screen over guessing coordinates manually.
         On macOS, prefer the Accessibility-based tools for Apple menu items and System Settings sidebar navigation instead of coordinate-based clicks whenever those tools fit the task.
         The current request may include a compact Accessibility UI summary for the frontmost macOS app, including visible roles, titles, and frames. Treat that summary as high-value structure about what is currently on screen and use it together with the screenshot.
         When a screenshot includes an additional mouse detail image around the cursor, use that close-up to validate the exact cursor position and nearby click target before choosing click or double_click coordinates.
@@ -314,6 +314,7 @@ internal sealed class AIService
             "move_mouse" => false,
             TakeScreenshotToolName => false,
             "read_screen_text" => false,
+            "find_text_on_screen" => false,
             "get_screen_info" => false,
             "get_frontmost_ui_elements" => false,
             "get_frontmost_application" => false,
@@ -338,6 +339,7 @@ internal sealed class AIService
         {
             TakeScreenshotToolName => true,
             "read_screen_text" => true,
+            "find_text_on_screen" => true,
             "get_frontmost_ui_elements" => true,
             "get_frontmost_application" => true,
             "list_windows" => true,

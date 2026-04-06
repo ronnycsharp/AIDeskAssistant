@@ -339,6 +339,41 @@ public sealed class DesktopToolExecutorTests
     }
 
     [Fact]
+    public void Execute_FindTextOnScreen_ReturnsClickableMatchCoordinates()
+    {
+        _textRecognition.NextResult = new TextRecognitionResult(
+            "Save\nCancel",
+            [
+                new TextRecognitionLine("Save", 0.98, new WindowBounds(20, 30, 80, 24)),
+                new TextRecognitionLine("Cancel", 0.97, new WindowBounds(120, 30, 90, 24)),
+            ]);
+
+        string result = _sut.Execute("find_text_on_screen", "{\"target\":\"active_window\",\"text\":\"save\",\"purpose\":\"find save button\"}");
+
+        Assert.Contains("Text search completed. Target: active_window.", result);
+        Assert.Contains("Search text: save.", result);
+        Assert.Contains("Purpose: find save button.", result);
+        Assert.Contains("Matches found: 1.", result);
+        Assert.Contains("Text=Save", result);
+        Assert.Matches(@"CenterX=\d+, CenterY=\d+", result);
+    }
+
+    [Fact]
+    public void Execute_FindTextOnScreen_WhenNoMatch_ReturnsNone()
+    {
+        _textRecognition.NextResult = new TextRecognitionResult(
+            "Save\nCancel",
+            [
+                new TextRecognitionLine("Save", 0.98, new WindowBounds(20, 30, 80, 24)),
+                new TextRecognitionLine("Cancel", 0.97, new WindowBounds(120, 30, 90, 24)),
+            ]);
+
+        string result = _sut.Execute("find_text_on_screen", "{\"target\":\"active_window\",\"text\":\"print\"}");
+
+        Assert.Contains("Matches: none.", result);
+    }
+
+    [Fact]
     public void Execute_MoveMouse_UsesMouseService()
     {
         string result = _sut.Execute("move_mouse", "{\"x\":300,\"y\":400}");

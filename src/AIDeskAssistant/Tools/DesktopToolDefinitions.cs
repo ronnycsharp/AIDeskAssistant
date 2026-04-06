@@ -160,6 +160,60 @@ internal static class DesktopToolDefinitions
         ),
 
     new(
+            "find_text_on_screen",
+            "Uses native Apple Vision OCR on macOS to find visible text on the full screen, active window, or a specific region and returns clickable center coordinates for each match. Prefer this when you need to target visible labels, buttons, links, or sheet references by text instead of guessing coordinates.",
+            BinaryData.FromString("""
+            {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Case-insensitive text fragment to search for in visible OCR results."
+                },
+                "target": {
+                  "type": "string",
+                  "enum": ["full_screen", "active_window"],
+                  "description": "Capture the full screen or only the active window before searching OCR text. Prefer 'active_window' for app-specific targeting."
+                },
+                "purpose": {
+                  "type": "string",
+                  "description": "Short reason for the lookup, e.g. 'find the Save button label' or 'locate A1 in Excel'."
+                },
+                "padding": {
+                  "type": "integer",
+                  "description": "Optional extra pixels around the active window capture (0-200). Ignored for full_screen."
+                },
+                "region_x": {
+                  "type": "integer",
+                  "description": "Optional screen-space X coordinate of a smaller region to search. Use together with region_y, region_width, and region_height."
+                },
+                "region_y": {
+                  "type": "integer",
+                  "description": "Optional screen-space Y coordinate of a smaller region to search."
+                },
+                "region_width": {
+                  "type": "integer",
+                  "description": "Optional width of the search region in pixels."
+                },
+                "region_height": {
+                  "type": "integer",
+                  "description": "Optional height of the search region in pixels."
+                },
+                "mark_id": {
+                  "type": "integer",
+                  "description": "Optional numbered mark from the latest marked screenshot. When provided, the text search is limited to that mark region."
+                },
+                "max_results": {
+                  "type": "integer",
+                  "description": "Optional maximum number of matches to return (1-40)."
+                }
+              },
+              "required": ["text"]
+            }
+            """)
+        ),
+
+    new(
             "get_frontmost_ui_elements",
             "Returns a compact Accessibility-based summary of the currently frontmost macOS application and its visible UI elements. Use this to understand app structure before clicking or typing."
         ),

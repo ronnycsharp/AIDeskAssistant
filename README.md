@@ -1,54 +1,56 @@
 # AIDeskAssistant
 
-`AIDeskAssistant` is a work-in-progress desktop automation assistant built with C# (.NET 8) and the OpenAI API.
+`AIDeskAssistant` is a desktop automation assistant built with C# (.NET 8), native macOS integration, and OpenAI tool calling.
 
-The goal is simple: control the desktop with natural language. The assistant can inspect the screen, open apps, click, type, move windows, run terminal commands, and work through longer tasks step by step.
+The project is designed around a simple loop:
 
-The repository currently contains both macOS and Windows implementations, but the project has only been tested on macOS so far.
+1. Observe the live desktop state.
+2. Decide the next concrete action.
+3. Act with desktop tools.
+4. Re-verify before declaring success.
+
+It can inspect the screen, search visible text, open apps, click, type, move windows, run terminal commands, and work through longer tasks step by step. The codebase contains both macOS and Windows implementations, but active validation and live workflows currently focus on macOS.
 
 ## Security Notice
 
 This project is security-critical.
 
-`AIDeskAssistant` can capture screenshots of your desktop and send them to the configured OpenAI service so the model can reason about the current UI. This can expose sensitive information that is visible on screen, including passwords, emails, documents, chat content, tokens, internal systems, or other confidential data.
+`AIDeskAssistant` can capture screenshots of your desktop and send them to the configured OpenAI service so the model can reason about the current UI. That can expose sensitive information visible on screen, including passwords, emails, chats, internal tools, tokens, documents, and other confidential content.
 
-Use this project only in environments where that risk is acceptable. Do not use it on screens or systems that display highly sensitive or regulated information unless you have reviewed the data-flow, trust boundary, retention implications, and compliance impact yourself.
+Use this project only where that risk is acceptable. Do not use it on highly sensitive or regulated screens unless you have reviewed the data flow, trust boundary, retention implications, and compliance impact yourself.
 
 ## Current Status
 
-- Work in progress.
-- Primary target: desktop control through natural-language commands.
-- Tested so far on macOS only.
-- Windows is currently untested and may be supported later.
-- Includes a macOS status bar app called `AIDesk`.
-- `AIDesk` supports text input, live microphone input, and spoken assistant responses.
+- Primary target: natural-language desktop control on macOS.
+- CLI mode and a macOS menu bar app (`AIDesk`) are both available.
+- The assistant supports text input, live microphone input, and spoken responses.
+- Desktop actions are guarded by explicit validation rules to reduce false-positive success reporting.
+- Live regression coverage exists for autonomous calculator and Excel workflows.
+- Windows support is present in the codebase but not yet validated to the same level.
 
-## What AIDesk Can Do
+## Core Capabilities
 
-- Understand natural-language desktop tasks.
-- Take screenshots so the model can reason about the current UI.
-- Move the mouse, click, scroll, and type.
-- Open and focus desktop applications.
-- Control the active window.
-- Run terminal commands and return the result.
-- Use a menu bar workflow on macOS for faster voice-driven interaction.
+- Natural-language multi-step desktop automation.
+- Screenshot-based observation of the current UI.
+- OCR-based reading and verification of visible screen text.
+- Text-targeting with clickable coordinates via `find_text_on_screen`.
+- Accessibility-based UI inspection and targeting on macOS.
+- Mouse, keyboard, scrolling, and app/window control.
+- Terminal command execution for explicit system or file verification.
+- Live menu bar interaction with streaming voice input and spoken output.
 
-## AIDesk Status Bar Mode
+## macOS Menu Bar Mode
 
-On macOS, the project can run as a status bar tool named `AIDesk`.
+On macOS the project can run as a status bar assistant named `AIDesk`.
 
-That mode is intended for quick desktop control without staying inside the terminal:
+This is the main path for hands-free usage:
 
-- text input directly from the status bar popover
-- live speech input from the microphone
-- streamed spoken output from the assistant
+- text input from the status bar popover
+- live microphone capture
+- streaming spoken assistant output
 - local host process for low-latency tool execution and audio streaming
 
-This is currently the main interaction model for hands-free usage.
-
 ## Example Commands
-
-The assistant is intended for commands like these:
 
 ```text
 Open Excel and write the numbers 1 to 10 into a column.
@@ -61,25 +63,20 @@ Run git status and summarize the changes.
 Take a screenshot and tell me what is visible.
 ```
 
-## Features
+## Highlights
 
-- LLM-driven desktop automation with tool calling
-- Screen inspection through screenshots
-- Mouse and keyboard control
-- Application launching and focusing
-- Browser URL opening
-- Terminal command execution
-- Active window inspection, movement, and resizing
-- CLI mode for direct prompting
-- macOS menu bar mode with speech input and speech output
-- Configurable multi-step tool loop for longer tasks
+- Agentic desktop loop with mandatory final validation after state-changing actions.
+- Screenshot tooling with optional target highlighting and derived schematic focus views.
+- OCR verification and visible-text targeting for labels, spreadsheet cells, and UI copy.
+- Accessibility-first macOS tooling for menus, sidebars, frontmost content, and UI elements.
+- Focused debug and regression flows for autonomous desktop tasks.
 
 ## Requirements
 
 | Platform | Runtime | Status |
 |----------|---------|--------|
-| macOS | .NET 8+ | tested |
-| Windows | .NET 8+ | currently untested, possible later support |
+| macOS | .NET 8+ | tested and actively developed |
+| Windows | .NET 8+ | implementation present, currently untested |
 
 ## Getting Started
 
@@ -91,9 +88,9 @@ cd AIDeskAssistant
 dotnet build AIDeskAssistant.sln
 ```
 
-### 2. Configure your API key
+### 2. Configure OpenAI credentials
 
-You can provide the OpenAI API key either through environment variables or through a local `.env` file.
+You can provide the API key through environment variables or a local `.env` file.
 
 macOS or Linux:
 
@@ -107,7 +104,7 @@ Windows PowerShell:
 $env:OPENAI_API_KEY = "sk-..."
 ```
 
-Or create a local `.env` file in the repository root:
+Local `.env` example:
 
 ```dotenv
 OPENAI_API_KEY=sk-...
@@ -123,23 +120,24 @@ The local `.env` file is ignored by git.
 dotnet run --project src/AIDeskAssistant
 ```
 
-### 4. Run the macOS status bar tool
+### 4. Run the macOS menu bar app
 
 ```bash
 dotnet run --project src/AIDeskAssistant -- --menu-bar
 ```
 
-Current macOS note:
-
-- The menu bar helper is started as a Swift script through `xcrun swift`, so the target system currently needs Apple's developer tools available, typically Xcode Command Line Tools.
-- If you want to distribute this without Xcode or Command Line Tools on the target machine, the Swift helper would need to be bundled as a prebuilt binary or the UI would need to be hosted differently.
-
-Useful companion commands:
+Companion commands:
 
 ```bash
 dotnet run --project src/AIDeskAssistant -- --menu-bar-status
 dotnet run --project src/AIDeskAssistant -- --menu-bar-stop
 ```
+
+macOS note:
+
+- The menu bar helper is currently launched as a Swift script through `xcrun swift`.
+- The target machine therefore needs Apple developer tools available, typically Xcode Command Line Tools.
+- A packaged distribution would need the helper bundled as a prebuilt binary or moved to a different hosting model.
 
 ### 5. Optional debug logging
 
@@ -147,7 +145,7 @@ dotnet run --project src/AIDeskAssistant -- --menu-bar-stop
 dotnet run --project src/AIDeskAssistant -- --debug-model-io
 ```
 
-This creates a local session folder under `.aidesk-debug/` with tool traces, screenshots, and assistant responses for debugging runs.
+This creates a local session folder under `.aidesk-debug/` with tool traces, screenshots, and assistant responses.
 
 ## CLI Commands
 
@@ -164,7 +162,7 @@ This creates a local session folder under `.aidesk-debug/` with tool traces, scr
 |----------|---------|-------------|
 | `OPENAI_API_KEY` | required | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-5-mini` | Chat model used by CLI mode |
-| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime model used by macOS menu bar mode |
+| `OPENAI_REALTIME_MODEL` | `gpt-realtime` | Realtime model used by the macOS menu bar mode |
 | `AIDESK_MAX_TOOL_ROUNDS` | `60` | Maximum tool rounds before the assistant stops |
 | `AIDESK_DEBUG_MODEL_IO` | unset | Enable local debug logging for model input, screenshots, and tool traces |
 | `AIDESK_DEBUG_DIR` | `.aidesk-debug` | Base directory for debug sessions |
@@ -188,7 +186,11 @@ This creates a local session folder under `.aidesk-debug/` with tool traces, scr
 The model can call tools such as:
 
 - `take_screenshot`
-- `get_screen_info`
+- `read_screen_text`
+- `find_text_on_screen`
+- `get_frontmost_ui_elements`
+- `find_ui_element`
+- `click_ui_element`
 - `get_cursor_position`
 - `move_mouse`
 - `click`
@@ -209,6 +211,25 @@ The model can call tools such as:
 - `resize_active_window`
 - `wait`
 
+## Testing
+
+Run the full suite:
+
+```bash
+dotnet test AIDeskAssistant.sln
+```
+
+The repository also contains opt-in live desktop regressions. These are intentionally disabled by default because they drive real applications on the current machine.
+
+Examples:
+
+```bash
+AIDESK_ENABLE_LIVE_CALCULATOR_LLM_REGRESSION_TESTS=1 dotnet test tests/AIDeskAssistant.Tests/AIDeskAssistant.Tests.csproj --filter "CalculatorNaturalLanguageLiveRegressionTests"
+AIDESK_ENABLE_LIVE_EXCEL_LLM_REGRESSION_TESTS=1 dotnet test tests/AIDeskAssistant.Tests/AIDeskAssistant.Tests.csproj --filter "ExcelNaturalLanguageLiveRegressionTests"
+```
+
+The live regression flows can capture tool traces, screenshots, highlighted prepared views, OCR outputs, and final verification artifacts under `tests/AIDeskAssistant.Tests/bin/Debug/net8.0/TestResults/`.
+
 ## Project Structure
 
 ```text
@@ -216,18 +237,12 @@ src/
   AIDeskAssistant/
     Program.cs
     PlatformServiceFactory.cs
-    Services/
-    Platform/
-    Tools/
     Models/
+    Platform/
+    Services/
+    Tools/
 tests/
   AIDeskAssistant.Tests/
-```
-
-## Running Tests
-
-```bash
-dotnet test AIDeskAssistant.sln
 ```
 
 ## macOS Permissions
@@ -240,12 +255,12 @@ On macOS you must grant the required permissions to the host application you run
 
 You can find them in `System Settings -> Privacy & Security`.
 
-## Notes for Publishing
+## Notes
 
 - `.env` is ignored and should stay local.
 - `.aidesk-debug/` is ignored and should stay local.
-- This repository is still evolving and APIs, prompts, and desktop workflows may change.
+- The repository is still evolving; prompts, tools, APIs, and workflow guardrails may change.
 
 ## License
 
-This project is licensed under the MIT License. See the `LICENSE` file.
+This project is licensed under the MIT License. See `LICENSE`.

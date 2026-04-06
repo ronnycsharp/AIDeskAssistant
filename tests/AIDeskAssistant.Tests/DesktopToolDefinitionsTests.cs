@@ -15,6 +15,7 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("take_screenshot",    names);
         Assert.Contains("get_screen_info",    names);
         Assert.Contains("read_screen_text", names);
+        Assert.Contains("find_text_on_screen", names);
         Assert.Contains("get_frontmost_ui_elements", names);
         Assert.Contains("get_frontmost_application", names);
         Assert.Contains("list_windows", names);
@@ -161,10 +162,23 @@ public sealed class DesktopToolDefinitionsTests
         Assert.Contains("wait_for_ui_element", allDescriptions);
         Assert.Contains("assert_state", allDescriptions);
         Assert.Contains("read_screen_text", allDescriptions);
+        Assert.Contains("find_text_on_screen", allDescriptions);
         Assert.Contains("word_create_document", allDescriptions);
         Assert.Contains("word_set_document_text", allDescriptions);
         Assert.Contains("word_replace_text", allDescriptions);
         Assert.Contains("word_format_text", allDescriptions);
+    }
+
+    [Fact]
+    public void FindTextOnScreenDefinition_DescribesClickableCoordinates()
+    {
+        DesktopFunctionToolDefinition definition = DesktopToolDefinitions.FunctionDefinitions.Single(x => x.Name == "find_text_on_screen");
+        string parameters = definition.Parameters?.ToString() ?? string.Empty;
+
+        Assert.Contains("clickable center coordinates", definition.Description);
+        Assert.Contains("text", parameters);
+        Assert.Contains("max_results", parameters);
+        Assert.Contains("mark_id", parameters);
     }
 
     [Fact]
