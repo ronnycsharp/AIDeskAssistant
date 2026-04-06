@@ -27,15 +27,31 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
 
     public string CurrentThinkingLevel => _assistant.CurrentThinkingLevel;
 
+    public string CurrentLanguage => _assistant.CurrentLanguage;
+
     public IReadOnlyList<string> GetAvailableVoices() => _speechService.GetAvailableVoices();
 
     public IReadOnlyList<string> GetAvailableThinkingLevels() => _assistant.GetAvailableThinkingLevels();
+
+    public IReadOnlyList<string> GetAvailableLanguages() => LanguagePreferenceStore.AvailableLanguages;
 
     public Task<string> SetVoiceAsync(string voiceId, CancellationToken ct = default)
         => _speechService.SetVoiceAsync(voiceId, ct);
 
     public Task<string> SetThinkingLevelAsync(string thinkingLevel, CancellationToken ct = default)
         => Task.FromResult(_assistant.SetThinkingLevel(thinkingLevel));
+
+    public Task SetLanguageAsync(string language, CancellationToken ct = default)
+    {
+        _assistant.SetLanguage(language);
+        return Task.CompletedTask;
+    }
+
+    public Task SetApiKeyAsync(string apiKey, CancellationToken ct = default)
+    {
+        LanguagePreferenceStore.SaveApiKey(apiKey);
+        return Task.CompletedTask;
+    }
 
     public async Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default)
     {

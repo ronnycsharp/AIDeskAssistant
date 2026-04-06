@@ -19,12 +19,13 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     private readonly string _model;
     private readonly int _sampleRate;
     private readonly DesktopToolExecutor _executor;
-    private readonly RealtimeClient _client;
+    private RealtimeClient _client;
     private readonly AIDebugLogger? _debugLogger;
     private readonly IScreenshotAnalysisService? _screenshotAnalysisService;
     private readonly SemaphoreSlim _sessionLock = new(1, 1);
     private readonly SemaphoreSlim _turnLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
+    private string _apiKey;
     private string _voice;
     private string _thinkingLevel;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
@@ -39,7 +40,8 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     public RealtimeAssistantService(string apiKey, DesktopToolExecutor executor, string model, AIDebugLogger? debugLogger = null, IScreenshotAnalysisService? screenshotAnalysisService = null)
     {
-        _client = new RealtimeClient(apiKey);
+        _apiKey = apiKey.Trim();
+        _client = new RealtimeClient(_apiKey);
         _executor = executor;
         _model = model;
         _debugLogger = debugLogger;
@@ -59,6 +61,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     public string CurrentVoice => _voice;
     public string CurrentThinkingLevel => _thinkingLevel;
+    public string CurrentLanguage => LanguagePreferenceStore.Current;
 
     public IReadOnlyList<string> GetAvailableVoices()
     {
@@ -71,6 +74,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
 
     public IReadOnlyList<string> GetAvailableThinkingLevels()
         => ThinkingLevelPreference.GetAvailableLevels();
+
+    public IReadOnlyList<string> GetAvailableLanguages()
+        => LanguagePreferenceStore.AvailableLanguages;
 
     public async Task<string> SetVoiceAsync(string voiceId, CancellationToken ct = default)
     {
@@ -114,6 +120,65 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             RealtimeVoicePreferenceStore.SaveThinkingLevel(normalizedThinkingLevel);
             _screenshotAnalysisService?.SetThinkingLevel(normalizedThinkingLevel);
             return normalizedThinkingLevel;
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    public async Task SetLanguageAsync(string language, CancellationToken ct = default)
+    {
+        string normalizedLanguage = LanguagePreferenceStore.Set(language);
+
+        await _sessionLock.WaitAsync(ct);
+        try
+        {
+            await _turnLock.WaitAsync(ct);
+            try
+            {
+                if (_session is not null)
+                    await StopSessionAsync();
+
+                _debugLogger?.LogHistoryEntry("system", $"Language changed to {normalizedLanguage}.");
+            }
+            finally
+            {
+                _turnLock.Release();
+            }
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    public async Task SetApiKeyAsync(string apiKey, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey))
+            throw new ArgumentException("API key is required.", nameof(apiKey));
+
+        string normalizedApiKey = apiKey.Trim();
+
+        await _sessionLock.WaitAsync(ct);
+        try
+        {
+            await _turnLock.WaitAsync(ct);
+            try
+            {
+                _apiKey = normalizedApiKey;
+                _client = new RealtimeClient(normalizedApiKey);
+                LanguagePreferenceStore.SaveApiKey(normalizedApiKey);
+
+                if (_session is not null)
+                    await StopSessionAsync();
+
+                _debugLogger?.LogHistoryEntry("system", "Realtime API key updated.");
+            }
+            finally
+            {
+                _turnLock.Release();
+            }
         }
         finally
         {

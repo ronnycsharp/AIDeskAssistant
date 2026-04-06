@@ -35,7 +35,7 @@ if (mcpRequested)
     if (!string.IsNullOrWhiteSpace(cliApiKey))
         Environment.SetEnvironmentVariable("OPENAI_API_KEY", cliApiKey);
 
-    string apiKeyMcp = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+    string apiKeyMcp = LanguagePreferenceStore.TryLoadApiKey() ?? string.Empty;
     if (string.IsNullOrWhiteSpace(apiKeyMcp))
     {
         Console.Error.WriteLine("[AIDeskAssistant MCP] No API key found. " +
@@ -95,7 +95,7 @@ Console.ResetColor();
 
 // ── API Key ──────────────────────────────────────────────────────────────────
 string? envFilePath = EnvironmentFileLoader.LoadFromStandardLocations();
-string apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+string apiKey = LanguagePreferenceStore.TryLoadApiKey() ?? string.Empty;
 
 if (string.IsNullOrWhiteSpace(apiKey))
 {
@@ -103,6 +103,8 @@ if (string.IsNullOrWhiteSpace(apiKey))
     Console.Write("Enter your OpenAI API key: ");
     Console.ResetColor();
     apiKey = Console.ReadLine()?.Trim() ?? string.Empty;
+    if (!string.IsNullOrWhiteSpace(apiKey))
+        LanguagePreferenceStore.SaveApiKey(apiKey);
 }
 
 if (string.IsNullOrWhiteSpace(apiKey))

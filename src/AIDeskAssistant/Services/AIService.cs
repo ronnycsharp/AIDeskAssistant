@@ -157,6 +157,8 @@ internal sealed class AIService
 
     public string CurrentThinkingLevel => _thinkingLevel;
 
+    public string CurrentLanguage => LanguagePreferenceStore.Current;
+
     public IReadOnlyList<string> GetAvailableThinkingLevels() => ThinkingLevelPreference.GetAvailableLevels();
 
     public string SetThinkingLevel(string thinkingLevel)
@@ -165,6 +167,19 @@ internal sealed class AIService
         Environment.SetEnvironmentVariable("AIDESK_THINKING_LEVEL", _thinkingLevel);
         RealtimeVoicePreferenceStore.SaveThinkingLevel(_thinkingLevel);
         return _thinkingLevel;
+    }
+
+    public string SetLanguage(string language)
+    {
+        string normalizedLanguage = LanguagePreferenceStore.Set(language);
+        ClearHistory();
+        if (_history.Count == 0)
+            _history.Add(new SystemChatMessage(BuildSystemPrompt(normalizedLanguage)));
+        else
+            _history[0] = new SystemChatMessage(BuildSystemPrompt(normalizedLanguage));
+
+        _debugLogger?.LogHistoryEntry("system", $"Language changed to {normalizedLanguage}.");
+        return normalizedLanguage;
     }
 
     public async Task<AIServiceTextResult> SendMessageWithUsageAsync(

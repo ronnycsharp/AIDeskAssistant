@@ -104,6 +104,12 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 return;
             }
 
+            if (context.Request.HttpMethod == "GET" && path == "/settings")
+            {
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateAppSettingsPayload(_assistant.CurrentLanguage, _assistant.GetAvailableLanguages()), ct);
+                return;
+            }
+
             if (context.Request.HttpMethod == "POST" && path == "/voice")
             {
                 VoiceRequest? request = await JsonSerializer.DeserializeAsync<VoiceRequest>(context.Request.InputStream, JsonOptions, ct);
@@ -129,6 +135,25 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
 
                 string currentThinkingLevel = await _assistant.SetThinkingLevelAsync(request.ThinkingLevel, ct);
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateVoiceSettingsPayload(_assistant.CurrentVoice, _assistant.GetAvailableVoices(), currentThinkingLevel, _assistant.GetAvailableThinkingLevels()), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/settings")
+            {
+                AppSettingsRequest? request = await JsonSerializer.DeserializeAsync<AppSettingsRequest>(context.Request.InputStream, JsonOptions, ct);
+                if (request is null)
+                {
+                    await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new { error = "Settings payload is required." }, ct);
+                    return;
+                }
+
+                if (!string.IsNullOrWhiteSpace(request.Language))
+                    await _assistant.SetLanguageAsync(request.Language, ct);
+
+                if (!string.IsNullOrWhiteSpace(request.ApiKey))
+                    await _assistant.SetApiKeyAsync(request.ApiKey, ct);
+
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateAppSettingsPayload(_assistant.CurrentLanguage, _assistant.GetAvailableLanguages()), ct);
                 return;
             }
 
@@ -353,6 +378,14 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         availableThinkingLevels,
     };
 
+    internal static object CreateAppSettingsPayload(string currentLanguage, IReadOnlyList<string> availableLanguages) => new
+    {
+        currentLanguage,
+        availableLanguages,
+        apiKeyConfigured = LanguagePreferenceStore.HasApiKeyConfigured(),
+        maskedApiKey = LanguagePreferenceStore.GetMaskedApiKey(),
+    };
+
     internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
     {
         string? queryValue = queryString["includeAudio"];
@@ -455,5 +488,11 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     private sealed class ThinkingRequest
     {
         public string ThinkingLevel { get; set; } = string.Empty;
+    }
+
+    private sealed class AppSettingsRequest
+    {
+        public string Language { get; set; } = string.Empty;
+        public string? ApiKey { get; set; }
     }
 }

@@ -31,12 +31,24 @@ struct VoiceSettingsResponse: Decodable {
     let availableThinkingLevels: [String]
 }
 
+struct AppSettingsResponse: Decodable {
+    let currentLanguage: String
+    let availableLanguages: [String]
+    let apiKeyConfigured: Bool
+    let maskedApiKey: String?
+}
+
 struct VoiceSelectionRequest: Encodable {
     let voice: String
 }
 
 struct ThinkingSelectionRequest: Encodable {
     let thinkingLevel: String
+}
+
+struct AppSettingsUpdateRequest: Encodable {
+    let language: String
+    let apiKey: String?
 }
 
 struct TokenUsage: Decodable {
@@ -153,7 +165,7 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
             .path
     }()
 
-    private static let toolLogFilePath: String = {
+    fileprivate static let toolLogFilePath: String = {
         if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_TOOL_LOG_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return path
         }
@@ -931,11 +943,216 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
     }
 }
 
+final class ToolDetailViewController: NSViewController, WKNavigationDelegate {
+    private let entry: ToolLogEntry
+    private let headerLabel = NSTextField(labelWithString: "Tool-Details")
+    private let metaLabel = NSTextField(labelWithString: "")
+    private let scrollView = NSScrollView(frame: .zero)
+    private let webView: WKWebView = {
+        let webView = WKWebView(frame: .zero)
+        webView.setValue(false, forKey: "drawsBackground")
+        return webView
+    }()
+
+    init(entry: ToolLogEntry) {
+        self.entry = entry
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 720, height: 560))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor(calibratedRed: 0.10, green: 0.11, blue: 0.14, alpha: 0.98).cgColor
+
+        headerLabel.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
+        headerLabel.textColor = NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 1.0)
+        headerLabel.stringValue = entry.ToolName
+
+        metaLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        metaLabel.textColor = NSColor(calibratedRed: 0.64, green: 0.69, blue: 0.75, alpha: 1.0)
+        metaLabel.stringValue = "Status: \(Self.statusLabel(for: entry.Status)) · Start: \(Self.formatDisplayTimestamp(entry.StartedUtc))"
+
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.documentView = webView
+        webView.navigationDelegate = self
+
+        view.addSubview(headerLabel)
+        view.addSubview(metaLabel)
+        view.addSubview(scrollView)
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        renderHTML()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        let bounds = view.bounds
+        headerLabel.frame = NSRect(x: 20, y: bounds.height - 42, width: bounds.width - 40, height: 28)
+        metaLabel.frame = NSRect(x: 20, y: bounds.height - 66, width: bounds.width - 40, height: 18)
+        scrollView.frame = NSRect(x: 20, y: 20, width: bounds.width - 40, height: bounds.height - 96)
+        webView.frame = NSRect(origin: .zero, size: scrollView.contentSize)
+    }
+
+    private func renderHTML() {
+        let baseURL = URL(fileURLWithPath: StatusBarViewController.toolLogFilePath).deletingLastPathComponent()
+        webView.loadHTMLString(buildHTML(), baseURL: baseURL)
+    }
+
+    private func buildHTML() -> String {
+        let request = Self.escapeHTML(entry.ArgumentsJson.isEmpty ? "{}" : entry.ArgumentsJson)
+        let result = Self.escapeHTML(entry.Result.isEmpty ? "Noch kein Ergebnis." : entry.Result)
+        let completed = Self.escapeHTML(Self.formatDisplayTimestamp(entry.CompletedUtc))
+        let duration = Self.escapeHTML(Self.formatToolDuration(startedUtc: entry.StartedUtc, completedUtc: entry.CompletedUtc, referenceDate: Date()))
+        let screenshotMarkup = Self.buildScreenshotMarkup(for: entry)
+        return """
+        <!doctype html>
+        <html>
+        <head>
+            <meta charset=\"utf-8\" />
+            <style>
+                :root { color-scheme: dark; --bg:#171b22; --panel:#1e2430; --border:rgba(255,255,255,0.08); --text:#eef2f7; --muted:#9aabbe; --accent:#75c7ec; }
+                html,body { margin:0; padding:0; background:transparent; color:var(--text); font:13px/1.5 -apple-system,BlinkMacSystemFont,sans-serif; }
+                body { padding: 8px 4px 24px; }
+                .card { border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,0.03); margin-bottom:14px; overflow:hidden; }
+                .header { padding:12px 14px; font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--border); }
+                .body { padding:12px 14px; }
+                .meta { color:var(--muted); margin-bottom:10px; }
+                pre { margin:0; padding:12px; border-radius:10px; background:var(--bg); border:1px solid var(--border); white-space:pre-wrap; word-break:break-word; font:12px/1.5 ui-monospace,SFMono-Regular,monospace; color:#dbe6f2; }
+                .screenshot-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:8px; }
+                .shot-card { border:1px solid var(--border); border-radius:12px; overflow:hidden; background:rgba(255,255,255,0.03); }
+                .shot-card img { display:block; width:100%; height:auto; background:#0f131a; }
+                .shot-body { padding:10px 12px 12px; }
+                .shot-kind { font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent); }
+                .shot-summary { margin-top:6px; font-size:12px; color:#dbe6f2; }
+                .shot-meta { margin-top:6px; color:var(--muted); font-size:11px; }
+                a { color:var(--accent); text-decoration:none; }
+            </style>
+        </head>
+        <body>
+            <section class=\"card\">
+                <div class=\"header\">Meta</div>
+                <div class=\"body\">
+                    <div class=\"meta\">ToolCallId: \(Self.escapeHTML(entry.ToolCallId))</div>
+                    <div class=\"meta\">Status: \(Self.escapeHTML(Self.statusLabel(for: entry.Status))) · Dauer: \(duration) · Abschluss: \(completed)</div>
+                </div>
+            </section>
+            <section class=\"card\"><div class=\"header\">Request</div><div class=\"body\"><pre>\(request)</pre></div></section>
+            <section class=\"card\"><div class=\"header\">Result</div><div class=\"body\"><pre>\(result)</pre></div></section>
+            <section class=\"card\"><div class=\"header\">Screenshots</div><div class=\"body\">\(screenshotMarkup.isEmpty ? "Keine Screenshots vorhanden." : screenshotMarkup)</div></section>
+        </body>
+        </html>
+        """
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if navigationAction.navigationType == .linkActivated,
+           let url = navigationAction.request.url,
+           url.isFileURL {
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+            return
+        }
+
+        decisionHandler(.allow)
+    }
+
+    private static func buildScreenshotMarkup(for entry: ToolLogEntry) -> String {
+        guard entry.Screenshots.isEmpty == false else {
+            return ""
+        }
+
+        return "<div class=\"screenshot-grid\">" + entry.Screenshots.map { artifact in
+            let imagePath = escapeHTML(urlEncodedPathComponent(artifact.ImageFileName))
+            let kind = escapeHTML(artifact.Kind)
+            let summary = escapeHTML(artifact.Summary)
+            let mediaType = escapeHTML(artifact.MediaType ?? "")
+            let retention = escapeHTML(artifact.RetentionStatus ?? "")
+            let similarity = escapeHTML(artifact.Similarity ?? "")
+            let metaLine = [mediaType, retention, similarity.isEmpty ? "" : "Ähnlichkeit \(similarity)"].filter { !$0.isEmpty }.joined(separator: " · ")
+            return """
+            <div class=\"shot-card\">
+                <a href=\"\(imagePath)\"><img src=\"\(imagePath)\" alt=\"\(kind)\" /></a>
+                <div class=\"shot-body\">
+                    <div class=\"shot-kind\">\(kind)</div>
+                    <div class=\"shot-summary\">\(summary)</div>
+                    <div class=\"shot-meta\">\(metaLine)</div>
+                    <div class=\"shot-meta\"><a href=\"\(imagePath)\">Screenshot öffnen</a></div>
+                </div>
+            </div>
+            """
+        }.joined(separator: "\n") + "</div>"
+    }
+
+    private static func statusLabel(for status: String) -> String {
+        switch status.lowercased() {
+        case "running": return "laufend"
+        case "failed": return "fehler"
+        default: return "fertig"
+        }
+    }
+
+    private static func formatDisplayTimestamp(_ value: String?) -> String {
+        guard let value, !value.isEmpty else { return "-" }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            let outputFormatter = DateFormatter()
+            outputFormatter.dateStyle = .short
+            outputFormatter.timeStyle = .medium
+            return outputFormatter.string(from: date)
+        }
+        return value
+    }
+
+    private static func formatToolDuration(startedUtc: String?, completedUtc: String?, referenceDate: Date) -> String {
+        guard let startedUtc, let started = parseTimestamp(startedUtc) else { return "-" }
+        let endDate = completedUtc.flatMap(parseTimestamp) ?? referenceDate
+        return formatSeconds(max(0, endDate.timeIntervalSince(started)))
+    }
+
+    private static func formatSeconds(_ seconds: TimeInterval) -> String {
+        if seconds >= 60 {
+            let minutes = Int(seconds) / 60
+            let remainingSeconds = seconds.truncatingRemainder(dividingBy: 60)
+            return String(format: "%dm %.1fs", minutes, remainingSeconds)
+        }
+        return String(format: "%.1fs", seconds)
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
+    }
+
+    private static func urlEncodedPathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    }
+
+    private static func escapeHTML(_ value: String) -> String {
+        var escaped = value
+        escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
+        escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
+        escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
+        escaped = escaped.replacingOccurrences(of: "\"", with: "&quot;")
+        return escaped
+    }
+}
+
 final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private static let minimumLiveAudioCommitBytes = 4_800
-    private static let panelWidth: CGFloat = 460
+    fileprivate static let panelWidth: CGFloat = 560
     private static let minimumPanelHeight: CGFloat = 216
     private static let maximumPanelHeight: CGFloat = 316
+    private static let expandedToolHistoryHeight: CGFloat = 200
+    private static let toolHistoryContentHeight: CGFloat = 168
     private static let backgroundInset: CGFloat = 8
     private static let sideInset: CGFloat = 24
     private static let textHorizontalInset: CGFloat = 16
@@ -957,11 +1174,26 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             .appendingPathComponent("menu-bar-activity.json")
             .path
     }()
+    fileprivate static let toolLogFilePath: String = {
+        if let path = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_TOOL_LOG_FILE"], !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return path
+        }
+
+        if let sessionDirectory = ProcessInfo.processInfo.environment["AIDESK_MENU_BAR_DEBUG_SESSION_DIR"], !sessionDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: sessionDirectory, isDirectory: true)
+                .appendingPathComponent("menu-bar-tool-details.json")
+                .path
+        }
+
+        return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("AIDeskAssistant", isDirectory: true)
+            .appendingPathComponent("menu-bar-tool-details.json")
+            .path
+    }()
 
     private let serverURL: URL
     private let dismissPopover: () -> Void
     private let setActivity: (Bool) -> Void
-    private let toggleLogWindow: () -> Void
     private let diagnosticsLogger: StatusBarDiagnosticsLogger
     private let backgroundView = NSVisualEffectView(frame: .zero)
     private let voicePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -970,14 +1202,22 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let textView = NSTextView(frame: .zero)
     private let statusLabel = NSTextField(labelWithString: "")
     private let toolStatusLabel = NSTextField(labelWithString: "Tool: -")
+    private let toolHistoryDisclosureButton = NSButton(frame: .zero)
+    private let toolHistoryScrollView = NSScrollView(frame: .zero)
+    private let toolHistoryStackView = NSStackView(frame: .zero)
     private let usageLabel = NSTextField(labelWithString: "Input: - | Output: - | Total: -")
-    private let logButton = NSButton(frame: .zero)
+    private let requestDurationLabel = NSTextField(labelWithString: "Laufzeit: -")
+    private let settingsButton = NSButton(frame: .zero)
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let quitSeparator = NSBox(frame: .zero)
     private let quitButton = NSButton(title: "⏻", target: nil, action: nil)
     private var currentPanelHeight: CGFloat = minimumPanelHeight
+    private var toolHistoryExpanded = false
+    private var latestToolEntries: [ToolLogEntry] = []
+    private var currentRequestStartedAt: Date?
+    private var toolDetailWindow: NSWindow?
 
     private var audioPlayer: AVAudioPlayer?
     private var responseTask: Task<Void, Never>?
@@ -1029,11 +1269,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         return URLSession(configuration: configuration)
     }()
 
-    init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, toggleLogWindow: @escaping () -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
+    init(serverURL: URL, dismissPopover: @escaping () -> Void, setActivity: @escaping (Bool) -> Void, diagnosticsLogger: StatusBarDiagnosticsLogger) {
         self.serverURL = serverURL
         self.dismissPopover = dismissPopover
         self.setActivity = setActivity
-        self.toggleLogWindow = toggleLogWindow
         self.diagnosticsLogger = diagnosticsLogger
         let environment = ProcessInfo.processInfo.environment
         self.silenceCommitInterval = StatusBarViewController.readPositiveDouble(environment["AIDESK_MENU_BAR_SILENCE_COMMIT_SECONDS"], fallback: 0.9)
@@ -1123,6 +1362,29 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         toolStatusLabel.textColor = Self.secondaryTextColor
         toolStatusLabel.alignment = .left
 
+        toolHistoryDisclosureButton.target = self
+        toolHistoryDisclosureButton.action = #selector(toggleToolHistory(_:))
+        toolHistoryDisclosureButton.isBordered = false
+        toolHistoryDisclosureButton.bezelStyle = .regularSquare
+        toolHistoryDisclosureButton.contentTintColor = Self.secondaryTextColor
+        toolHistoryDisclosureButton.toolTip = "Tool-Verlauf ein- oder ausklappen"
+        toolHistoryDisclosureButton.imagePosition = .imageOnly
+        updateToolStatusHeader(activeTool: nil, toolCount: 0)
+
+        toolHistoryScrollView.borderType = .noBorder
+        toolHistoryScrollView.drawsBackground = false
+        toolHistoryScrollView.hasVerticalScroller = true
+        toolHistoryScrollView.hasHorizontalScroller = false
+        toolHistoryScrollView.autohidesScrollers = true
+        toolHistoryScrollView.isHidden = true
+
+        toolHistoryStackView.orientation = .vertical
+        toolHistoryStackView.alignment = .leading
+        toolHistoryStackView.distribution = .gravityAreas
+        toolHistoryStackView.spacing = 6
+        toolHistoryStackView.edgeInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
+        toolHistoryScrollView.documentView = toolHistoryStackView
+
         usageLabel.lineBreakMode = .byWordWrapping
         usageLabel.maximumNumberOfLines = 1
         usageLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
@@ -1130,13 +1392,19 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         usageLabel.alignment = .left
         usageLabel.cell?.truncatesLastVisibleLine = true
 
-        logButton.target = self
-        logButton.action = #selector(toggleLogWindowAction)
-        logButton.bezelStyle = .rounded
-        logButton.image = NSImage(systemSymbolName: "list.bullet.rectangle.portrait", accessibilityDescription: "Tool-Log")
-        logButton.imagePosition = .imageOnly
-        logButton.contentTintColor = Self.primaryTextColor
-        logButton.toolTip = "Tool-Log ein- oder ausblenden"
+        requestDurationLabel.lineBreakMode = .byTruncatingTail
+        requestDurationLabel.maximumNumberOfLines = 1
+        requestDurationLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        requestDurationLabel.textColor = Self.secondaryTextColor
+        requestDurationLabel.alignment = .right
+
+        settingsButton.target = self
+        settingsButton.action = #selector(openSettingsDialog)
+        settingsButton.bezelStyle = .rounded
+        settingsButton.image = NSImage(systemSymbolName: "gearshape.fill", accessibilityDescription: "Einstellungen")
+        settingsButton.imagePosition = .imageOnly
+        settingsButton.contentTintColor = Self.primaryTextColor
+        settingsButton.toolTip = "AIDesk Einstellungen"
 
         activityIndicator.style = .spinning
         activityIndicator.controlSize = .small
@@ -1178,8 +1446,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         backgroundView.addSubview(textScrollView)
         backgroundView.addSubview(statusLabel)
         backgroundView.addSubview(toolStatusLabel)
+        backgroundView.addSubview(toolHistoryDisclosureButton)
+        backgroundView.addSubview(toolHistoryScrollView)
         backgroundView.addSubview(usageLabel)
-        backgroundView.addSubview(logButton)
+        backgroundView.addSubview(requestDurationLabel)
+        backgroundView.addSubview(settingsButton)
         backgroundView.addSubview(activityIndicator)
         backgroundView.addSubview(recordButton)
         backgroundView.addSubview(cancelButton)
@@ -1250,8 +1521,47 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         submitCurrentText(dismissAfterSend: false)
     }
 
-    @objc private func toggleLogWindowAction(_ sender: Any?) {
-        toggleLogWindow()
+    @objc private func openSettingsDialog(_ sender: Any?) {
+        settingsButton.isEnabled = false
+        setStatus("Lade Einstellungen …")
+
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                let settings = try await self.fetchAppSettings()
+                await MainActor.run {
+                    self.settingsButton.isEnabled = true
+                    self.presentSettingsDialog(settings)
+                }
+            } catch {
+                self.diagnosticsLogger.log("Settings load failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.settingsButton.isEnabled = true
+                    self.setStatus(self.describeHostError(error, fallback: "Einstellungen konnten nicht geladen werden"))
+                }
+            }
+        }
+    }
+
+    @objc private func toggleToolHistory(_ sender: Any?) {
+        toolHistoryExpanded.toggle()
+        toolHistoryScrollView.isHidden = !toolHistoryExpanded
+        refreshToolHistoryText()
+        updateToolStatusHeader(activeTool: currentActiveToolName(), toolCount: latestToolEntries.count)
+        updateOverlayLayout(animated: true)
+    }
+
+    @objc private func showToolDetailFromHistory(_ sender: Any?) {
+        guard let button = sender as? NSButton,
+              let toolCallId = button.identifier?.rawValue,
+              let entry = latestToolEntries.first(where: { $0.ToolCallId == toolCallId }) else {
+            return
+        }
+
+        presentToolDetailWindow(for: entry)
     }
 
     private func submitCurrentText(dismissAfterSend: Bool) {
@@ -1353,6 +1663,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 await self?.interruptCurrentResponse(sendRemoteCancel: true)
             }
             await MainActor.run { [weak self] in
+                self?.beginRequestTimer()
                 self?.setStatus(autoFollowUp ? "Auto-Aufnahme startet …" : "Starte Live-Mikrofon …")
             }
             await self?.beginLiveRecording()
@@ -1397,7 +1708,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = Data("{}".utf8)
 
-        startStreamingRequest(request, sendRemoteCancel: false, allowAutoFollowUpAfterResponse: true)
+        startStreamingRequest(request, sendRemoteCancel: false, allowAutoFollowUpAfterResponse: true, startNewRequestTimer: false)
     }
 
     private func beginLiveRecording() async {
@@ -1433,7 +1744,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
-    private func startStreamingRequest(_ request: URLRequest, sendRemoteCancel: Bool = true, allowAutoFollowUpAfterResponse: Bool = false) {
+    private func startStreamingRequest(_ request: URLRequest, sendRemoteCancel: Bool = true, allowAutoFollowUpAfterResponse: Bool = false, startNewRequestTimer: Bool = true) {
         let previousResponseTask = responseTask
         clearUsage()
         setBusy(true)
@@ -1443,6 +1754,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
 
             await self.interruptCurrentResponse(previousResponseTask: previousResponseTask, sendRemoteCancel: sendRemoteCancel)
+            if startNewRequestTimer {
+                await MainActor.run {
+                    self.beginRequestTimer()
+                }
+            }
             self.currentResponseAllowsAutoFollowUpRecording = allowAutoFollowUpAfterResponse
             self.currentResponseReceivedAudio = false
             self.shouldAutoResumeRecordingAfterPlayback = false
@@ -2163,7 +2479,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private func updateOverlayLayout(animated: Bool) {
         let contentTextHeight = calculatedContentTextHeight()
         let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
-        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 138))
+        let basePanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 138))
+        let desiredPanelHeight = basePanelHeight + (toolHistoryExpanded ? Self.expandedToolHistoryHeight : 0)
         currentPanelHeight = desiredPanelHeight
 
         view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
@@ -2175,6 +2492,9 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let textY = topRowY - 12 - textHeight
         let statusY = textY - 28
         let bottomRowY = Self.bottomInset
+        let toolHistoryHeight = toolHistoryExpanded ? Self.toolHistoryContentHeight : 0
+        let toolHistoryY = bottomRowY + 30
+        let toolButtonY = toolHistoryExpanded ? toolHistoryY + toolHistoryHeight + 8 : statusY - 18
 
         let voiceWidth: CGFloat = 98
         let thinkingWidth: CGFloat = 106
@@ -2182,18 +2502,23 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         thinkingPopup.frame = NSRect(x: voicePopup.frame.maxX + 10, y: topRowY, width: thinkingWidth, height: 30)
         quitButton.frame = NSRect(x: contentWidth - Self.sideInset - 34, y: topRowY, width: 34, height: 30)
         quitSeparator.frame = NSRect(x: quitButton.frame.minX - 12, y: topRowY + 4, width: 1, height: 22)
-        cancelButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
+        settingsButton.frame = NSRect(x: quitSeparator.frame.minX - 10 - 34, y: topRowY, width: 34, height: 30)
+        cancelButton.frame = NSRect(x: settingsButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
         recordButton.frame = NSRect(x: cancelButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
-        logButton.frame = NSRect(x: recordButton.frame.minX - 6 - 34, y: topRowY, width: 34, height: 30)
 
         textScrollView.frame = NSRect(x: Self.textHorizontalInset, y: textY, width: contentWidth - (Self.textHorizontalInset * 2), height: textHeight)
         textView.textContainer?.containerSize = NSSize(width: textScrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
         textView.frame = NSRect(origin: .zero, size: NSSize(width: textScrollView.contentSize.width, height: max(textHeight, contentTextHeight)))
 
         statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: contentWidth - (Self.sideInset * 2) - 24, height: 22)
-        toolStatusLabel.frame = NSRect(x: Self.sideInset, y: statusY - 18, width: contentWidth - (Self.sideInset * 2) - 24, height: 16)
+        let disclosureButtonSize: CGFloat = 22
+        toolHistoryDisclosureButton.frame = NSRect(x: contentWidth - Self.sideInset - disclosureButtonSize, y: toolButtonY - 2, width: disclosureButtonSize, height: disclosureButtonSize)
+        toolStatusLabel.frame = NSRect(x: Self.sideInset, y: toolButtonY, width: toolHistoryDisclosureButton.frame.minX - Self.sideInset - 6, height: 18)
+        toolHistoryScrollView.frame = NSRect(x: Self.sideInset, y: toolHistoryY, width: contentWidth - (Self.sideInset * 2), height: toolHistoryHeight)
+        toolHistoryStackView.frame = NSRect(origin: .zero, size: NSSize(width: toolHistoryScrollView.contentSize.width, height: max(toolHistoryHeight, toolHistoryStackView.fittingSize.height)))
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
-        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
+        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 150, height: 18)
+        requestDurationLabel.frame = NSRect(x: contentWidth - Self.sideInset - 138, y: bottomRowY + 8, width: 138, height: 18)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
         if textScrollView.hasVerticalScroller {
             scrollTextSelectionToVisible()
@@ -2240,6 +2565,24 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         textView.scrollRangeToVisible(rangeToReveal)
     }
 
+    private func loadActivitySnapshot() -> ActivitySnapshot? {
+        let url = URL(fileURLWithPath: Self.activityFilePath)
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(ActivitySnapshot.self, from: data)
+    }
+
+    private func loadToolLogSnapshot() -> ToolLogSnapshot? {
+        let url = URL(fileURLWithPath: Self.toolLogFilePath)
+        guard let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(ToolLogSnapshot.self, from: data)
+    }
+
     private func loadVoiceSettings() async {
         do {
             let (data, response) = try await hostSession.data(from: serverURL.appendingPathComponent("voices"))
@@ -2263,6 +2606,31 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 self?.voicePopup.isEnabled = true
             }
         }
+    }
+
+    private func fetchAppSettings() async throws -> AppSettingsResponse {
+        let (data, response) = try await hostSession.data(from: serverURL.appendingPathComponent("settings"))
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Einstellungen konnten nicht geladen werden"
+            throw NSError(domain: "AIDeskAssistant", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+
+        return try JSONDecoder().decode(AppSettingsResponse.self, from: data)
+    }
+
+    private func submitAppSettings(language: String, apiKey: String?) async throws -> AppSettingsResponse {
+        var request = URLRequest(url: serverURL.appendingPathComponent("settings"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(AppSettingsUpdateRequest(language: language, apiKey: apiKey))
+
+        let (data, response) = try await hostSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+            let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Einstellungen konnten nicht gespeichert werden"
+            throw NSError(domain: "AIDeskAssistant", code: 1, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+
+        return try JSONDecoder().decode(AppSettingsResponse.self, from: data)
     }
 
     private func submitVoiceSelection(_ voice: String) async {
@@ -2334,18 +2702,132 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func refreshActivityStatus() {
-        let url = URL(fileURLWithPath: Self.activityFilePath)
-        guard let data = try? Data(contentsOf: url),
-              let snapshot = try? JSONDecoder().decode(ActivitySnapshot.self, from: data) else {
-            toolStatusLabel.stringValue = "Tool: -"
+        let activitySnapshot = loadActivitySnapshot()
+        let toolSnapshot = loadToolLogSnapshot()
+        latestToolEntries = toolSnapshot?.Entries ?? []
+        updateToolStatusHeader(activeTool: currentActiveToolName(activitySnapshot: activitySnapshot), toolCount: latestToolEntries.count)
+        refreshToolHistoryText()
+        refreshRequestDurationLabel()
+    }
+
+    private func currentActiveToolName(activitySnapshot: ActivitySnapshot? = nil) -> String? {
+        if let activeTool = activitySnapshot?.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
+            return activeTool
+        }
+
+        if let runningEntry = latestToolEntries.last(where: { $0.Status.caseInsensitiveCompare("running") == .orderedSame }), !runningEntry.ToolName.isEmpty {
+            return runningEntry.ToolName
+        }
+
+        return latestToolEntries.last?.ToolName
+    }
+
+    private func refreshToolHistoryText() {
+        guard toolHistoryExpanded else {
             return
         }
 
-        if let activeTool = snapshot.ActiveTool?.trimmingCharacters(in: .whitespacesAndNewlines), !activeTool.isEmpty {
-            toolStatusLabel.stringValue = "Tool: \(activeTool)"
-        } else {
-            toolStatusLabel.stringValue = "Tool: -"
+        clearToolHistoryRows()
+
+        if latestToolEntries.isEmpty {
+            let emptyLabel = NSTextField(labelWithString: "Noch keine Tool-Aufrufe vorhanden.")
+            emptyLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            emptyLabel.textColor = Self.secondaryTextColor
+            toolHistoryStackView.addArrangedSubview(emptyLabel)
+            updateToolHistoryStackFrame()
+            return
         }
+
+        let now = Date()
+        for entry in latestToolEntries.reversed() {
+            toolHistoryStackView.addArrangedSubview(makeToolHistoryRow(entry: entry, referenceDate: now))
+        }
+
+        updateToolHistoryStackFrame()
+        toolHistoryScrollView.contentView.scroll(to: NSPoint(x: 0, y: 0))
+    }
+
+    private func clearToolHistoryRows() {
+        let arrangedSubviews = toolHistoryStackView.arrangedSubviews
+        for view in arrangedSubviews {
+            toolHistoryStackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+    }
+
+    private func updateToolHistoryStackFrame() {
+        toolHistoryStackView.layoutSubtreeIfNeeded()
+        let contentHeight = max(Self.toolHistoryContentHeight, toolHistoryStackView.fittingSize.height)
+        toolHistoryStackView.frame = NSRect(origin: .zero, size: NSSize(width: toolHistoryScrollView.contentSize.width, height: contentHeight))
+    }
+
+    private func makeToolHistoryRow(entry: ToolLogEntry, referenceDate: Date) -> NSView {
+        let rowWidth = max(toolHistoryScrollView.contentSize.width, 0)
+        let container = NSStackView()
+        container.orientation = .horizontal
+        container.alignment = .centerY
+        container.distribution = .fill
+        container.spacing = 8
+        container.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+
+        let nameLabel = NSTextField(labelWithString: entry.ToolName)
+    nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: Self.fontWeight(forToolStatus: entry.Status))
+    nameLabel.textColor = Self.color(forToolStatus: entry.Status)
+        nameLabel.lineBreakMode = .byTruncatingTail
+        nameLabel.maximumNumberOfLines = 1
+        nameLabel.alignment = .left
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        let durationLabel = NSTextField(labelWithString: Self.formatToolDuration(startedUtc: entry.StartedUtc, completedUtc: entry.CompletedUtc, referenceDate: referenceDate))
+        durationLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        durationLabel.textColor = Self.secondaryTextColor
+        durationLabel.alignment = .right
+        durationLabel.setContentHuggingPriority(.required, for: .horizontal)
+        durationLabel.widthAnchor.constraint(equalToConstant: 64).isActive = true
+
+        let infoButton = NSButton(frame: .zero)
+        infoButton.target = self
+        infoButton.action = #selector(showToolDetailFromHistory(_:))
+        infoButton.bezelStyle = .texturedRounded
+        infoButton.isBordered = true
+        infoButton.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "Tool-Details")
+        infoButton.imagePosition = .imageOnly
+        infoButton.contentTintColor = Self.accentTextColor
+        infoButton.toolTip = "Tool-Details öffnen"
+        infoButton.identifier = NSUserInterfaceItemIdentifier(entry.ToolCallId)
+        infoButton.setButtonType(.momentaryPushIn)
+        infoButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        infoButton.heightAnchor.constraint(equalToConstant: 18).isActive = true
+
+        let spacer = NSView(frame: .zero)
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        container.addArrangedSubview(nameLabel)
+        container.addArrangedSubview(spacer)
+        container.addArrangedSubview(durationLabel)
+        container.addArrangedSubview(infoButton)
+
+        return container
+    }
+
+    private func updateToolStatusHeader(activeTool: String?, toolCount: Int) {
+        let baseTitle = activeTool.map { "Tool: \($0)" } ?? "Tool: -"
+        let countSuffix = toolCount > 0 ? "  ·  \(toolCount)" : ""
+        toolStatusLabel.attributedStringValue = NSAttributedString(
+            string: "\(baseTitle)\(countSuffix)",
+            attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: Self.secondaryTextColor,
+            ])
+        let symbolName = toolHistoryExpanded ? "chevron.down.circle.fill" : "chevron.up.circle.fill"
+        let configuration = NSImage.SymbolConfiguration(pointSize: 16, weight: .bold)
+        toolHistoryDisclosureButton.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Tool-Historie")?.withSymbolConfiguration(configuration)
+        toolHistoryDisclosureButton.contentTintColor = Self.secondaryTextColor
     }
 
     private func applyVoiceSettings(_ settings: VoiceSettingsResponse, announceChange: Bool, announceThinkingChange: Bool = false) {
@@ -2380,6 +2862,89 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    private func presentSettingsDialog(_ settings: AppSettingsResponse) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "AIDesk Einstellungen"
+        alert.informativeText = "Sprache wird sofort fuer neue Antworten uebernommen. Ein neuer API-Key wird direkt fuer neue Realtime-Sessions verwendet."
+        alert.addButton(withTitle: "Speichern")
+        alert.addButton(withTitle: "Abbrechen")
+
+        let accessoryWidth: CGFloat = 360
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: accessoryWidth, height: 114))
+
+        let languageLabel = NSTextField(labelWithString: "Sprache")
+        languageLabel.frame = NSRect(x: 0, y: 84, width: accessoryWidth, height: 18)
+        languageLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+        let languagePopup = NSPopUpButton(frame: NSRect(x: 0, y: 52, width: accessoryWidth, height: 28), pullsDown: false)
+        languagePopup.addItems(withTitles: settings.availableLanguages.map(Self.displayName(forLanguage:)))
+        if let index = settings.availableLanguages.firstIndex(of: settings.currentLanguage) {
+            languagePopup.selectItem(at: index)
+        }
+
+        let apiKeyLabel = NSTextField(labelWithString: "OpenAI API Key")
+        apiKeyLabel.frame = NSRect(x: 0, y: 30, width: accessoryWidth, height: 18)
+        apiKeyLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+
+        let apiKeyField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: accessoryWidth, height: 24))
+        apiKeyField.placeholderString = settings.maskedApiKey ?? "sk-..."
+        apiKeyField.stringValue = ""
+
+        accessoryView.addSubview(languageLabel)
+        accessoryView.addSubview(languagePopup)
+        accessoryView.addSubview(apiKeyLabel)
+        accessoryView.addSubview(apiKeyField)
+        alert.accessoryView = accessoryView
+
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else {
+            setStatus("Einstellungen unveraendert")
+            return
+        }
+
+        let selectedIndex = languagePopup.indexOfSelectedItem
+        let selectedLanguage = settings.availableLanguages.indices.contains(selectedIndex)
+            ? settings.availableLanguages[selectedIndex]
+            : settings.currentLanguage
+        let enteredApiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let apiKeyToSubmit = enteredApiKey.isEmpty ? nil : enteredApiKey
+
+        if selectedLanguage == settings.currentLanguage && apiKeyToSubmit == nil {
+            setStatus("Einstellungen unveraendert")
+            return
+        }
+
+        setStatus("Speichere Einstellungen …")
+        settingsButton.isEnabled = false
+
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            do {
+                let updatedSettings = try await self.submitAppSettings(language: selectedLanguage, apiKey: apiKeyToSubmit)
+                await MainActor.run {
+                    self.settingsButton.isEnabled = true
+                    if apiKeyToSubmit != nil && selectedLanguage != settings.currentLanguage {
+                        self.setStatus("Sprache und API-Key aktualisiert")
+                    } else if apiKeyToSubmit != nil {
+                        self.setStatus("API-Key aktualisiert")
+                    } else {
+                        self.setStatus("Sprache aktiv: \(Self.displayName(forLanguage: updatedSettings.currentLanguage))")
+                    }
+                }
+            } catch {
+                self.diagnosticsLogger.log("Settings save failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    self.settingsButton.isEnabled = true
+                    self.setStatus(self.describeHostError(error, fallback: "Einstellungen konnten nicht gespeichert werden"))
+                }
+            }
+        }
+    }
+
     private static func displayName(forVoiceId voiceId: String) -> String {
         guard let firstCharacter = voiceId.first else {
             return voiceId
@@ -2398,6 +2963,17 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             return "Thinking: High"
         default:
             return "Thinking: Auto"
+        }
+    }
+
+    private static func displayName(forLanguage language: String) -> String {
+        switch language.lowercased() {
+        case "de":
+            return "Deutsch"
+        case "en":
+            return "English"
+        default:
+            return language
         }
     }
 
@@ -2477,10 +3053,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         cancelButton.isEnabled = busy
         voicePopup.isEnabled = !busy && !availableVoices.isEmpty
         thinkingPopup.isEnabled = !busy && !availableThinkingLevels.isEmpty
+        toolHistoryDisclosureButton.isEnabled = true
         if busy {
             activityIndicator.startAnimation(nil)
         } else {
             activityIndicator.stopAnimation(nil)
+            endRequestTimer()
         }
         setActivity(busy)
     }
@@ -2508,6 +3086,120 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         return parsed
     }
 
+    private func beginRequestTimer() {
+        currentRequestStartedAt = Date()
+        refreshRequestDurationLabel()
+    }
+
+    private func presentToolDetailWindow(for entry: ToolLogEntry) {
+        let viewController = ToolDetailViewController(entry: entry)
+        let window: NSWindow
+        if let toolDetailWindow {
+            window = toolDetailWindow
+            window.contentViewController = viewController
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false)
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            window.minSize = NSSize(width: 520, height: 360)
+            toolDetailWindow = window
+            window.contentViewController = viewController
+        }
+
+        window.title = "Tool-Details · \(entry.ToolName)"
+        if let currentWindow = view.window {
+            let origin = NSPoint(x: currentWindow.frame.maxX + 18, y: currentWindow.frame.minY)
+            window.setFrameOrigin(origin)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func endRequestTimer() {
+        currentRequestStartedAt = nil
+        requestDurationLabel.stringValue = "Laufzeit: -"
+    }
+
+    private func refreshRequestDurationLabel() {
+        guard let currentRequestStartedAt else {
+            requestDurationLabel.stringValue = "Laufzeit: -"
+            return
+        }
+
+        let elapsed = Date().timeIntervalSince(currentRequestStartedAt)
+        requestDurationLabel.stringValue = "Laufzeit: \(Self.formatSeconds(elapsed))"
+    }
+
+    private static func formatToolDuration(startedUtc: String?, completedUtc: String?, referenceDate: Date) -> String {
+        guard let startedUtc, let started = parseTimestamp(startedUtc) else {
+            return "-"
+        }
+
+        let endDate = completedUtc.flatMap(parseTimestamp) ?? referenceDate
+        return formatSeconds(max(0, endDate.timeIntervalSince(started)))
+    }
+
+    private static func formatSeconds(_ seconds: TimeInterval) -> String {
+        if seconds >= 60 {
+            let minutes = Int(seconds) / 60
+            let remainingSeconds = seconds.truncatingRemainder(dividingBy: 60)
+            return String(format: "%dm %.1fs", minutes, remainingSeconds)
+        }
+
+        return String(format: "%.1fs", seconds)
+    }
+
+    private static func parseTimestamp(_ value: String) -> Date? {
+        ISO8601DateFormatter().date(from: value)
+    }
+
+    private static func displayStatus(for status: String) -> String {
+        switch status.lowercased() {
+        case "running":
+            return "laeuft"
+        case "completed":
+            return "fertig"
+        case "failed":
+            return "fehler"
+        default:
+            return status
+        }
+    }
+
+    private static func fontWeight(forToolStatus status: String) -> NSFont.Weight {
+        switch status.lowercased() {
+        case "running":
+            return .bold
+        default:
+            return .regular
+        }
+    }
+
+    private static func color(forToolStatus status: String) -> NSColor {
+        switch status.lowercased() {
+        case "running":
+            return secondaryTextColor
+        case "completed":
+            return secondaryTextColor
+        case "failed":
+            return NSColor(calibratedRed: 0.72, green: 0.22, blue: 0.19, alpha: 1.0)
+        default:
+            return secondaryTextColor
+        }
+    }
+
+    private static func toolHistoryLineAttributes(color: NSColor) -> [NSAttributedString.Key: Any] {
+        [
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: color,
+        ]
+    }
+
     private func dismissForAutomation() {
         dismissPopover()
         NSApp.hide(nil)
@@ -2519,7 +3211,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let diagnosticsLogger = StatusBarDiagnosticsLogger()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var inputWindow: NSPanel?
-    private var logWindow: NSWindow?
     private weak var viewController: StatusBarViewController?
     private var isBusy = false
 
@@ -2532,12 +3223,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.inputWindow?.orderOut(nil)
         }, setActivity: { [weak self] isBusy in
             self?.setBusy(isBusy)
-        }, toggleLogWindow: { [weak self] in
-            self?.toggleLogWindow(nil)
         }, diagnosticsLogger: diagnosticsLogger)
         self.viewController = viewController
         inputWindow = makeInputWindow(contentViewController: viewController)
-        logWindow = makeLogWindow()
         diagnosticsLogger.log("Application launched with server URL \(serverURL.absoluteString)")
 
         if let button = statusItem.button {
@@ -2568,23 +3256,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func toggleLogWindow(_ sender: AnyObject?) {
-        guard let logWindow else {
-            return
-        }
-
-        if logWindow.isVisible {
-            logWindow.orderOut(sender)
-        } else {
-            positionLogWindow(logWindow)
-            NSApp.activate(ignoringOtherApps: true)
-            logWindow.makeKeyAndOrderFront(sender)
-        }
-    }
-
     private func makeInputWindow(contentViewController: NSViewController) -> NSPanel {
         let panel = OverlayPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 216),
+            contentRect: NSRect(x: 0, y: 0, width: StatusBarViewController.panelWidth, height: 216),
             styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false)
@@ -2605,37 +3279,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return panel
     }
 
-    private func makeLogWindow() -> NSWindow {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false)
-        window.contentViewController = ActivityLogViewController()
-        window.title = "AIDeskAssistantLogWindow"
-        window.titleVisibility = .visible
-        window.isReleasedWhenClosed = false
-        window.level = .floating
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.minSize = NSSize(width: 520, height: 300)
-        positionLogWindow(window)
-        return window
-    }
-
     private func positionInputWindow(_ window: NSWindow) {
         let targetScreen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
         let visibleFrame = targetScreen?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
         let frame = window.frame
         let x = visibleFrame.midX - (frame.width / 2)
-        let y = visibleFrame.minY + 24
-        window.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
-    }
-
-    private func positionLogWindow(_ window: NSWindow) {
-        let targetScreen = window.screen ?? NSScreen.main ?? NSScreen.screens.first
-        let visibleFrame = targetScreen?.visibleFrame ?? NSScreen.screens.first?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
-        let frame = window.frame
-        let x = visibleFrame.maxX - frame.width - 24
         let y = visibleFrame.minY + 24
         window.setFrameOrigin(NSPoint(x: round(x), y: round(y)))
     }
