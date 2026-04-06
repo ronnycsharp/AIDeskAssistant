@@ -25,6 +25,16 @@ internal static class LanguagePreferenceStore
 
     public static IReadOnlyList<string> AvailableLanguages => [German, English];
 
+    public static bool IsMuted()
+        => LoadMuteSetting();
+
+    public static bool SetMuted(bool muted)
+    {
+        Environment.SetEnvironmentVariable("AIDESK_MUTED", muted ? "1" : "0");
+        SaveToFile(muted: muted);
+        return muted;
+    }
+
     public static string? TryLoadApiKey()
     {
         string? apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
@@ -86,6 +96,15 @@ internal static class LanguagePreferenceStore
             Environment.GetEnvironmentVariable("AIDESK_LANGUAGE")
             ?? TryReadFromFile());
 
+    private static bool LoadMuteSetting()
+    {
+        string? envValue = Environment.GetEnvironmentVariable("AIDESK_MUTED");
+        if (!string.IsNullOrWhiteSpace(envValue))
+            return IsTrue(envValue);
+
+        return TryReadSettingsFile()?.Muted ?? false;
+    }
+
     private static string? TryReadFromFile()
     {
         if (!File.Exists(SettingsFilePath))
@@ -102,7 +121,7 @@ internal static class LanguagePreferenceStore
         }
     }
 
-    private static void SaveToFile(string? language = null, string? apiKey = null)
+    private static void SaveToFile(string? language = null, string? apiKey = null, bool? muted = null)
     {
         try
         {
@@ -114,6 +133,8 @@ internal static class LanguagePreferenceStore
                 settings.Language = language;
             if (!string.IsNullOrWhiteSpace(apiKey))
                 settings.ApiKey = apiKey;
+            if (muted.HasValue)
+                settings.Muted = muted.Value;
             settings.UpdatedAtUtc = DateTimeOffset.UtcNow;
             File.WriteAllText(SettingsFilePath, JsonSerializer.Serialize(settings, JsonOptions));
         }
@@ -142,6 +163,13 @@ internal static class LanguagePreferenceStore
     {
         public string Language { get; set; } = German;
         public string ApiKey { get; set; } = string.Empty;
+        public bool Muted { get; set; }
         public DateTimeOffset UpdatedAtUtc { get; set; }
     }
+
+    private static bool IsTrue(string value)
+        => value.Trim().Equals("1", StringComparison.OrdinalIgnoreCase)
+           || value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase)
+           || value.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase)
+           || value.Trim().Equals("on", StringComparison.OrdinalIgnoreCase);
 }

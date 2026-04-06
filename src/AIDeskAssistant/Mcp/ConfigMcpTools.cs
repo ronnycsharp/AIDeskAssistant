@@ -14,6 +14,10 @@ internal static class ConfigMcpTools
     [
         new SetLanguageTool(),
         new GetLanguageTool(),
+        new SetApiKeyTool(),
+        new GetApiKeyStatusTool(),
+        new SetMuteTool(),
+        new GetMuteTool(),
         new GetConfigTool(),
     ];
 
@@ -102,7 +106,8 @@ internal static class ConfigMcpTools
             string lang = $"{LanguagePreferenceStore.CurrentDisplayName} ({LanguagePreferenceStore.Current})";
             string model = Environment.GetEnvironmentVariable("OPENAI_MODEL") ?? "gpt-4o";
             string realtimeModel = Environment.GetEnvironmentVariable("OPENAI_REALTIME_MODEL") ?? "gpt-realtime";
-            bool hasApiKey = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OPENAI_API_KEY"));
+            bool hasApiKey = LanguagePreferenceStore.HasApiKeyConfigured();
+            bool muted = LanguagePreferenceStore.IsMuted();
             int maxRounds = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_MAX_TOOL_ROUNDS"), 60);
 
             return Ok($"""
@@ -110,6 +115,7 @@ internal static class ConfigMcpTools
                 OpenAI model:     {model}
                 Realtime model:   {realtimeModel}
                 API key set:      {(hasApiKey ? "yes" : "no")}
+                Muted:            {(muted ? "yes" : "no")}
                 Max tool rounds:  {maxRounds}
                 """);
         }
@@ -120,11 +126,129 @@ internal static class ConfigMcpTools
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private sealed class SetApiKeyTool : McpServerTool
+    {
+        private static readonly Tool Proto = new()
+        {
+            Name = "set_api_key",
+            Description = "Persists the OpenAI API key used by AIDeskAssistant so future menu bar and MCP sessions can reuse it.",
+            InputSchema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": {
+                "apiKey": {
+                  "type": "string",
+                  "description": "OpenAI API key, for example sk-..."
+                }
+              },
+              "required": ["apiKey"]
+            }
+            """)
+        };
+
+        public override Tool ProtocolTool => Proto;
+        public override IReadOnlyList<object> Metadata => EmptyMetadata;
+
+        public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+        {
+            string? apiKey = GetStringArg(request.Params?.Arguments, "apiKey");
+            if (string.IsNullOrWhiteSpace(apiKey))
+                return Error("Parameter 'apiKey' is required.");
+
+            LanguagePreferenceStore.SaveApiKey(apiKey);
+            return Ok($"OpenAI API key saved ({LanguagePreferenceStore.GetMaskedApiKey() ?? "configured"}).");
+        }
+    }
+
+    private sealed class GetApiKeyStatusTool : McpServerTool
+    {
+        private static readonly Tool Proto = new()
+        {
+            Name = "get_api_key_status",
+            Description = "Returns whether an OpenAI API key is configured and shows a masked preview.",
+            InputSchema = JsonSerializer.Deserialize<JsonElement>("""{"type":"object","properties":{}}""")
+        };
+
+        public override Tool ProtocolTool => Proto;
+        public override IReadOnlyList<object> Metadata => EmptyMetadata;
+
+        public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+        {
+            bool configured = LanguagePreferenceStore.HasApiKeyConfigured();
+            string masked = LanguagePreferenceStore.GetMaskedApiKey() ?? "not configured";
+            return Ok($"API key configured: {(configured ? "yes" : "no")} ({masked}).");
+        }
+    }
+
+    private sealed class SetMuteTool : McpServerTool
+    {
+        private static readonly Tool Proto = new()
+        {
+            Name = "set_mute",
+            Description = "Enables or disables spoken audio output while keeping text responses active.",
+            InputSchema = JsonSerializer.Deserialize<JsonElement>("""
+            {
+              "type": "object",
+              "properties": {
+                "muted": {
+                  "type": "boolean",
+                  "description": "True mutes spoken output, false enables it again."
+                }
+              },
+              "required": ["muted"]
+            }
+            """)
+        };
+
+        public override Tool ProtocolTool => Proto;
+        public override IReadOnlyList<object> Metadata => EmptyMetadata;
+
+        public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+        {
+            bool? muted = GetBoolArg(request.Params?.Arguments, "muted");
+            if (!muted.HasValue)
+                return Error("Parameter 'muted' is required and must be boolean.");
+
+            bool current = LanguagePreferenceStore.SetMuted(muted.Value);
+            return Ok(current ? "Spoken output muted." : "Spoken output enabled.");
+        }
+    }
+
+    private sealed class GetMuteTool : McpServerTool
+    {
+        private static readonly Tool Proto = new()
+        {
+            Name = "get_mute",
+            Description = "Returns whether spoken audio output is currently muted.",
+            InputSchema = JsonSerializer.Deserialize<JsonElement>("""{"type":"object","properties":{}}""")
+        };
+
+        public override Tool ProtocolTool => Proto;
+        public override IReadOnlyList<object> Metadata => EmptyMetadata;
+
+        public override ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken = default)
+            => Ok(LanguagePreferenceStore.IsMuted() ? "Spoken output is muted." : "Spoken output is enabled.");
+    }
+
     private static string? GetStringArg(IDictionary<string, JsonElement>? args, string key)
     {
         if (args is null || !args.TryGetValue(key, out JsonElement el))
             return null;
         return el.ValueKind == JsonValueKind.String ? el.GetString() : el.ToString();
+    }
+
+    private static bool? GetBoolArg(IDictionary<string, JsonElement>? args, string key)
+    {
+        if (args is null || !args.TryGetValue(key, out JsonElement el))
+            return null;
+
+        return el.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when bool.TryParse(el.GetString(), out bool parsed) => parsed,
+            _ => null,
+        };
     }
 
     private static ValueTask<CallToolResult> Ok(string text) =>

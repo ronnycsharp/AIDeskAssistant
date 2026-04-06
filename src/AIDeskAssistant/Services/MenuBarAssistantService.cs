@@ -29,6 +29,8 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
 
     public string CurrentLanguage => _assistant.CurrentLanguage;
 
+    public bool IsMuted => LanguagePreferenceStore.IsMuted();
+
     public IReadOnlyList<string> GetAvailableVoices() => _speechService.GetAvailableVoices();
 
     public IReadOnlyList<string> GetAvailableThinkingLevels() => _assistant.GetAvailableThinkingLevels();
@@ -53,6 +55,9 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
         return Task.CompletedTask;
     }
 
+    public Task<bool> SetMutedAsync(bool muted, CancellationToken ct = default)
+        => Task.FromResult(LanguagePreferenceStore.SetMuted(muted));
+
     public async Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -64,7 +69,9 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
             using CancellationTokenSource turnCts = CreateTurnCancellationSource(ct);
             _activeTurnCts = turnCts;
             AIServiceTextResult response = await _assistant.SendMessageWithUsageAsync(text, ct: turnCts.Token);
-            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
+            byte[]? audioWavBytes = IsMuted
+                ? null
+                : await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
             return new RealtimeAssistantTurnResult(response.Text, audioWavBytes, response.Usage);
         }
         finally
@@ -98,12 +105,14 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
             if (string.IsNullOrWhiteSpace(transcript))
             {
                 const string noSpeechMessage = "Keine Sprache erkannt.";
-                byte[]? noSpeechAudio = await _speechService.GenerateSpeechWavAsync(noSpeechMessage, turnCts.Token);
+                byte[]? noSpeechAudio = IsMuted ? null : await _speechService.GenerateSpeechWavAsync(noSpeechMessage, turnCts.Token);
                 return new RealtimeAssistantTurnResult(noSpeechMessage, noSpeechAudio);
             }
 
             AIServiceTextResult response = await _assistant.SendMessageWithUsageAsync(transcript, ct: turnCts.Token);
-            byte[]? audioWavBytes = await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
+            byte[]? audioWavBytes = IsMuted
+                ? null
+                : await _speechService.GenerateSpeechWavAsync(response.Text, turnCts.Token);
             return new RealtimeAssistantTurnResult(response.Text, audioWavBytes, response.Usage);
         }
         finally

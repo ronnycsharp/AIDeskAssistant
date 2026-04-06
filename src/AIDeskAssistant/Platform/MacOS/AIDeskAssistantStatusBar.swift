@@ -36,6 +36,7 @@ struct AppSettingsResponse: Decodable {
     let availableLanguages: [String]
     let apiKeyConfigured: Bool
     let maskedApiKey: String?
+    let muted: Bool
 }
 
 struct VoiceSelectionRequest: Encodable {
@@ -49,6 +50,7 @@ struct ThinkingSelectionRequest: Encodable {
 struct AppSettingsUpdateRequest: Encodable {
     let language: String
     let apiKey: String?
+    let muted: Bool?
 }
 
 struct TokenUsage: Decodable {
@@ -1211,7 +1213,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let activityIndicator = NSProgressIndicator(frame: .zero)
     private let recordButton = NSButton(frame: .zero)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
-    private let quitSeparator = NSBox(frame: .zero)
+    private let quitSeparator = NSView(frame: .zero)
     private let quitButton = NSButton(title: "⏻", target: nil, action: nil)
     private var currentPanelHeight: CGFloat = minimumPanelHeight
     private var toolHistoryExpanded = false
@@ -1250,6 +1252,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var accumulatedResponseText = ""
     private var availableVoices: [String] = []
     private var availableThinkingLevels: [String] = []
+    private var isMuted = false
     private var isUpdatingVoiceSelection = false
     private var isUpdatingThinkingSelection = false
     private var isBusy = false
@@ -1427,12 +1430,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         cancelButton.contentTintColor = Self.primaryTextColor
         cancelButton.toolTip = "Laufende Antwort abbrechen"
 
-        quitSeparator.boxType = .custom
-        quitSeparator.borderType = .lineBorder
-        quitSeparator.borderWidth = 1
-        quitSeparator.cornerRadius = 0
-        quitSeparator.borderColor = NSColor.white.withAlphaComponent(0.18)
-        quitSeparator.fillColor = .clear
+        quitSeparator.wantsLayer = true
+        quitSeparator.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.18).cgColor
 
         quitButton.target = self
         quitButton.action = #selector(quitApp)
@@ -1467,6 +1466,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         startActivityPolling()
         Task { [weak self] in
             await self?.loadVoiceSettings()
+            await self?.loadAppSettings()
         }
     }
 
@@ -2229,6 +2229,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         presentUsage(response.usage)
         setBusy(false)
 
+        if isMuted {
+            diagnosticsLogger.log("Skipping non-streamed audio playback because mute is enabled")
+            return
+        }
+
         guard let audioBase64 = response.audioBase64, let audioData = Data(base64Encoded: audioBase64) else {
             return
         }
@@ -2256,6 +2261,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
 
         case "audio_delta":
+            if isMuted {
+                diagnosticsLogger.log("Ignoring streamed audio delta because mute is enabled")
+                return
+            }
+
             guard let pcmBase64 = event.pcmBase64, let pcmData = Data(base64Encoded: pcmBase64) else {
                 return
             }
@@ -2281,10 +2291,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             presentUsage(event.usage)
             setBusy(false)
             responseTask = nil
-            shouldAutoResumeRecordingAfterPlayback = currentResponseAllowsAutoFollowUpRecording && currentResponseReceivedAudio
+            shouldAutoResumeRecordingAfterPlayback = currentResponseAllowsAutoFollowUpRecording && (currentResponseReceivedAudio || isMuted)
             if shouldAutoResumeRecordingAfterPlayback {
                 setStatus("Antwort fertig. Auto-Aufnahme folgt …")
-                scheduleAutoResumeRecordingAfterPlayback()
+                scheduleAutoResumeRecordingAfterPlayback(delaySeconds: isMuted ? 0.05 : nil)
             } else {
                 resetCurrentResponseAudioState()
             }
@@ -2618,11 +2628,22 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         return try JSONDecoder().decode(AppSettingsResponse.self, from: data)
     }
 
-    private func submitAppSettings(language: String, apiKey: String?) async throws -> AppSettingsResponse {
+    private func loadAppSettings() async {
+        do {
+            let settings = try await fetchAppSettings()
+            await MainActor.run { [weak self] in
+                self?.applyAppSettings(settings)
+            }
+        } catch {
+            diagnosticsLogger.log("Settings load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func submitAppSettings(language: String, apiKey: String?, muted: Bool) async throws -> AppSettingsResponse {
         var request = URLRequest(url: serverURL.appendingPathComponent("settings"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(AppSettingsUpdateRequest(language: language, apiKey: apiKey))
+        request.httpBody = try JSONEncoder().encode(AppSettingsUpdateRequest(language: language, apiKey: apiKey, muted: muted))
 
         let (data, response) = try await hostSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
@@ -2871,7 +2892,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         alert.addButton(withTitle: "Abbrechen")
 
         let accessoryWidth: CGFloat = 360
-        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: accessoryWidth, height: 114))
+        let accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: accessoryWidth, height: 146))
 
         let languageLabel = NSTextField(labelWithString: "Sprache")
         languageLabel.frame = NSRect(x: 0, y: 84, width: accessoryWidth, height: 18)
@@ -2883,16 +2904,21 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             languagePopup.selectItem(at: index)
         }
 
+        let muteButton = NSButton(checkboxWithTitle: "Sprachausgabe stummschalten", target: nil, action: nil)
+        muteButton.frame = NSRect(x: 0, y: 30, width: accessoryWidth, height: 20)
+        muteButton.state = settings.muted ? .on : .off
+
         let apiKeyLabel = NSTextField(labelWithString: "OpenAI API Key")
-        apiKeyLabel.frame = NSRect(x: 0, y: 30, width: accessoryWidth, height: 18)
+        apiKeyLabel.frame = NSRect(x: 0, y: 56, width: accessoryWidth, height: 18)
         apiKeyLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
-        let apiKeyField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: accessoryWidth, height: 24))
+        let apiKeyField = NSSecureTextField(frame: NSRect(x: 0, y: 26, width: accessoryWidth, height: 24))
         apiKeyField.placeholderString = settings.maskedApiKey ?? "sk-..."
         apiKeyField.stringValue = ""
 
         accessoryView.addSubview(languageLabel)
         accessoryView.addSubview(languagePopup)
+        accessoryView.addSubview(muteButton)
         accessoryView.addSubview(apiKeyLabel)
         accessoryView.addSubview(apiKeyField)
         alert.accessoryView = accessoryView
@@ -2907,10 +2933,11 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         let selectedLanguage = settings.availableLanguages.indices.contains(selectedIndex)
             ? settings.availableLanguages[selectedIndex]
             : settings.currentLanguage
+        let selectedMuted = muteButton.state == .on
         let enteredApiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKeyToSubmit = enteredApiKey.isEmpty ? nil : enteredApiKey
 
-        if selectedLanguage == settings.currentLanguage && apiKeyToSubmit == nil {
+        if selectedLanguage == settings.currentLanguage && apiKeyToSubmit == nil && selectedMuted == settings.muted {
             setStatus("Einstellungen unveraendert")
             return
         }
@@ -2924,13 +2951,16 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
 
             do {
-                let updatedSettings = try await self.submitAppSettings(language: selectedLanguage, apiKey: apiKeyToSubmit)
+                let updatedSettings = try await self.submitAppSettings(language: selectedLanguage, apiKey: apiKeyToSubmit, muted: selectedMuted)
                 await MainActor.run {
                     self.settingsButton.isEnabled = true
-                    if apiKeyToSubmit != nil && selectedLanguage != settings.currentLanguage {
-                        self.setStatus("Sprache und API-Key aktualisiert")
+                    self.applyAppSettings(updatedSettings)
+                    if apiKeyToSubmit != nil && (selectedLanguage != settings.currentLanguage || selectedMuted != settings.muted) {
+                        self.setStatus("Einstellungen aktualisiert")
                     } else if apiKeyToSubmit != nil {
                         self.setStatus("API-Key aktualisiert")
+                    } else if selectedMuted != settings.muted {
+                        self.setStatus(selectedMuted ? "Sprachausgabe stumm" : "Sprachausgabe aktiv")
                     } else {
                         self.setStatus("Sprache aktiv: \(Self.displayName(forLanguage: updatedSettings.currentLanguage))")
                     }
@@ -2943,6 +2973,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 }
             }
         }
+    }
+
+    private func applyAppSettings(_ settings: AppSettingsResponse) {
+        isMuted = settings.muted
     }
 
     private static func displayName(forVoiceId voiceId: String) -> String {

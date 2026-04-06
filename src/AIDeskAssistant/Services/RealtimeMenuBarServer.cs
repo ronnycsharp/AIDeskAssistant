@@ -153,6 +153,9 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 if (!string.IsNullOrWhiteSpace(request.ApiKey))
                     await _assistant.SetApiKeyAsync(request.ApiKey, ct);
 
+                if (request.Muted.HasValue)
+                    await _assistant.SetMutedAsync(request.Muted.Value, ct);
+
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateAppSettingsPayload(_assistant.CurrentLanguage, _assistant.GetAvailableLanguages()), ct);
                 return;
             }
@@ -167,7 +170,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 }
 
                 RealtimeAssistantTurnResult result = await _assistant.SendTextAsync(request.Text, ct);
-                bool includeAudio = request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = ! _assistant.IsMuted && (request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers));
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result, includeAudio), ct);
                 return;
             }
@@ -181,7 +184,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                     return;
                 }
 
-                bool includeAudio = request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = !_assistant.IsMuted && (request.IncludeAudio ?? ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers));
                 await WriteStreamAsync(context.Response, _assistant.StreamTextAsync(request.Text, ct), includeAudio, ct);
                 return;
             }
@@ -191,7 +194,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 using var memoryStream = new MemoryStream();
                 await context.Request.InputStream.CopyToAsync(memoryStream, ct);
                 RealtimeAssistantTurnResult result = await _assistant.SendWaveAudioAsync(memoryStream.ToArray(), ct);
-                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = !_assistant.IsMuted && ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
                 await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateResponse(result, includeAudio), ct);
                 return;
             }
@@ -200,7 +203,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
             {
                 using var memoryStream = new MemoryStream();
                 await context.Request.InputStream.CopyToAsync(memoryStream, ct);
-                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = !_assistant.IsMuted && ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
                 await WriteStreamAsync(context.Response, _assistant.StreamWaveAudioAsync(memoryStream.ToArray(), ct), includeAudio, ct);
                 return;
             }
@@ -225,7 +228,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
             if (context.Request.HttpMethod == "POST" && path == "/audio-live/commit-stream")
             {
                 string sessionId = GetRequiredSessionId(context.Request.QueryString, context.Request.Headers);
-                bool includeAudio = ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
+                bool includeAudio = !_assistant.IsMuted && ResolveIncludeAudio(context.Request.QueryString, context.Request.Headers);
                 await WriteStreamAsync(context.Response, _assistant.CommitLiveAudioInputAsync(sessionId, ct), includeAudio, ct);
                 return;
             }
@@ -384,6 +387,7 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         availableLanguages,
         apiKeyConfigured = LanguagePreferenceStore.HasApiKeyConfigured(),
         maskedApiKey = LanguagePreferenceStore.GetMaskedApiKey(),
+        muted = LanguagePreferenceStore.IsMuted(),
     };
 
     internal static bool ResolveIncludeAudio(NameValueCollection queryString, NameValueCollection headers, bool defaultValue = true)
@@ -494,5 +498,6 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     {
         public string Language { get; set; } = string.Empty;
         public string? ApiKey { get; set; }
+        public bool? Muted { get; set; }
     }
 }

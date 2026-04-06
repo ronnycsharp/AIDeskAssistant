@@ -62,6 +62,7 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     public string CurrentVoice => _voice;
     public string CurrentThinkingLevel => _thinkingLevel;
     public string CurrentLanguage => LanguagePreferenceStore.Current;
+    public bool IsMuted => LanguagePreferenceStore.IsMuted();
 
     public IReadOnlyList<string> GetAvailableVoices()
     {
@@ -185,6 +186,9 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             _sessionLock.Release();
         }
     }
+
+    public Task<bool> SetMutedAsync(bool muted, CancellationToken ct = default)
+        => Task.FromResult(LanguagePreferenceStore.SetMuted(muted));
 
     public async Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default)
     {

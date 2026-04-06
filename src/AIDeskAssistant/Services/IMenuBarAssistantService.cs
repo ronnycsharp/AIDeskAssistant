@@ -5,6 +5,7 @@ internal interface IMenuBarAssistantService : IAsyncDisposable
     string CurrentVoice { get; }
     string CurrentThinkingLevel { get; }
     string CurrentLanguage { get; }
+    bool IsMuted { get; }
     IReadOnlyList<string> GetAvailableVoices();
     IReadOnlyList<string> GetAvailableThinkingLevels();
     IReadOnlyList<string> GetAvailableLanguages();
@@ -12,6 +13,7 @@ internal interface IMenuBarAssistantService : IAsyncDisposable
     Task<string> SetThinkingLevelAsync(string thinkingLevel, CancellationToken ct = default);
     Task SetLanguageAsync(string language, CancellationToken ct = default);
     Task SetApiKeyAsync(string apiKey, CancellationToken ct = default);
+    Task<bool> SetMutedAsync(bool muted, CancellationToken ct = default);
     Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default);
     IAsyncEnumerable<RealtimeAssistantStreamEvent> StreamTextAsync(string text, CancellationToken ct = default);
     Task<RealtimeAssistantTurnResult> SendWaveAudioAsync(byte[] waveBytes, CancellationToken ct = default);

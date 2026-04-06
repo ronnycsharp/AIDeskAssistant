@@ -119,6 +119,40 @@ public sealed class RealtimeMenuBarServerTests
     }
 
     [Fact]
+    public void CreateAppSettingsPayload_EncodesLanguageMuteAndApiKeyStatus()
+    {
+        string? originalApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        string? originalSettingsPath = Environment.GetEnvironmentVariable("AIDESK_SETTINGS_FILE");
+        string? originalMuted = Environment.GetEnvironmentVariable("AIDESK_MUTED");
+        string tempDir = Path.Combine(Path.GetTempPath(), "AIDeskAssistant.Tests", Guid.NewGuid().ToString("N"));
+        string tempSettingsPath = Path.Combine(tempDir, "settings.json");
+
+        try
+        {
+            Directory.CreateDirectory(tempDir);
+            Environment.SetEnvironmentVariable("AIDESK_SETTINGS_FILE", tempSettingsPath);
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", "sk-test-12345678");
+            Environment.SetEnvironmentVariable("AIDESK_MUTED", "true");
+
+            object payload = RealtimeMenuBarServer.CreateAppSettingsPayload("de", ["de", "en"]);
+            JsonElement json = JsonSerializer.SerializeToElement(payload);
+
+            Assert.Equal("de", json.GetProperty("currentLanguage").GetString());
+            Assert.True(json.GetProperty("apiKeyConfigured").GetBoolean());
+            Assert.Equal("sk-t...5678", json.GetProperty("maskedApiKey").GetString());
+            Assert.True(json.GetProperty("muted").GetBoolean());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENAI_API_KEY", originalApiKey);
+            Environment.SetEnvironmentVariable("AIDESK_SETTINGS_FILE", originalSettingsPath);
+            Environment.SetEnvironmentVariable("AIDESK_MUTED", originalMuted);
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void BuildUnhandledExceptionLogEntry_ContainsRequestAndStackDetails()
     {
         InvalidOperationException exception = new("outer failure", new ArgumentException("inner failure"));
