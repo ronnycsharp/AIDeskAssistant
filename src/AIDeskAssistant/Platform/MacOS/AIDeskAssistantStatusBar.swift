@@ -1,6 +1,7 @@
 import Cocoa
 import AVFoundation
 import WebKit
+import Speech
 
 struct AssistantResponse: Decodable {
     let text: String?
@@ -37,6 +38,16 @@ struct VoiceSelectionRequest: Encodable {
 
 struct ThinkingSelectionRequest: Encodable {
     let thinkingLevel: String
+}
+
+struct WakeWordSettingsResponse: Decodable {
+    let enabled: Bool
+    let wakeWord: String
+}
+
+struct WakeWordUpdateRequest: Encodable {
+    let enabled: Bool
+    let wakeWord: String
 }
 
 struct TokenUsage: Decodable {
@@ -94,6 +105,136 @@ struct ToolScreenshotArtifact: Decodable {
 private struct AudioLevelMetrics {
     let peak: Double
     let rms: Double
+}
+
+final class WakeWordEngine {
+    private var recognizer: SFSpeechRecognizer?
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let engine = AVAudioEngine()
+    private var targetPhrase = ""
+    private var onDetected: (() -> Void)?
+    private var restartTimer: Timer?
+    private var isActive = false
+    private let diagnosticsLogger: StatusBarDiagnosticsLogger
+
+    init(diagnosticsLogger: StatusBarDiagnosticsLogger) {
+        self.diagnosticsLogger = diagnosticsLogger
+    }
+
+    func startListening(phrase: String, onDetected: @escaping () -> Void) {
+        stopListening()
+        targetPhrase = phrase.lowercased().trimmingCharacters(in: .whitespaces)
+        self.onDetected = onDetected
+        isActive = true
+
+        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isActive else { return }
+                if status == .authorized {
+                    self.startRecognitionSession()
+                } else {
+                    self.diagnosticsLogger.log("Wake word: speech recognition not authorized (status=\(status.rawValue))")
+                }
+            }
+        }
+    }
+
+    func stopListening() {
+        isActive = false
+        restartTimer?.invalidate()
+        restartTimer = nil
+        tearDown()
+        onDetected = nil
+    }
+
+    private func startRecognitionSession() {
+        guard isActive else { return }
+        tearDown()
+
+        let locale = Locale.current
+        recognizer = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+
+        guard let recognizer, recognizer.isAvailable else {
+            diagnosticsLogger.log("Wake word: recognizer unavailable, retrying in 10s")
+            restartTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+                self?.startRecognitionSession()
+            }
+            return
+        }
+
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let request = recognitionRequest else { return }
+
+        request.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+        request.contextualStrings = [targetPhrase]
+
+        let inputNode = engine.inputNode
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.removeTap(onBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+            self?.recognitionRequest?.append(buffer)
+        }
+
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            diagnosticsLogger.log("Wake word: audio engine failed: \(error.localizedDescription)")
+            tearDown()
+            return
+        }
+
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            if let result {
+                let transcript = result.bestTranscription.formattedString.lowercased()
+                if transcript.contains(self.targetPhrase) {
+                    self.diagnosticsLogger.log("Wake word detected in transcript: \(transcript)")
+                    self.isActive = false
+                    let callback = self.onDetected
+                    self.onDetected = nil
+                    self.tearDown()
+                    DispatchQueue.main.async { callback?() }
+                    return
+                }
+            }
+            if error != nil || result?.isFinal == true {
+                guard self.isActive else { return }
+                self.tearDown()
+                DispatchQueue.main.async { [weak self] in
+                    self?.startRecognitionSession()
+                }
+            }
+        }
+
+        restartTimer?.invalidate()
+        restartTimer = Timer.scheduledTimer(withTimeInterval: 50, repeats: false) { [weak self] _ in
+            guard self?.isActive == true else { return }
+            self?.diagnosticsLogger.log("Wake word: periodic session refresh")
+            self?.tearDown()
+            self?.startRecognitionSession()
+        }
+
+        diagnosticsLogger.log("Wake word: listening for '\(targetPhrase)' (onDevice=\(recognizer.supportsOnDeviceRecognition))")
+    }
+
+    private func tearDown() {
+        restartTimer?.invalidate()
+        restartTimer = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        engine.inputNode.removeTap(onBus: 0)
+        if engine.isRunning {
+            engine.stop()
+        }
+        recognizer = nil
+    }
 }
 
 final class StatusBarDiagnosticsLogger {
@@ -931,11 +1072,11 @@ final class ActivityLogViewController: NSViewController, WKNavigationDelegate, W
     }
 }
 
-final class StatusBarViewController: NSViewController, NSTextViewDelegate {
+final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTextFieldDelegate {
     private static let minimumLiveAudioCommitBytes = 4_800
     private static let panelWidth: CGFloat = 460
-    private static let minimumPanelHeight: CGFloat = 216
-    private static let maximumPanelHeight: CGFloat = 316
+    private static let minimumPanelHeight: CGFloat = 244
+    private static let maximumPanelHeight: CGFloat = 344
     private static let backgroundInset: CGFloat = 8
     private static let sideInset: CGFloat = 24
     private static let textHorizontalInset: CGFloat = 16
@@ -977,6 +1118,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let quitSeparator = NSBox(frame: .zero)
     private let quitButton = NSButton(title: "⏻", target: nil, action: nil)
+    private let wakeWordCheckbox = NSButton(checkboxWithTitle: "Wakeword", target: nil, action: nil)
+    private let wakeWordTextField = NSTextField(frame: .zero)
     private var currentPanelHeight: CGFloat = minimumPanelHeight
 
     private var audioPlayer: AVAudioPlayer?
@@ -1013,6 +1156,10 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private var isUpdatingVoiceSelection = false
     private var isUpdatingThinkingSelection = false
     private var isBusy = false
+    private var wakeWordEngine: WakeWordEngine?
+    private var isWakeWordEnabled = false
+    private var currentWakeWord = "Hey Jarvis"
+    private var isUpdatingWakeWordCheckbox = false
     private var activityPollTimer: Timer?
     private var pendingPlaybackChunkCount = 0
     private var pendingPlaybackDurationSeconds = 0.0
@@ -1053,6 +1200,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     deinit {
         activityPollTimer?.invalidate()
         hostSession.invalidateAndCancel()
+        wakeWordEngine?.stopListening()
     }
 
     override func loadView() {
@@ -1173,6 +1321,22 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         quitButton.contentTintColor = Self.primaryTextColor
         quitButton.toolTip = "AIDesk beenden"
 
+        wakeWordCheckbox.target = self
+        wakeWordCheckbox.action = #selector(wakeWordCheckboxChanged(_:))
+        wakeWordCheckbox.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        wakeWordCheckbox.contentTintColor = Self.secondaryTextColor
+        wakeWordCheckbox.toolTip = "Wakeword-Erkennung aktivieren (z. B. 'Hey Jarvis')"
+
+        wakeWordTextField.isEditable = true
+        wakeWordTextField.isBordered = true
+        wakeWordTextField.isBezeled = true
+        wakeWordTextField.bezelStyle = .roundedBezel
+        wakeWordTextField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        wakeWordTextField.textColor = Self.primaryTextColor
+        wakeWordTextField.placeholderString = "Hey Jarvis"
+        wakeWordTextField.toolTip = "Wakeword eingeben (z. B. 'Hey Jarvis')"
+        wakeWordTextField.delegate = self
+
         backgroundView.addSubview(voicePopup)
         backgroundView.addSubview(thinkingPopup)
         backgroundView.addSubview(textScrollView)
@@ -1185,6 +1349,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         backgroundView.addSubview(cancelButton)
         backgroundView.addSubview(quitSeparator)
         backgroundView.addSubview(quitButton)
+        backgroundView.addSubview(wakeWordCheckbox)
+        backgroundView.addSubview(wakeWordTextField)
 
         configureRecordButton(isRecording: false)
         updateOverlayLayout(animated: false)
@@ -1196,6 +1362,9 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         startActivityPolling()
         Task { [weak self] in
             await self?.loadVoiceSettings()
+        }
+        Task { [weak self] in
+            await self?.loadWakeWordSettings()
         }
     }
 
@@ -1225,6 +1394,20 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     func textDidChange(_ notification: Notification) {
         updateOverlayLayout(animated: true)
         scrollTextSelectionToVisible()
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let textField = notification.object as? NSTextField, textField === wakeWordTextField else { return }
+        let newWord = textField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !newWord.isEmpty, newWord != currentWakeWord else { return }
+        currentWakeWord = newWord
+        if isWakeWordEnabled {
+            stopWakeWordListening()
+            startWakeWordListeningIfEnabled()
+        }
+        Task { [weak self] in
+            await self?.submitWakeWordUpdate(enabled: self?.isWakeWordEnabled ?? false, wakeWord: newWord)
+        }
     }
 
     func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -1341,6 +1524,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func startRecording(autoFollowUp: Bool, interruptCurrentWork: Bool) {
+        stopWakeWordListening()
         recordButton.isEnabled = false
         resetCurrentResponseAudioState()
         isAutoFollowUpRecording = autoFollowUp
@@ -1971,6 +2155,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
                 scheduleAutoResumeRecordingAfterPlayback()
             } else {
                 resetCurrentResponseAudioState()
+                startWakeWordListeningIfEnabled()
             }
 
         case "error":
@@ -1982,6 +2167,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             }
             resetCurrentResponseAudioState()
             setBusy(false)
+            startWakeWordListeningIfEnabled()
 
         case "cancelled":
             diagnosticsLogger.log("Received cancelled event")
@@ -1991,6 +2177,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
             clearUsage()
             resetCurrentResponseAudioState()
             setBusy(false)
+            startWakeWordListeningIfEnabled()
 
         default:
             return
@@ -2072,6 +2259,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         clearUsage()
         setBusy(false)
         setStatus(reason)
+        startWakeWordListeningIfEnabled()
 
         Task { [weak self] in
             await self?.sendLiveAudioCancelRequest(sessionId: sessionId)
@@ -2163,7 +2351,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
     private func updateOverlayLayout(animated: Bool) {
         let contentTextHeight = calculatedContentTextHeight()
         let textHeight = min(Self.maximumTextHeight, max(Self.defaultTextHeight, contentTextHeight))
-        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 138))
+        let desiredPanelHeight = min(Self.maximumPanelHeight, max(Self.minimumPanelHeight, textHeight + 166))
         currentPanelHeight = desiredPanelHeight
 
         view.frame = NSRect(x: 0, y: 0, width: Self.panelWidth, height: desiredPanelHeight)
@@ -2193,7 +2381,12 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         statusLabel.frame = NSRect(x: Self.sideInset, y: statusY, width: contentWidth - (Self.sideInset * 2) - 24, height: 22)
         toolStatusLabel.frame = NSRect(x: Self.sideInset, y: statusY - 18, width: contentWidth - (Self.sideInset * 2) - 24, height: 16)
         activityIndicator.frame = NSRect(x: contentWidth - Self.sideInset - 18, y: statusY + 2, width: 18, height: 18)
-        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 8, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
+        usageLabel.frame = NSRect(x: Self.sideInset, y: bottomRowY + 36, width: contentWidth - (Self.sideInset * 2) - 160, height: 18)
+
+        let wakeWordCheckboxWidth: CGFloat = 90
+        let wakeWordTextFieldWidth: CGFloat = contentWidth - (Self.sideInset * 2) - wakeWordCheckboxWidth - 8
+        wakeWordCheckbox.frame = NSRect(x: Self.sideInset, y: bottomRowY + 3, width: wakeWordCheckboxWidth, height: 18)
+        wakeWordTextField.frame = NSRect(x: wakeWordCheckbox.frame.maxX + 8, y: bottomRowY + 2, width: wakeWordTextFieldWidth, height: 20)
         textScrollView.hasVerticalScroller = textHeight >= Self.maximumTextHeight - 0.5
         if textScrollView.hasVerticalScroller {
             scrollTextSelectionToVisible()
@@ -2401,6 +2594,112 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         }
     }
 
+    @objc private func wakeWordCheckboxChanged(_ sender: Any?) {
+        guard !isUpdatingWakeWordCheckbox else { return }
+        let enabled = wakeWordCheckbox.state == .on
+        isWakeWordEnabled = enabled
+        if enabled {
+            startWakeWordListeningIfEnabled()
+        } else {
+            stopWakeWordListening()
+        }
+        Task { [weak self] in
+            await self?.submitWakeWordUpdate(enabled: enabled, wakeWord: self?.currentWakeWord ?? "Hey Jarvis")
+        }
+    }
+
+    private func applyWakeWordSettings(_ settings: WakeWordSettingsResponse) {
+        currentWakeWord = settings.wakeWord.trimmingCharacters(in: .whitespaces).isEmpty
+            ? "Hey Jarvis"
+            : settings.wakeWord
+        isUpdatingWakeWordCheckbox = true
+        wakeWordCheckbox.state = settings.enabled ? .on : .off
+        isUpdatingWakeWordCheckbox = false
+        wakeWordTextField.stringValue = currentWakeWord
+
+        if settings.enabled {
+            startWakeWordListeningIfEnabled()
+        } else {
+            stopWakeWordListening()
+        }
+    }
+
+    private func loadWakeWordSettings() async {
+        do {
+            let (data, response) = try await hostSession.data(from: serverURL.appendingPathComponent("wakeword"))
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                diagnosticsLogger.log("Wake word settings load failed: HTTP error")
+                return
+            }
+            let settings = try JSONDecoder().decode(WakeWordSettingsResponse.self, from: data)
+            await MainActor.run { [weak self] in
+                self?.applyWakeWordSettings(settings)
+            }
+        } catch {
+            diagnosticsLogger.log("Wake word settings load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func submitWakeWordUpdate(enabled: Bool, wakeWord: String) async {
+        do {
+            var request = URLRequest(url: serverURL.appendingPathComponent("wakeword"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(WakeWordUpdateRequest(enabled: enabled, wakeWord: wakeWord))
+
+            let (data, response) = try await hostSession.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
+                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Wakeword-Einstellung konnte nicht gespeichert werden"
+                diagnosticsLogger.log("Wake word update failed: \(errorMessage)")
+                return
+            }
+
+            let settings = try JSONDecoder().decode(WakeWordSettingsResponse.self, from: data)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.currentWakeWord = settings.wakeWord
+                self.isUpdatingWakeWordCheckbox = true
+                self.wakeWordCheckbox.state = settings.enabled ? .on : .off
+                self.isUpdatingWakeWordCheckbox = false
+                if self.wakeWordTextField.stringValue != settings.wakeWord {
+                    self.wakeWordTextField.stringValue = settings.wakeWord
+                }
+            }
+        } catch {
+            diagnosticsLogger.log("Wake word update failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func startWakeWordListeningIfEnabled() {
+        guard isWakeWordEnabled,
+              !currentWakeWord.trimmingCharacters(in: .whitespaces).isEmpty,
+              liveAudioSessionId == nil else {
+            return
+        }
+        if wakeWordEngine == nil {
+            wakeWordEngine = WakeWordEngine(diagnosticsLogger: diagnosticsLogger)
+        }
+        wakeWordEngine?.startListening(phrase: currentWakeWord) { [weak self] in
+            self?.onWakeWordDetected()
+        }
+        diagnosticsLogger.log("Wake word listening started for '\(currentWakeWord)'")
+    }
+
+    private func stopWakeWordListening() {
+        wakeWordEngine?.stopListening()
+        diagnosticsLogger.log("Wake word listening stopped")
+    }
+
+    private func onWakeWordDetected() {
+        guard liveAudioSessionId == nil, !isBusy else {
+            startWakeWordListeningIfEnabled()
+            return
+        }
+        diagnosticsLogger.log("Wake word activated: starting recording")
+        setStatus("Wakeword erkannt – starte Aufnahme …")
+        startRecording(autoFollowUp: false, interruptCurrentWork: false)
+    }
+
     private func presentUsage(_ usage: TokenUsage?) {
         diagnosticsLogger.log("Usage update: \(formatUsage(usage))")
         usageLabel.stringValue = formatUsage(usage)
@@ -2477,6 +2776,8 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate {
         cancelButton.isEnabled = busy
         voicePopup.isEnabled = !busy && !availableVoices.isEmpty
         thinkingPopup.isEnabled = !busy && !availableThinkingLevels.isEmpty
+        wakeWordCheckbox.isEnabled = !busy
+        wakeWordTextField.isEnabled = !busy
         if busy {
             activityIndicator.startAnimation(nil)
         } else {

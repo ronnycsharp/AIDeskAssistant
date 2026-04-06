@@ -27,6 +27,8 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
     private readonly CancellationTokenSource _disposeCts = new();
     private string _voice;
     private string _thinkingLevel;
+    private bool _wakeWordEnabled;
+    private string _wakeWord;
     private ScreenshotFingerprint? _latestRetainedScreenshotFingerprint;
 
     private RealtimeSessionClient? _session;
@@ -53,12 +55,16 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             ?? RealtimeVoicePreferenceStore.TryLoadThinkingLevel());
         _screenshotAnalysisService?.SetThinkingLevel(_thinkingLevel);
         _sampleRate = TryGetPositiveInt(Environment.GetEnvironmentVariable("AIDESK_REALTIME_SAMPLE_RATE"), 24_000);
+        _wakeWordEnabled = WakeWordPreferenceStore.TryLoadEnabled();
+        _wakeWord = WakeWordPreferenceStore.TryLoadWakeWord();
         _debugLogger?.LogHistoryEntry("system", AIService.BuildSystemPrompt());
         MenuBarActivityState.Reset("Bereit", "AIDesk ist bereit.");
     }
 
     public string CurrentVoice => _voice;
     public string CurrentThinkingLevel => _thinkingLevel;
+    public bool WakeWordEnabled => _wakeWordEnabled;
+    public string CurrentWakeWord => _wakeWord;
 
     public IReadOnlyList<string> GetAvailableVoices()
     {
@@ -114,6 +120,26 @@ internal sealed class RealtimeAssistantService : IMenuBarAssistantService
             RealtimeVoicePreferenceStore.SaveThinkingLevel(normalizedThinkingLevel);
             _screenshotAnalysisService?.SetThinkingLevel(normalizedThinkingLevel);
             return normalizedThinkingLevel;
+        }
+        finally
+        {
+            _sessionLock.Release();
+        }
+    }
+
+    public async Task<(bool Enabled, string WakeWord)> SetWakeWordAsync(bool enabled, string wakeWord, CancellationToken ct = default)
+    {
+        string normalizedWakeWord = string.IsNullOrWhiteSpace(wakeWord)
+            ? WakeWordPreferenceStore.DefaultWakeWord
+            : wakeWord.Trim();
+
+        await _sessionLock.WaitAsync(ct);
+        try
+        {
+            _wakeWordEnabled = enabled;
+            _wakeWord = normalizedWakeWord;
+            WakeWordPreferenceStore.Save(enabled, normalizedWakeWord);
+            return (enabled, normalizedWakeWord);
         }
         finally
         {

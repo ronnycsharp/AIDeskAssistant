@@ -220,6 +220,28 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
                 return;
             }
 
+            if (context.Request.HttpMethod == "GET" && path == "/wakeword")
+            {
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateWakeWordPayload(_assistant.WakeWordEnabled, _assistant.CurrentWakeWord), ct);
+                return;
+            }
+
+            if (context.Request.HttpMethod == "POST" && path == "/wakeword")
+            {
+                WakeWordRequest? request = await JsonSerializer.DeserializeAsync<WakeWordRequest>(context.Request.InputStream, JsonOptions, ct);
+                if (request is null)
+                {
+                    await WriteJsonAsync(context.Response, HttpStatusCode.BadRequest, new { error = "Request body is required." }, ct);
+                    return;
+                }
+
+                bool enabled = request.Enabled ?? _assistant.WakeWordEnabled;
+                string wakeWord = string.IsNullOrWhiteSpace(request.WakeWord) ? _assistant.CurrentWakeWord : request.WakeWord;
+                (bool newEnabled, string newWakeWord) = await _assistant.SetWakeWordAsync(enabled, wakeWord, ct);
+                await WriteJsonAsync(context.Response, HttpStatusCode.OK, CreateWakeWordPayload(newEnabled, newWakeWord), ct);
+                return;
+            }
+
             await WriteJsonAsync(context.Response, HttpStatusCode.NotFound, new { error = "Not found." }, ct);
         }
         catch (OperationCanceledException)
@@ -345,6 +367,8 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
         };
     }
 
+    internal static object CreateWakeWordPayload(bool enabled, string wakeWord) => new { enabled, wakeWord };
+
     internal static object CreateVoiceSettingsPayload(string currentVoice, IReadOnlyList<string> availableVoices, string currentThinkingLevel, IReadOnlyList<string> availableThinkingLevels) => new
     {
         currentVoice,
@@ -455,5 +479,11 @@ internal sealed class RealtimeMenuBarServer : IAsyncDisposable
     private sealed class ThinkingRequest
     {
         public string ThinkingLevel { get; set; } = string.Empty;
+    }
+
+    private sealed class WakeWordRequest
+    {
+        public bool? Enabled { get; set; }
+        public string? WakeWord { get; set; }
     }
 }

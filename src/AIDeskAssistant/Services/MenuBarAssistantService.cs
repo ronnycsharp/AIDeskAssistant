@@ -16,6 +16,9 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
 
     private CancellationTokenSource? _activeTurnCts;
 
+    private bool _wakeWordEnabled = WakeWordPreferenceStore.TryLoadEnabled();
+    private string _wakeWord = WakeWordPreferenceStore.TryLoadWakeWord();
+
     public MenuBarAssistantService(AIService assistant, MenuBarSpeechService speechService, AIDebugLogger? debugLogger = null)
     {
         _assistant = assistant;
@@ -27,6 +30,10 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
 
     public string CurrentThinkingLevel => _assistant.CurrentThinkingLevel;
 
+    public bool WakeWordEnabled => _wakeWordEnabled;
+
+    public string CurrentWakeWord => _wakeWord;
+
     public IReadOnlyList<string> GetAvailableVoices() => _speechService.GetAvailableVoices();
 
     public IReadOnlyList<string> GetAvailableThinkingLevels() => _assistant.GetAvailableThinkingLevels();
@@ -36,6 +43,17 @@ internal sealed class MenuBarAssistantService : IMenuBarAssistantService
 
     public Task<string> SetThinkingLevelAsync(string thinkingLevel, CancellationToken ct = default)
         => Task.FromResult(_assistant.SetThinkingLevel(thinkingLevel));
+
+    public Task<(bool Enabled, string WakeWord)> SetWakeWordAsync(bool enabled, string wakeWord, CancellationToken ct = default)
+    {
+        string normalizedWakeWord = string.IsNullOrWhiteSpace(wakeWord)
+            ? WakeWordPreferenceStore.DefaultWakeWord
+            : wakeWord.Trim();
+        _wakeWordEnabled = enabled;
+        _wakeWord = normalizedWakeWord;
+        WakeWordPreferenceStore.Save(enabled, normalizedWakeWord);
+        return Task.FromResult((enabled, normalizedWakeWord));
+    }
 
     public async Task<RealtimeAssistantTurnResult> SendTextAsync(string text, CancellationToken ct = default)
     {
