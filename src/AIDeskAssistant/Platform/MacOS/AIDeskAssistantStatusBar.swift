@@ -172,7 +172,7 @@ final class WakeWordEngine {
         guard recognizer.supportsOnDeviceRecognition else {
             diagnosticsLogger.log("Wake word: on-device recognition not supported on this device – offline detection unavailable")
             DispatchQueue.main.async { [weak self] in
-                self?.onUnsupported?("Wakeword: On-Device-Erkennung wird auf diesem Gerät nicht unterstützt.")
+                self?.onUnsupported?("Wake word: On-Device-Erkennung wird auf diesem Gerät nicht unterstützt.")
             }
             return
         }
@@ -1131,7 +1131,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let quitSeparator = NSBox(frame: .zero)
     private let quitButton = NSButton(title: "⏻", target: nil, action: nil)
-    private let wakeWordCheckbox = NSButton(checkboxWithTitle: "Wakeword", target: nil, action: nil)
+    private let wakeWordCheckbox = NSButton(checkboxWithTitle: "Wake word", target: nil, action: nil)
     private let wakeWordTextField = NSTextField(frame: .zero)
     private var currentPanelHeight: CGFloat = minimumPanelHeight
 
@@ -1338,7 +1338,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
         wakeWordCheckbox.action = #selector(wakeWordCheckboxChanged(_:))
         wakeWordCheckbox.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         wakeWordCheckbox.contentTintColor = Self.secondaryTextColor
-        wakeWordCheckbox.toolTip = "Wakeword-Erkennung aktivieren (z. B. 'Hey Jarvis')"
+        wakeWordCheckbox.toolTip = "Wake word-Erkennung aktivieren (z. B. 'Hey Jarvis')"
 
         wakeWordTextField.isEditable = true
         wakeWordTextField.isBordered = true
@@ -1347,7 +1347,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
         wakeWordTextField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         wakeWordTextField.textColor = Self.primaryTextColor
         wakeWordTextField.placeholderString = "Hey Jarvis"
-        wakeWordTextField.toolTip = "Wakeword eingeben (z. B. 'Hey Jarvis')"
+        wakeWordTextField.toolTip = "Wake word eingeben (z. B. 'Hey Jarvis')"
         wakeWordTextField.delegate = self
 
         backgroundView.addSubview(voicePopup)
@@ -2684,7 +2684,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
 
             let (data, response) = try await hostSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse, (200...299).contains(httpResponse.statusCode) else {
-                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Wakeword-Einstellung konnte nicht gespeichert werden"
+                let errorMessage = StatusBarViewController.extractHostErrorMessage(from: data) ?? "Wake word-Einstellung konnte nicht gespeichert werden"
                 diagnosticsLogger.log("Wake word update failed: \(errorMessage)")
                 return
             }
@@ -2742,7 +2742,7 @@ final class StatusBarViewController: NSViewController, NSTextViewDelegate, NSTex
             return
         }
         diagnosticsLogger.log("Wake word activated: starting recording")
-        setStatus("Wakeword erkannt – starte Aufnahme …")
+        setStatus("Wake word erkannt – starte Aufnahme …")
         startRecording(autoFollowUp: false, interruptCurrentWork: false)
     }
 
