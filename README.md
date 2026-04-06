@@ -43,6 +43,8 @@ Use this project only where that risk is acceptable. Do not use it on highly sen
 
 On macOS the project can run as a status bar assistant named `AIDesk`.
 
+![AIDesk menu bar window](docs/images/aidesk-window.png)
+
 This is the main path for hands-free usage:
 
 - text input from the status bar popover
