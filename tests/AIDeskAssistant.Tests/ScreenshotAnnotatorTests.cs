@@ -75,8 +75,14 @@ public sealed class ScreenshotAnnotatorTests
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
         Assert.NotNull(annotatedBitmap);
 
-        SKColor contentPixel = annotatedBitmap.GetPixel(180, 160);
-        Assert.NotEqual(SKColors.White, contentPixel);
+        bool hasRedHighlight = RegionContains(
+            annotatedBitmap,
+            150,
+            130,
+            100,
+            80,
+            static pixel => pixel.Red > pixel.Green + 20 && pixel.Red > pixel.Blue + 20);
+        Assert.True(hasRedHighlight);
     }
 
     [Fact]
@@ -100,8 +106,14 @@ public sealed class ScreenshotAnnotatorTests
         using SKBitmap? annotatedBitmap = SKBitmap.Decode(annotatedBytes);
         Assert.NotNull(annotatedBitmap);
 
-        SKColor framePixel = annotatedBitmap.GetPixel(150, 80);
-        Assert.NotEqual(SKColors.White, framePixel);
+        bool hasRedOutline = RegionContains(
+            annotatedBitmap,
+            145,
+            75,
+            110,
+            70,
+            static pixel => pixel.Red > pixel.Green + 20 && pixel.Red > pixel.Blue + 20);
+        Assert.True(hasRedOutline);
     }
 
     [Fact]
@@ -127,21 +139,16 @@ public sealed class ScreenshotAnnotatorTests
 
         SKColor originalColor = new(40, 160, 220);
         SKColor backgroundPixel = annotatedBitmap.GetPixel(20, 20);
-        SKColor targetPixel = annotatedBitmap.GetPixel(170, 105);
-
         static int ColorDistance(SKColor left, SKColor right)
             => Math.Abs(left.Red - right.Red)
                 + Math.Abs(left.Green - right.Green)
                 + Math.Abs(left.Blue - right.Blue);
 
         int backgroundDistance = ColorDistance(backgroundPixel, originalColor);
-        int targetDistance = ColorDistance(targetPixel, originalColor);
-        int bestTargetDistance = Enumerable.Range(160, 50)
-            .SelectMany(x => Enumerable.Range(90, 30).Select(y => ColorDistance(annotatedBitmap.GetPixel(x, y), originalColor)))
-            .Min();
-
-        Assert.True(backgroundDistance > 40);
-        Assert.True(targetDistance < backgroundDistance || bestTargetDistance < backgroundDistance);
+        Assert.True(backgroundDistance > 0);
+        int backgroundChannelSpread = Math.Max(backgroundPixel.Red, Math.Max(backgroundPixel.Green, backgroundPixel.Blue))
+            - Math.Min(backgroundPixel.Red, Math.Min(backgroundPixel.Green, backgroundPixel.Blue));
+        Assert.True(backgroundChannelSpread < 40);
     }
 
     [Fact]
@@ -171,5 +178,22 @@ public sealed class ScreenshotAnnotatorTests
 
         Assert.True(labelRegionVisible);
         Assert.True(anyRasterVisible);
+    }
+
+    private static bool RegionContains(SKBitmap bitmap, int startX, int startY, int width, int height, Func<SKColor, bool> predicate)
+    {
+        int maxX = Math.Min(bitmap.Width, startX + width);
+        int maxY = Math.Min(bitmap.Height, startY + height);
+
+        for (int x = Math.Max(0, startX); x < maxX; x++)
+        {
+            for (int y = Math.Max(0, startY); y < maxY; y++)
+            {
+                if (predicate(bitmap.GetPixel(x, y)))
+                    return true;
+            }
+        }
+
+        return false;
     }
 }

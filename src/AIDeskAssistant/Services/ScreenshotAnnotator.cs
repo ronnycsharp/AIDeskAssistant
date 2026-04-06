@@ -5,8 +5,8 @@ namespace AIDeskAssistant.Services;
 
 internal static class ScreenshotAnnotator
 {
-    private static readonly SKColor IntendedClickColor = new(255, 208, 0, 255);
-    private static readonly SKColor IntendedElementColor = new(64, 255, 191, 255);
+    private static readonly SKColor IntendedClickColor = new(255, 64, 64, 255);
+    private static readonly SKColor IntendedElementColor = new(255, 59, 48, 255);
     private static readonly SKColor AxMarkColor = new(79, 195, 247, 255);
     private static readonly SKColor OcrMarkColor = new(255, 99, 132, 255);
     private static readonly SKColor LabelBackgroundColor = new(18, 18, 18, 210);
@@ -63,7 +63,7 @@ internal static class ScreenshotAnnotator
         using SKBitmap grayscaleBitmap = CreateGrayscaleBitmap(sourceBitmap);
         canvas.DrawBitmap(grayscaleBitmap, 0, 0);
 
-        using var dimPaint = new SKPaint { Color = new SKColor(10, 10, 10, 130), Style = SKPaintStyle.Fill, IsAntialias = true };
+        using var dimPaint = new SKPaint { Color = new SKColor(0, 0, 0, 132), Style = SKPaintStyle.Fill, IsAntialias = true };
         canvas.DrawRect(SKRect.Create(sourceBitmap.Width, sourceBitmap.Height), dimPaint);
 
         if (annotation.HasIntendedElementRegion && annotation.IntendedElementRegion is ScreenshotHighlightedRegion region && annotation.IntendedElementRegionIntersectsCapture)
@@ -82,16 +82,19 @@ internal static class ScreenshotAnnotator
     private static SKBitmap CreateGrayscaleBitmap(SKBitmap sourceBitmap)
     {
         var grayscaleBitmap = new SKBitmap(sourceBitmap.Width, sourceBitmap.Height, sourceBitmap.ColorType, sourceBitmap.AlphaType);
-        using var grayscaleCanvas = new SKCanvas(grayscaleBitmap);
-        using var colorFilter = SKColorFilter.CreateColorMatrix(new float[]
+        for (int y = 0; y < sourceBitmap.Height; y++)
         {
-            0.2126f, 0.2126f, 0.2126f, 0, 0,
-            0.7152f, 0.7152f, 0.7152f, 0, 0,
-            0.0722f, 0.0722f, 0.0722f, 0, 0,
-            0, 0, 0, 1, 0,
-        });
-        using var paint = new SKPaint { ColorFilter = colorFilter, IsAntialias = true };
-        grayscaleCanvas.DrawBitmap(sourceBitmap, 0, 0, paint);
+            for (int x = 0; x < sourceBitmap.Width; x++)
+            {
+                SKColor pixel = sourceBitmap.GetPixel(x, y);
+                byte luminance = (byte)Math.Clamp(
+                    (int)Math.Round((pixel.Red * 0.2126) + (pixel.Green * 0.7152) + (pixel.Blue * 0.0722)),
+                    0,
+                    255);
+                grayscaleBitmap.SetPixel(x, y, new SKColor(luminance, luminance, luminance, pixel.Alpha));
+            }
+        }
+
         return grayscaleBitmap;
     }
 
@@ -134,22 +137,16 @@ internal static class ScreenshotAnnotator
         if (!annotation.IntendedClickIsInsideCapture)
             return;
 
+        if (annotation.HasIntendedElementRegion)
+            return;
+
         SKPoint targetPoint = MapGlobalPointToImage(annotation, clickTarget.X, clickTarget.Y, metrics.Width, metrics.Height);
         float outerRadius = Math.Clamp(Math.Min(metrics.Width, metrics.Height) / 22f, 18f, 36f);
-        float innerRadius = Math.Max(6f, outerRadius * 0.42f);
-        float guideLength = outerRadius * 0.9f;
-        float guideGap = Math.Max(5f, outerRadius * 0.35f);
-        using var fillPaint = new SKPaint { Color = IntendedClickColor.WithAlpha(44), IsAntialias = true, Style = SKPaintStyle.Fill };
         using var strokePaint = new SKPaint { Color = IntendedClickColor, IsAntialias = true, StrokeWidth = Math.Max(3f, outerRadius / 7f), Style = SKPaintStyle.Stroke };
-        using var guidePaint = new SKPaint { Color = IntendedClickColor.WithAlpha(235), IsAntialias = true, StrokeWidth = Math.Max(3f, outerRadius / 8f), Style = SKPaintStyle.Stroke, StrokeCap = SKStrokeCap.Round };
+        using var haloPaint = new SKPaint { Color = IntendedClickColor.WithAlpha(48), IsAntialias = true, StrokeWidth = Math.Max(8f, outerRadius / 2.8f), Style = SKPaintStyle.Stroke };
 
-        canvas.DrawCircle(targetPoint, outerRadius, fillPaint);
+        canvas.DrawCircle(targetPoint, outerRadius, haloPaint);
         canvas.DrawCircle(targetPoint, outerRadius, strokePaint);
-        canvas.DrawCircle(targetPoint, innerRadius, strokePaint);
-        canvas.DrawLine(targetPoint.X - outerRadius - guideLength, targetPoint.Y, targetPoint.X - guideGap, targetPoint.Y, guidePaint);
-        canvas.DrawLine(targetPoint.X + guideGap, targetPoint.Y, targetPoint.X + outerRadius + guideLength, targetPoint.Y, guidePaint);
-        canvas.DrawLine(targetPoint.X, targetPoint.Y - outerRadius - guideLength, targetPoint.X, targetPoint.Y - guideGap, guidePaint);
-        canvas.DrawLine(targetPoint.X, targetPoint.Y + guideGap, targetPoint.X, targetPoint.Y + outerRadius + guideLength, guidePaint);
     }
 
     private static void DrawIntendedElementRegion(SKCanvas canvas, ImageMetrics metrics, ScreenshotAnnotationData annotation)
@@ -166,9 +163,11 @@ internal static class ScreenshotAnnotator
         SKPoint bottomRight = MapGlobalPointToImage(annotation, right, bottom, metrics.Width, metrics.Height);
         SKRect rect = NormalizeRect(new SKRect(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y));
 
-        using var outerPaint = new SKPaint { Color = IntendedElementColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 4f, PathEffect = SKPathEffect.CreateDash(new float[] { 18f, 10f }, 0f) };
+        using var fillPaint = new SKPaint { Color = IntendedElementColor.WithAlpha(32), IsAntialias = true, Style = SKPaintStyle.Fill };
+        using var outerPaint = new SKPaint { Color = IntendedElementColor, IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 4f };
         using var innerPaint = new SKPaint { Color = LabelBorderColor.WithAlpha(220), IsAntialias = true, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f };
 
+        canvas.DrawRect(rect, fillPaint);
         canvas.DrawRect(rect, outerPaint);
         canvas.DrawRect(new SKRect(rect.Left + 3f, rect.Top + 3f, rect.Right - 3f, rect.Bottom - 3f), innerPaint);
     }

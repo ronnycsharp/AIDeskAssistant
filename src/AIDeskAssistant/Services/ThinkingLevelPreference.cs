@@ -26,11 +26,17 @@ internal static class ThinkingLevelPreference
     }
 
     public static bool SupportsReasoningEffort(string model)
+        => SupportsReasoningEffort(model, usesFunctionTools: false);
+
+    public static bool SupportsReasoningEffort(string model, bool usesFunctionTools)
     {
         if (string.IsNullOrWhiteSpace(model))
             return false;
 
         string normalized = model.Trim().ToLowerInvariant();
+        if (usesFunctionTools && normalized.StartsWith("gpt-5.4", StringComparison.Ordinal))
+            return false;
+
         return normalized.Contains("gpt-5", StringComparison.Ordinal)
             || normalized.Contains("o1", StringComparison.Ordinal)
             || normalized.Contains("o3", StringComparison.Ordinal)
@@ -39,7 +45,7 @@ internal static class ThinkingLevelPreference
 
     public static void ApplyTo(ChatCompletionOptions options, string model, string? level)
     {
-        if (!SupportsReasoningEffort(model))
+        if (!SupportsReasoningEffort(model, options.Tools.Count > 0))
             return;
 
         string normalized = Normalize(level);
